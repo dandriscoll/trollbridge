@@ -91,19 +91,26 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	start := time.Now()
 	requestID := uuid.NewString()
 
-	// Read body for inspection (bounded).
+	// Read body for inspection (bounded). For over-cap bodies the
+	// sample is dropped (engine fails closed on body-required
+	// rules per the carry-forward fix) but the FULL body is still
+	// forwarded to the origin via MultiReader so that legitimate
+	// large uploads are not truncated. The cost of the bounded
+	// read is the prefix bytes; the rest streams from the
+	// original reader.
 	var bodyBuf []byte
 	if r.Body != nil && s.MaxBodySampleBytes > 0 {
-		var err error
-		bodyBuf, err = io.ReadAll(io.LimitReader(r.Body, int64(s.MaxBodySampleBytes)+1))
+		prefix, err := io.ReadAll(io.LimitReader(r.Body, int64(s.MaxBodySampleBytes)+1))
 		if err != nil {
 			return err
 		}
-		if int64(len(bodyBuf)) > int64(s.MaxBodySampleBytes) {
-			// Over cap; do not preserve sample. Body is lost
-			// for inspection purposes; we still forward.
-			r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
+		if int64(len(prefix)) > int64(s.MaxBodySampleBytes) {
+			// Over cap. No sample for the engine. Forward the
+			// full body by stitching prefix + rest.
+			r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(prefix), r.Body))
 		} else {
+			// Fits; sample IS the body.
+			bodyBuf = prefix
 			r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 		}
 	}

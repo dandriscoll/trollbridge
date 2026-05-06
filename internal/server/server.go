@@ -303,36 +303,31 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Capture a bounded body sample for body_pattern matching.
 	// Plain HTTP only; HTTPS body inspection arrives Phase 3.
+	// Over-cap bodies forward in full via MultiReader so we do
+	// not silently truncate large uploads; the sample is dropped
+	// instead, and the engine fails closed on body-required
+	// rules.
 	var bodyBuf []byte
 	if r.Body != nil && s.MaxBodySampleBytes > 0 && bodyMethodNeedsSample(r.Method) {
-		var err error
-		bodyBuf, err = io.ReadAll(io.LimitReader(r.Body, int64(s.MaxBodySampleBytes)+1))
+		prefix, err := io.ReadAll(io.LimitReader(r.Body, int64(s.MaxBodySampleBytes)+1))
 		if err != nil {
 			http.Error(w, "drawbridge: body read failed", http.StatusBadRequest)
 			s.writeAudit(req, types.Decision{Effect: types.EffectDeny, Source: types.SourceDefault, Reason: "body read failed: " + err.Error()},
 				"", 0, http.StatusBadRequest, 0, time.Since(start), err.Error())
 			return
 		}
-		if int64(len(bodyBuf)) > int64(s.MaxBodySampleBytes) {
-			// Body exceeded the sample cap; we still forward it
-			// but body_pattern matchers cannot match. Per
-			// DESIGN.md §11.4 fail closed if a rule REQUIRED the
-			// body — handled by setting the sample empty, which
-			// causes body_pattern matches to fail (rule does not
-			// fire). Since the engine evaluates as "rule did not
-			// match" rather than "body inspection failed," this
-			// matches the design's stated semantics for over-cap
-			// bodies.
+		if int64(len(prefix)) > int64(s.MaxBodySampleBytes) {
 			req.BodyAvailable = false
-			req.BodySize = int64(len(bodyBuf))
+			req.BodySize = int64(len(prefix))
 			req.BodySample = nil
+			r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(prefix), r.Body))
 		} else {
 			req.BodyAvailable = true
-			req.BodySize = int64(len(bodyBuf))
-			req.BodySample = bodyBuf
+			req.BodySize = int64(len(prefix))
+			req.BodySample = prefix
+			bodyBuf = prefix
+			r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 		}
-		// Restore the body for downstream forwarding.
-		r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 	}
 
 	decision := s.engine.Decide(req)
