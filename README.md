@@ -7,6 +7,8 @@ The proxy is implemented in Go: a single static binary, no runtime
 deps.
 
 - [`DESIGN.md`](DESIGN.md) — full design document.
+- [`AGENTS.md`](AGENTS.md) — instructions for an LLM coding agent
+  asked to set up drawbridge for you.
 - [`docs/deploy.md`](docs/deploy.md) — deployment recipes.
 - [`config.example.yaml`](config.example.yaml) — annotated config.
 - [`allow.example.txt`](allow.example.txt) /
