@@ -1,0 +1,8 @@
+bin/
+*.audit.jsonl
+drawbridge.audit.jsonl
+*.bak
+
+# Go workspace
+/vendor/
+/go.work.sum
