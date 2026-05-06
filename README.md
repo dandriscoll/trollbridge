@@ -4,9 +4,7 @@ An LLM-powered HTTP/HTTPS proxy that lets LLM agents reach network
 resources under controlled, inspectable, policy-governed conditions.
 
 The proxy is implemented in Go: a single static binary, no runtime
-deps. Phases 1–5 of the design plan have shipped (the live-build
-observation in a real Incus environment is the operator's
-deliverable; recipes below).
+deps.
 
 - [`DESIGN.md`](DESIGN.md) — full design document.
 - [`docs/deploy.md`](docs/deploy.md) — deployment recipes.
@@ -40,10 +38,8 @@ For TLS interception:
 # set interception.enabled: true in drawbridge.yaml
 ```
 
-## Status
-
-Phases 1–5 implemented. See `docs/deploy.md` for production
-deployment recipes and `DESIGN.md` for the full specification.
+See `docs/deploy.md` for deployment recipes and `DESIGN.md` for
+the full specification.
 
 ## License
 
