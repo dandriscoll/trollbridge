@@ -35,6 +35,7 @@ interception:
   ca:
     cert_path: /etc/drawbridge/drawbridge-ca.crt
     key_path:  /etc/drawbridge/drawbridge-ca.key
+  leaf_key_type: rsa-4096   # rsa-4096 (default) | ecdsa-p256 (faster, less compat)
   passthrough_hosts:
     # Hosts whose certs are pinned (or whose interception you want
     # to skip for any reason). Wildcards supported.
@@ -95,6 +96,24 @@ approvals:
   timeout_seconds: 300
   on_timeout: deny
   max_pending: 100
+
+# -----------------------------------------------------------------
+# forwarder — bounds on upstream connection pooling. See DESIGN.md
+# §5.5. Pool size is bounded; oldest idle conn is closed under
+# pressure rather than failing requests outright.
+# -----------------------------------------------------------------
+forwarder:
+  max_idle_connections: 256
+  max_idle_connections_per_host: 32
+  connection_acquire_timeout_seconds: 5
+
+# -----------------------------------------------------------------
+# shutdown — SIGTERM behavior. See DESIGN.md §16 row 20.
+#  - drain in-flight requests up to grace_seconds
+#  - resolve all pending approvals as deny (with reason "shutdown")
+# -----------------------------------------------------------------
+shutdown:
+  grace_seconds: 30
 
 # -----------------------------------------------------------------
 # identities — how clients are recognized.

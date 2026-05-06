@@ -150,6 +150,13 @@ not sufficient.
   determined attacker can encode data into the *fact* of a request
   being made, regardless of body content. Operators concerned about
   this class need additional controls.
+- **HTTP/3 / QUIC.** drawbridge is HTTP/1.1- and HTTP/2-aware over
+  TCP. HTTP/3 runs over UDP; if egress UDP is permitted, an origin
+  serving `Alt-Svc: h3=...` can negotiate the client off TCP and
+  drawbridge sees no further traffic. Mitigation: the agent's
+  firewall MUST drop egress UDP except for whatever resolver path
+  the operator allows. drawbridge cannot help if the network does
+  not constrain UDP.
 - **Compromise of the operator's machine.** drawbridge runs on the
   operator's host or trusted machine. If that host is compromised, so
   is drawbridge. The CA private key in particular MUST be protected
@@ -375,6 +382,15 @@ drawbridge MAY pool connections to upstream origins. Connection pools
 MUST be keyed by `(scheme, host, port, identity)` so two identities
 do not share an authenticated upstream connection.
 
+Pool size MUST be bounded by `forwarder.max_idle_connections` (default
+256) globally and `forwarder.max_idle_connections_per_host` (default
+32) per pool key. When the global limit is reached, the oldest idle
+connection MUST be closed before opening a new one. Pool exhaustion
+MUST NOT block new requests indefinitely; a request that cannot
+acquire a pooled or fresh connection within
+`forwarder.connection_acquire_timeout_seconds` (default 5) MUST fail
+with `502 Bad Gateway` and an audit-log entry.
+
 ---
 
 ## 6. HTTPS proxy behavior
@@ -478,7 +494,12 @@ intermediates).
 ### 7.3 Key parameters and lifetime
 
 - Key type: RSA 4096 by default; ECDSA P-256 MAY be used if the
-  operator opts in. Some legacy clients do not handle ECDSA.
+  operator opts in via `interception.leaf_key_type: ecdsa-p256`.
+  ECDSA leaf cert generation is roughly an order of magnitude
+  faster than RSA 4096, which matters when many new hosts are
+  contacted in a short window (e.g., a fresh `npm install`). Some
+  legacy clients do not handle ECDSA; RSA 4096 is the default for
+  compatibility, ECDSA is the speed-conscious opt-in.
 - CA validity: 10 years (configurable). drawbridge MUST emit a
   warning to stderr when the CA is within 30 days of expiry.
 - Leaf cert validity: 1 year. Leaf certs are cached in memory; the
@@ -489,6 +510,11 @@ intermediates).
 
 - **Generation**: `drawbridge ca init` generates a new CA and writes
   `drawbridge-ca.crt` (public) and `drawbridge-ca.key` (private).
+  If files already exist at those paths, `ca init` MUST refuse with
+  a clear error. With `--force`, drawbridge MUST archive each
+  existing file to `<path>.<RFC3339-timestamp>.bak` before writing
+  the new one. drawbridge MUST NEVER silently overwrite an existing
+  CA private key file.
 - **Storage**: paths configurable; default
   `$XDG_CONFIG_HOME/drawbridge/` for user installs and
   `/etc/drawbridge/` for system installs. The private key MUST NOT
@@ -1063,8 +1089,8 @@ A single binary, Cobra-style subcommands.
 
 | Command | Purpose |
 |---|---|
-| `drawbridge init` | Create a default `drawbridge.yaml` and CA in the current dir or at `--config <path>`. |
-| `drawbridge validate` | Validate the configuration and rule set. Exit 0 on success, 1 on error. |
+| `drawbridge init` | Create a default `drawbridge.yaml` and CA. MUST print a human-readable summary to stdout listing every file created, their paths, the CA SHA-256 fingerprint, and the next-step commands (install CA into client trust store; review and edit rules). MUST refuse to overwrite existing files; `--force` archives them per §7.4. |
+| `drawbridge validate` | Validate the configuration and rule set; reject unknown modifier names, unknown effect strings, conflicting rule IDs. Exit 0 on success, 1 on error. |
 | `drawbridge run` | Start the proxy in the foreground. Reads config from `--config` or `DRAWBRIDGE_CONFIG`. |
 | `drawbridge ca init` | Generate a new CA. Refuses if one exists unless `--force`. |
 | `drawbridge ca export` | Print the CA cert (public) to stdout, or write to `--out <file>`. |
@@ -1079,7 +1105,13 @@ A single binary, Cobra-style subcommands.
 | `drawbridge logs tail` | Tail the structured audit log, formatted for humans. |
 | `drawbridge logs replay --rules <file> --since <duration>` | Replay past decisions against a new rule set; report differences. |
 | `drawbridge sessions` | Show active client sessions with identity and decision counts. |
+| `drawbridge selftest --from-vm` | Phase 5+ helper. Run from inside the agent VM. Attempts a small set of direct connections to non-proxy destinations and reports whether the egress firewall blocked them; reports whether the proxy is reachable and whether the CA is trusted by the system. Used to confirm the deployment topology before trusting it. |
 | `drawbridge version` | Print version and build info. |
+
+`drawbridge` invoked with no subcommand MUST print top-level help to
+stdout and exit 0 (matching the Cobra/POSIX convention). It MUST NOT
+attempt to start the proxy without an explicit `run` subcommand —
+silent startup-by-default is a footgun.
 
 ### 13.3 Flags common to all commands
 
@@ -1106,6 +1138,7 @@ interception:
   ca:
     cert_path: /etc/drawbridge/drawbridge-ca.crt
     key_path: /etc/drawbridge/drawbridge-ca.key
+  leaf_key_type: rsa-4096  # rsa-4096 (default, max compat) | ecdsa-p256 (faster)
   passthrough_hosts:       # never intercept these
     - "*.googleapis.com"
 
@@ -1141,6 +1174,14 @@ approvals:
   timeout_seconds: 300
   on_timeout: deny
 
+forwarder:
+  max_idle_connections: 256
+  max_idle_connections_per_host: 32
+  connection_acquire_timeout_seconds: 5
+
+shutdown:
+  grace_seconds: 30        # SIGTERM: drain in-flight, deny held requests
+
 identities:
   - id: coding-agent
     match:
@@ -1169,6 +1210,30 @@ Rule files referenced under `policy.include` use the rule shape from
 `drawbridge --help` MUST list commands grouped by purpose (operate,
 configure, audit, manage CA). Each command's `--help` MUST give a
 one-line summary, the full flag list, and at least one example.
+
+### 13.5.1 Error message shape
+
+Configuration- and rule-load errors MUST name **what** failed,
+**where** (file + position), what valid input looks like, and the
+**fix**. Three concrete examples drawbridge MUST be capable of
+producing:
+
+- `Configuration error at line 42 of drawbridge.yaml:` `mode` must
+  be one of `default-deny`, `default-allow`, `default-ask`. Got:
+  `default-asks`. Fix: correct the typo.
+- `Cannot read CA private key at /etc/drawbridge/drawbridge-ca.key:
+  permission denied. Fix: ensure the drawbridge process user has
+  read access (mode 0600, owned by drawbridge user), or run
+  `drawbridge ca init` to generate a new CA.`
+- `Rule load error in rules/dev-overrides.yaml at rule index 3
+  (id: allow-internal-tools): missing required field` `effect`.
+  Valid values: `allow | deny | ask_user | ask_llm`. Fix: add an
+  `effect:` line under the rule's match clause.
+
+Stack traces MUST NOT be the operator-facing error surface. A panic
+or unrecoverable internal error MAY emit a stack to stderr at
+`--log-level debug`, but the user-facing message MUST be a one-line
+"<verb> failed: <reason>; <fix>" form.
 
 ### 13.6 Environment variables
 
@@ -1253,6 +1318,20 @@ drawbridge produces three log streams:
 3. **Metrics** (Prometheus exposition, off by default; on a separate
    port).
 
+Metric labels MUST be bounded. The core decision metric is
+`drawbridge_decisions_total` with labels:
+
+- `effect` — `allow | deny | ask_user_resolved_allow | ask_user_resolved_deny | ask_user_timed_out`
+- `decision_source` — `rule | default | llm_advisor | approval_queue | approval_timeout`
+- `identity_id` — small operator-controlled set; bounded by config
+- `host_class` — coarse classification (e.g., `internal | api | cdn |
+  unknown`), NOT the raw host (raw host is unbounded cardinality)
+
+The combination of `effect` and `decision_source` lets operators
+distinguish "denies that hit a specific rule" from "denies that fell
+through to default-deny" — the latter is signal that more allow rules
+are needed.
+
 ### 15.2 Audit-log entry shape
 
 Each entry MUST contain:
@@ -1276,6 +1355,10 @@ Each entry MUST contain:
 - `rule_set_version` — string.
 - `llm_advisor_id` — string, `""` if not consulted.
 - `llm_confidence` — `low | medium | high | n/a`.
+- `llm_input_hash` — sha256 of the canonicalized advisor input
+  (the JSON shape sent to the LLM). `""` when not consulted.
+  Enables replay analysis to distinguish "same input → different
+  decision" from "different input → different decision."
 - `reason` — short human-readable explanation.
 - `redaction_applied` — bool.
 - `redacted_field_count` — int (number of header / body fields
@@ -1288,6 +1371,15 @@ Each entry MUST contain:
 - `latency_ms` — total time from request receive to client-side
   response complete.
 - `error` — `""` or short error class.
+
+### 15.2.1 Audit log file permissions
+
+drawbridge MUST create the audit log file with mode `0640`, owned by
+the drawbridge process user and group `drawbridge` (or the operator-
+configured group). The audit log contains request metadata that
+SHOULD NOT be world-readable. Operators who need cross-user audit
+review SHOULD add reviewers to the configured group rather than
+loosen file permissions.
 
 ### 15.3 Redaction in the audit log
 
@@ -1372,6 +1464,8 @@ decision: `<timestamp> <decision> <method> <host>:<port><path>
 | 16 | Origin uses `Transfer-Encoding: gzip` (deprecated) | Pass through; do not attempt to inspect compressed bodies in Phase 1. | Body inspection status `not_required`. |
 | 17 | Origin sends bytes before drawbridge has decided (e.g., HTTP/2 push) | drawbridge MUST refuse server push by negotiating it off via SETTINGS. | Operational log if seen. |
 | 18 | Race: two requests for the same destination during a rule reload | Each is decided against whichever rule version was active when it arrived; each audit entry records its `rule_set_version`. | Audit log. |
+| 19 | Leaf cert generation fails (crypto rng exhausted, OOM during keygen) | 502 to client with `Drawbridge-Reason: cert-generation-failed`; audit log entry; metric `drawbridge_cert_generation_failures_total` increments. | Audit log + metric. |
+| 20 | SIGTERM (graceful shutdown) | Stop accepting new connections; drain in-flight up to `shutdown.grace_seconds` (default 30s); resolve all pending approvals as `deny` with reason `shutdown`; flush audit-log buffer; exit 0. SIGKILL is the operator's escape hatch if shutdown stalls. | Operational log + audit-log entry per resolved hold. |
 
 ---
 
@@ -1458,8 +1552,11 @@ MUST:
 ### 17.7 Replay-attack and decision-cache safety
 
 The decision cache (per §9.7) is keyed by `(rule_set_version,
-request_shape_hash)`. A request whose shape matches a cached `allow`
-re-uses the decision. This is **safe by construction** because the
+identity_id, request_shape_hash)`. A request whose shape matches a
+cached `allow` for the same identity re-uses the decision. Identity
+MUST be part of the key — otherwise two identities making the same-
+shape request would share a cached decision, and per-identity rules
+would silently misfire. This is **safe by construction** because the
 deterministic engine is the cache primary; the cache cannot upgrade a
 decision the engine would not currently make.
 
@@ -1476,6 +1573,10 @@ shippable subset; the design does not require all phases to land at
 once.
 
 ### Phase 1 — Plain HTTP proxy + CONNECT + deterministic rules + structured logs
+
+Build target: `CGO_ENABLED=0 go build -trimpath -ldflags="-s -w"`
+producing a static binary that runs on Alpine, Debian, Ubuntu, RHEL,
+and macOS without runtime dependencies.
 
 Deliverables:
 
@@ -1603,7 +1704,17 @@ suggestion box.
   assert fallback per `llm.on_unavailable`.
 - **LLM advisor elevation attempt** (Phase 4): mock LLM that returns
   `effect: allow` when rule said `ask_user`; assert effect remains
-  `ask_user`.
+  `ask_user`. Specifically: a rule with `effect: ask_user` matches
+  the request; the advisor (consulted via a request-shape match on
+  a parallel `ask_llm` rule that fires later) returns
+  `{"effect": "allow"}`; the engine MUST honor the earlier
+  `ask_user` rule and the audit log MUST record both the `ask_user`
+  resolution and the advisor's recommendation as a non-elevating
+  hint.
+- **ALPN h1 negotiation under interception** (Phase 3): point
+  drawbridge at an h2-capable origin in intercept mode; verify that
+  drawbridge negotiates `h1` on both sides and that the resulting
+  request/response round-trips correctly.
 
 ### 19.3 Sweep tests
 
