@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,6 +27,7 @@ import (
 	"github.com/dandriscoll/drawbridge/internal/control"
 	"github.com/dandriscoll/drawbridge/internal/hostlist"
 	"github.com/dandriscoll/drawbridge/internal/identity"
+	"github.com/dandriscoll/drawbridge/internal/oplog"
 	"github.com/dandriscoll/drawbridge/internal/policy"
 	"github.com/dandriscoll/drawbridge/internal/redact"
 	"github.com/dandriscoll/drawbridge/internal/sessions"
@@ -65,7 +66,7 @@ type Server struct {
 	denyWatcher  *hostlist.Watcher
 
 	transport *http.Transport
-	logger    *log.Logger
+	opLog     *slog.Logger
 
 	connsMu sync.Mutex
 	conns   map[net.Conn]struct{}
@@ -77,7 +78,10 @@ type Server struct {
 	rootCtx context.Context
 }
 
-// New constructs a Server from a loaded config and engine.
+// New constructs a Server from a loaded config and engine. The
+// operational logger is built from cfg.Logging.OperationalPath at
+// the default Info level. For finer control (level, sink, test
+// capture) use NewWithLoggers.
 func New(cfg *config.Config, engine *policy.Engine) (*Server, error) {
 	auditLogger, err := audit.New(
 		cfg.Logging.AuditPath,
@@ -90,9 +94,29 @@ func New(cfg *config.Config, engine *policy.Engine) (*Server, error) {
 	return NewWithAudit(cfg, engine, auditLogger)
 }
 
-// NewWithAudit constructs a Server using a pre-built audit logger.
-// Tests use this to inject a logger pointing at a tmp file.
+// NewWithAudit constructs a Server using a pre-built audit logger
+// and a default Info-level operational logger writing to whatever
+// cfg.Logging.OperationalPath points at.
 func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.Logger) (*Server, error) {
+	opLog, err := oplog.New(cfg.Logging.OperationalPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	auditLogger.SetOpLog(opLog)
+	return NewWithLoggers(cfg, engine, auditLogger, opLog)
+}
+
+// NewWithLoggers constructs a Server using a pre-built audit logger
+// and a pre-built operational *slog.Logger. Tests use this to
+// capture operational lines into a buffer-handler.
+func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audit.Logger, opLog *slog.Logger) (*Server, error) {
+	if opLog == nil {
+		var err error
+		opLog, err = oplog.New(oplog.StderrSink, nil)
+		if err != nil {
+			return nil, err
+		}
+	}
 	q := approvals.New(
 		cfg.Approvals.MaxPending,
 		time.Duration(cfg.Approvals.TimeoutSeconds)*time.Second,
@@ -104,13 +128,14 @@ func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.
 		engine:   engine,
 		identity: identity.New(cfg.Identities),
 		audit:    auditLogger,
-		logger:   log.New(os.Stderr, "drawbridge: ", log.LstdFlags),
+		opLog:    opLog,
 		conns:    map[net.Conn]struct{}{},
 		queue:    q,
 		sessions: t,
 		control: func() *control.Server {
 			c := control.New(cfg.Approvals.ControlListen, q, t, engine)
 			c.SetAuth(cfg.Approvals.ControlAuthMode, cfg.Approvals.ControlBearerSHA)
+			c.SetOpLog(opLog)
 			return c
 		}(),
 		MaxBodySampleBytes: 1 << 20, // 1 MiB
@@ -330,6 +355,15 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	sess := s.sessions.GetOrCreate(r.RemoteAddr, identityID)
 
 	host, port := splitHostPort(r.URL.Host, "80")
+	rlog := s.opLog.With(
+		"request_id", requestID,
+		"identity", identityID,
+		"method", r.Method,
+		"scheme", "http",
+		"host", host,
+		"port", port,
+	)
+	rlog.Debug("received", "phase", oplog.PhaseReceived, "path", r.URL.Path)
 	req := &types.RequestEvent{
 		ID:         requestID,
 		SessionID:  sess.ID,
@@ -376,14 +410,24 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// Fast path: evaluate flat allow/deny lists BEFORE the rule
 	// engine and BEFORE the advisor. A match here short-circuits.
 	decision, fastHit := s.fastPathDecide(host, port, req.Path)
-	if !fastHit {
+	if fastHit {
+		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval,
+			"hit", true, "decision", string(decision.Effect),
+			"source", string(decision.Source), "rule_id", decision.RuleID)
+	} else {
+		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval, "hit", false)
 		decision = s.engine.Decide(req)
+		rlog.Debug("engine_eval", "phase", oplog.PhaseEngineEval,
+			"decision", string(decision.Effect),
+			"source", string(decision.Source), "rule_id", decision.RuleID)
 	}
 
 	// Approval queue: if engine returned ask_user (or ask_llm with
 	// no advisor configured in this phase), hold the request.
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
+		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))
 		decision = s.holdAndWait(req, decision)
+		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
 
 	// History records the resolved decision.
@@ -400,14 +444,14 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	outbound, err := s.buildOutbound(r)
 	if err != nil {
-		s.logger.Printf("buildOutbound: %v", err)
+		rlog.Error("bad request", "event", oplog.EventBadRequest, "error", err.Error())
 		http.Error(w, "drawbridge: bad request", http.StatusBadRequest)
 		s.writeAudit(req, decision, "", 0, http.StatusBadRequest, 0, time.Since(start), err.Error())
 		return
 	}
 	resp, err := s.transport.RoundTrip(outbound)
 	if err != nil {
-		s.logger.Printf("forward: %v", err)
+		rlog.Error("forward error", "event", oplog.EventForwardError, "error", err.Error())
 		http.Error(w, "drawbridge: upstream error: "+err.Error(), http.StatusBadGateway)
 		s.writeAudit(req, decision, "", 0, http.StatusBadGateway, 0, time.Since(start), err.Error())
 		return
@@ -425,6 +469,8 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	n, _ := io.Copy(w, resp.Body)
 
+	rlog.Debug("response", "phase", oplog.PhaseResponse,
+		"status", resp.StatusCode, "bytes", n, "latency_ms", time.Since(start).Milliseconds())
 	s.writeAudit(req, decision, "", redactedCount, resp.StatusCode, n, time.Since(start), "")
 }
 
@@ -728,7 +774,9 @@ func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, b
 		Error:                errStr,
 	}
 	if err := s.audit.Write(entry); err != nil {
-		s.logger.Printf("audit write: %v", err)
+		s.opLog.Warn("audit write failure",
+			"event", oplog.EventAuditWriteFailure,
+			"request_id", req.ID, "error", err.Error())
 	}
 }
 
@@ -775,7 +823,9 @@ func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryReda
 		Error:                errStr,
 	}
 	if err := s.audit.Write(entry); err != nil {
-		s.logger.Printf("audit write: %v", err)
+		s.opLog.Warn("audit write failure",
+			"event", oplog.EventAuditWriteFailure,
+			"request_id", req.ID, "error", err.Error())
 	}
 }
 
@@ -930,9 +980,12 @@ func (s *Server) WatchAndReload(ctx context.Context, allowPaths, denyPaths []str
 	if len(allowPaths) > 0 {
 		s.allowWatcher = hostlist.NewWatcher(allowPaths, func() {
 			if err := s.reloadAllow(); err != nil {
-				s.logger.Printf("allowlist reload failed: %v", err)
+				s.opLog.Error("allowlist reload failed",
+					"event", oplog.EventAllowlistReloadFailure, "error", err.Error())
 			} else {
-				s.logger.Printf("allowlist reloaded (%d patterns)", len(s.AllowList().Patterns))
+				s.opLog.Info("allowlist reloaded",
+					"event", oplog.EventAllowlistReload,
+					"patterns", len(s.AllowList().Patterns))
 			}
 		}, time.Second)
 		s.allowWatcher.Start(ctx)
@@ -940,9 +993,12 @@ func (s *Server) WatchAndReload(ctx context.Context, allowPaths, denyPaths []str
 	if len(denyPaths) > 0 {
 		s.denyWatcher = hostlist.NewWatcher(denyPaths, func() {
 			if err := s.reloadDeny(); err != nil {
-				s.logger.Printf("denylist reload failed: %v", err)
+				s.opLog.Error("denylist reload failed",
+					"event", oplog.EventDenylistReloadFailure, "error", err.Error())
 			} else {
-				s.logger.Printf("denylist reloaded (%d patterns)", len(s.DenyList().Patterns))
+				s.opLog.Info("denylist reloaded",
+					"event", oplog.EventDenylistReload,
+					"patterns", len(s.DenyList().Patterns))
 			}
 		}, time.Second)
 		s.denyWatcher.Start(ctx)

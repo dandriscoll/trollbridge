@@ -10,6 +10,11 @@ User=drawbridge
 Group=drawbridge
 ExecStart=/usr/local/bin/drawbridge run --config /etc/drawbridge/drawbridge.yaml
 ExecReload=/bin/kill -HUP $MAINPID
+# Operational log level: uncomment to override the default (info).
+# Valid values: debug | info | warn | error.
+# Equivalent to `--log-level` on the command line; read at startup
+# (SIGHUP does not currently re-read it).
+# Environment="DRAWBRIDGE_LOG_LEVEL=info"
 KillSignal=SIGTERM
 TimeoutStopSec=45
 Restart=on-failure

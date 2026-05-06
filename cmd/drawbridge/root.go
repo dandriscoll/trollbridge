@@ -2,10 +2,21 @@ package main
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 
+	"github.com/dandriscoll/drawbridge/internal/oplog"
 	"github.com/spf13/cobra"
 )
+
+// resolvedLogLevel is set in PersistentPreRunE on the root command
+// from (in precedence order) the --log-level flag, the
+// `--verbose`/`-v` alias on subcommands that opt in, the
+// DRAWBRIDGE_LOG_LEVEL env var, and otherwise nil. nil means "let
+// the config file decide; if the config has nothing, default Info."
+// Subcommands that need the resolved level read this variable when
+// constructing the operational logger.
+var resolvedLogLevel *slog.Level
 
 // configError, runtimeError, etc. are sentinel error wrappers used
 // by exitCodeFor to map errors to the design's exit-code matrix.
@@ -49,6 +60,7 @@ func defaultConfigPath() string {
 }
 
 func newRootCmd() *cobra.Command {
+	var logLevelFlag string
 	cmd := &cobra.Command{
 		Use:   "drawbridge",
 		Short: "An LLM-powered HTTP/HTTPS proxy for agents.",
@@ -57,7 +69,30 @@ network access under deterministic, auditable, policy-governed
 conditions. See DESIGN.md for the full specification.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(c *cobra.Command, _ []string) error {
+			// Precedence: --log-level flag > DRAWBRIDGE_LOG_LEVEL env > nil
+			// (let the config / default decide downstream).
+			resolvedLogLevel = nil
+			if c.Flags().Changed("log-level") {
+				lv, err := oplog.ParseLevel(logLevelFlag)
+				if err != nil {
+					return &configErr{err}
+				}
+				resolvedLogLevel = &lv
+				return nil
+			}
+			if env := os.Getenv("DRAWBRIDGE_LOG_LEVEL"); env != "" {
+				lv, err := oplog.ParseLevel(env)
+				if err != nil {
+					return &configErr{err}
+				}
+				resolvedLogLevel = &lv
+			}
+			return nil
+		},
 	}
+	cmd.PersistentFlags().StringVar(&logLevelFlag, "log-level", "",
+		"operational log level (debug|info|warn|error); also DRAWBRIDGE_LOG_LEVEL env (default info)")
 
 	// Phase 5: command groupings per DESIGN.md §13.5.
 	const (

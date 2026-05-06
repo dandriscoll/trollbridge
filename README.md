@@ -29,6 +29,19 @@ make build
 ./bin/drawbridge run -c ~/.drawbridge/drawbridge.yaml
 ```
 
+For verbose per-request operational output:
+
+```sh
+./bin/drawbridge run -c ~/.drawbridge/drawbridge.yaml --verbose
+# or, equivalently:
+./bin/drawbridge --log-level=debug run -c ~/.drawbridge/drawbridge.yaml
+# or, via env (works for any subcommand):
+DRAWBRIDGE_LOG_LEVEL=debug ./bin/drawbridge run -c ~/.drawbridge/drawbridge.yaml
+```
+
+Operational lines carry a `request_id=` field that correlates with
+the same field in the audit log.
+
 Then in another shell:
 
 ```sh

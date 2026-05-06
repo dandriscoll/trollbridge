@@ -1285,8 +1285,14 @@ silent startup-by-default is a footgun.
 
 - `--config <path>` (default `$XDG_CONFIG_HOME/drawbridge/drawbridge.yaml`,
   or `/etc/drawbridge/drawbridge.yaml` for system installs).
-- `--log-level <debug|info|warn|error>` (default `info`).
-- `--verbose, -v` (alias for `--log-level debug`).
+- `--log-level <debug|info|warn|error>` (default `info`). Also
+  `DRAWBRIDGE_LOG_LEVEL`. Persistent across all subcommands.
+- `--verbose, -v` is a `run`-subcommand-local alias for
+  `--log-level=debug`. (It is not made persistent because
+  `logs replay --verbose` already uses the same flag with a
+  presentation-layer meaning of "print each flipped decision".)
+  Operators of other subcommands can use `--log-level=debug`
+  directly.
 
 ### 13.4 Configuration file shape
 
@@ -1530,10 +1536,21 @@ drawbridge produces three log streams:
 
 1. **Audit log** (JSONL, one entry per decision; the load-bearing
    record).
-2. **Operational log** (stderr, human-readable, for the operator
-   tailing the process).
+2. **Operational log** — leveled, human-readable narrative emitted
+   via `log/slog` with a custom text handler. Format:
+   `<rfc3339-nano> <LEVEL> drawbridge: <msg> [k=v ...]`. Sink is
+   `os.Stderr` when `logging.operational_path: stderr` (the
+   sentinel default), otherwise the configured filesystem path
+   (opened append-only, mode 0640, parent dir 0750; fail-closed
+   at startup if unwritable). Lines emitted from a request scope
+   carry `request_id=<uuid>` for correlation against the audit
+   log. At `--log-level=debug` the operational log also emits
+   per-request lifecycle records keyed by `phase=`
+   (`received | fastpath_eval | engine_eval | held | resolved |
+   forwarded | response | error`).
 3. **Metrics** (Prometheus exposition, off by default; on a separate
-   port).
+   port). *Not yet implemented; the `metrics_listen` config knob
+   exists as a stub.*
 
 Metric labels MUST be bounded. The core decision metric is
 `drawbridge_decisions_total` with labels:

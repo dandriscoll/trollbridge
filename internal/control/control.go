@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -40,7 +42,13 @@ type Server struct {
 	// authBearerSHA. authMode "none" disables auth.
 	authMode      string
 	authBearerSHA string
+
+	opLog *slog.Logger
 }
+
+// SetOpLog wires the operational logger so that Serve errors land
+// on the same stream the operator is tailing.
+func (s *Server) SetOpLog(lg *slog.Logger) { s.opLog = lg }
 
 // New constructs a Server bound to addr. addr must be a host:port
 // string; addr=="" disables the control plane.
@@ -119,7 +127,12 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	go func() {
 		err := s.srv.Serve(ln)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			fmt.Println("drawbridge: control plane error:", err)
+			if s.opLog != nil {
+				s.opLog.Error("control plane error",
+					"event", "control_plane_error", "error", err.Error())
+			} else {
+				fmt.Fprintf(os.Stderr, "drawbridge: control plane error: %v\n", err)
+			}
 		}
 	}()
 	return ln.Addr().String(), nil

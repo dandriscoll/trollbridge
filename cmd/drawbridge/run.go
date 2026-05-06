@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
+	"github.com/dandriscoll/drawbridge/internal/audit"
 	"github.com/dandriscoll/drawbridge/internal/config"
 	"github.com/dandriscoll/drawbridge/internal/console"
+	"github.com/dandriscoll/drawbridge/internal/oplog"
 	"github.com/dandriscoll/drawbridge/internal/policy"
 	"github.com/dandriscoll/drawbridge/internal/server"
 	"github.com/spf13/cobra"
@@ -17,6 +20,7 @@ import (
 func newRunCmd() *cobra.Command {
 	var configPath string
 	var noConsole bool
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Start the proxy in the foreground.",
@@ -28,6 +32,29 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return &configErr{err}
 			}
+
+			// Resolve operational log level: --log-level flag > env >
+			// --verbose alias > config (no field today; future) >
+			// default info.
+			levelVar := new(slog.LevelVar)
+			levelVar.Set(slog.LevelInfo)
+			if resolvedLogLevel != nil {
+				levelVar.Set(*resolvedLogLevel)
+			} else if verbose {
+				levelVar.Set(slog.LevelDebug)
+			}
+
+			// Resolve operational sink: relative paths land alongside
+			// the config file (mirrors ResolveAllowFiles).
+			opPath := cfg.Logging.OperationalPath
+			if opPath != "" && opPath != oplog.StderrSink && !filepath.IsAbs(opPath) {
+				opPath = filepath.Join(filepath.Dir(configPath), opPath)
+			}
+			opLog, err := oplog.New(opPath, levelVar)
+			if err != nil {
+				return &configErr{err}
+			}
+
 			engine, err := policy.NewEngine(
 				cfg.Mode,
 				cfg.ResolveIncludePaths(configPath),
@@ -36,7 +63,16 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return &configErr{err}
 			}
-			srv, err := server.New(cfg, engine)
+			auditLogger, err := audit.New(
+				cfg.Logging.AuditPath,
+				cfg.Logging.AuditBufferSize,
+				audit.OverflowMode(cfg.Logging.AuditOverflow),
+			)
+			if err != nil {
+				return &runtimeErr{err}
+			}
+			auditLogger.SetOpLog(opLog)
+			srv, err := server.NewWithLoggers(cfg, engine, auditLogger, opLog)
 			if err != nil {
 				return &runtimeErr{err}
 			}
@@ -57,10 +93,9 @@ func newRunCmd() *cobra.Command {
 			go func() {
 				for range hup {
 					if err := engine.Reload(); err != nil {
-						fmt.Fprintln(os.Stderr, "drawbridge: rule reload failed:", err)
+						opLog.Error("rule reload failed", "event", oplog.EventRuleReloadFailure, "error", err.Error())
 					} else {
-						fmt.Fprintln(os.Stderr, "drawbridge: rules reloaded;",
-							"version", engine.RuleSetVersion())
+						opLog.Info("rules reloaded", "event", oplog.EventRuleReload, "version", engine.RuleSetVersion())
 					}
 				}
 			}()
@@ -75,8 +110,13 @@ func newRunCmd() *cobra.Command {
 				}()
 			}
 
-			fmt.Fprintf(os.Stderr, "drawbridge: listening on %s, mode=%s, rules=%d (v%s)\n",
-				srv.Addr(), cfg.Mode, len(engine.Rules()), engine.RuleSetVersion())
+			opLog.Info("listening",
+				"event", oplog.EventListening,
+				"addr", srv.Addr(),
+				"mode", cfg.Mode,
+				"rules", len(engine.Rules()),
+				"rule_set_version", engine.RuleSetVersion(),
+			)
 
 			if err := srv.ListenAndServe(ctx); err != nil {
 				return &runtimeErr{err}
@@ -86,5 +126,6 @@ func newRunCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml (default: $DRAWBRIDGE_CONFIG, then $XDG_CONFIG_HOME/drawbridge/drawbridge.yaml)")
 	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the interactive console even when stdin is a tty")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "alias for --log-level=debug; emits per-request lifecycle records on the operational log")
 	return cmd
 }

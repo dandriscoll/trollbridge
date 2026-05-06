@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dandriscoll/drawbridge/internal/oplog"
 	"github.com/dandriscoll/drawbridge/internal/types"
 	"github.com/google/uuid"
 )
@@ -56,6 +57,34 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 	tlsConn := tls.Server(clientConn, tlsCfg)
 	defer tlsConn.Close()
 	if err := tlsConn.Handshake(); err != nil {
+		// The TLS handshake never completed — there is no inner
+		// HTTP request to attribute this to, but the operator still
+		// needs an audit-shaped record (and a correlated operational
+		// log line) so that "TLS to drawbridge stopped working" is
+		// debuggable. Mint a synthetic request_id and emit a deny
+		// entry, mirroring the malformed-request shape below.
+		requestID := uuid.NewString()
+		s.opLog.Warn("intercept TLS handshake failure",
+			"event", oplog.EventInterceptHandshakeFail,
+			"request_id", requestID,
+			"identity", identityID,
+			"host", host, "port", port,
+			"error", err.Error())
+		s.writeAudit(&types.RequestEvent{
+			ID:         requestID,
+			SessionID:  sessionID,
+			IdentityID: identityID,
+			Timestamp:  time.Now().UTC(),
+			Method:     "?",
+			Scheme:     "https-intercepted",
+			Host:       host,
+			Port:       port,
+			ClientAddr: clientConn.RemoteAddr().String(),
+		}, types.Decision{
+			Effect: types.EffectDeny,
+			Source: types.SourceDefault,
+			Reason: "TLS handshake failed: " + err.Error(),
+		}, "", 0, http.StatusBadGateway, 0, 0, err.Error())
 		return fmt.Errorf("tls server handshake: %w", err)
 	}
 
@@ -96,7 +125,10 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 		}
 
 		if err := s.dispatchInterceptedRequest(tlsConn, req, host, port, sessionID, identityID); err != nil {
-			s.logger.Printf("intercepted request: %v", err)
+			s.opLog.Error("intercept dispatch error",
+				"event", oplog.EventInterceptError,
+				"host", host, "port", port,
+				"error", err.Error())
 			return err
 		}
 		// Connection: close → exit the loop.

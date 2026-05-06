@@ -85,8 +85,18 @@ logging:
   audit_path: /var/log/drawbridge/audit.jsonl
   audit_buffer_size: 1024
   audit_overflow: deny           # deny (safe) | drop | block
+  # operational_path: where the operator-tailable narrative log goes.
+  # The literal "stderr" (default) writes to the process's stderr.
+  # Any other value is a filesystem path; the file is opened
+  # append-only with mode 0640 (parent dir 0750). Drawbridge fails
+  # to start if the path is unwritable. Note: redirecting to a file
+  # SILENCES the systemd journal stream — `journalctl -u drawbridge`
+  # will go quiet. Best practice: keep "stderr" so journald (or
+  # whatever supervisor is running drawbridge) remains the source
+  # of truth, and switch to a file only when you have a specific
+  # need (e.g., shipping the log to a separate aggregator).
   operational_path: stderr
-  metrics_listen: ""             # "127.0.0.1:9090" to expose Prometheus
+  metrics_listen: ""             # "127.0.0.1:9090" to expose Prometheus (not yet implemented)
 
 # -----------------------------------------------------------------
 # approvals — held-request control plane.

@@ -5,6 +5,7 @@ package audit
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -73,7 +74,14 @@ type Logger struct {
 	stopCh   chan struct{}
 
 	droppedCounter atomic.Int64
+
+	opLog atomic.Pointer[slog.Logger]
 }
+
+// SetOpLog wires the operational logger so that JSON-encode
+// failures inside the writer goroutine surface on the same stream
+// the operator is tailing. Safe to call before or after Write.
+func (l *Logger) SetOpLog(lg *slog.Logger) { l.opLog.Store(lg) }
 
 // New opens (or creates with mode 0640) the audit-log file and
 // returns a Logger. bufSize bounds the in-memory queue.
@@ -158,7 +166,14 @@ func (l *Logger) writeLoop(f *os.File) {
 	enc.SetEscapeHTML(false)
 	for e := range l.ch {
 		if err := enc.Encode(e); err != nil {
-			fmt.Fprintf(os.Stderr, "audit: encode failed: %v\n", err)
+			if lg := l.opLog.Load(); lg != nil {
+				lg.Error("audit encode failure",
+					"event", "audit_encode_failure",
+					"request_id", e.RequestID,
+					"error", err.Error())
+			} else {
+				fmt.Fprintf(os.Stderr, "audit: encode failed: %v\n", err)
+			}
 		}
 	}
 }

@@ -135,11 +135,23 @@ roots. `mode: mixed` uses both.
 
 - Audit log: JSONL at `logging.audit_path`. One entry per
   decision. Mode 0640.
-- Operational log: stderr.
+- Operational log: leveled (debug | info | warn | error). Sink is
+  stderr by default; set `logging.operational_path: /path/to/file`
+  to send it to a file (mode 0640, parent dir 0750, fail-closed at
+  startup if unwritable). When the sink is a file, the systemd
+  journal stream goes silent — operators who want both should run
+  the binary under `tee` or accept the file as their canonical
+  source.
+- Raise verbosity for diagnosis: `drawbridge run --verbose`,
+  `drawbridge --log-level=debug run …`, or
+  `DRAWBRIDGE_LOG_LEVEL=debug` in the environment. At debug level
+  every request emits per-phase records keyed by `request_id=`,
+  which correlates against the same field in the audit log.
 - Tail compactly: `drawbridge logs tail`.
 - Replay: `drawbridge logs replay --rules /path/to/strict.yaml -v`
   re-runs decisions over the audit log against a new rule set
-  and reports flips.
+  and reports flips. (`-v` here is replay-local — it shows each
+  flipped decision; it does not raise the operational log level.)
 
 ## Performance baseline
 
