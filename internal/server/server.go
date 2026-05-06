@@ -98,7 +98,11 @@ func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.
 		conns:    map[net.Conn]struct{}{},
 		queue:    q,
 		sessions: t,
-		control:  control.New(cfg.Approvals.ControlListen, q, t, engine),
+		control: func() *control.Server {
+			c := control.New(cfg.Approvals.ControlListen, q, t, engine)
+			c.SetAuth(cfg.Approvals.ControlAuthMode, cfg.Approvals.ControlBearerSHA)
+			return c
+		}(),
 		MaxBodySampleBytes: 1 << 20, // 1 MiB
 	}
 	// Build the redactor config from cfg.Redaction.
@@ -137,9 +141,9 @@ func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.
 		s.ca = caObj
 		s.control.SetCA(caObj)
 	}
-	roots, err := x509.SystemCertPool()
-	if err != nil || roots == nil {
-		roots = x509.NewCertPool()
+	roots, err := buildOriginRoots(cfg.Interception.OriginTrust)
+	if err != nil {
+		return nil, fmt.Errorf("origin trust: %w", err)
 	}
 	s.originRoots = roots
 
@@ -413,13 +417,18 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 // if the advisor's resolved effect is allow/deny, return it. If
 // the advisor falls back to ask_user (or we're handling an
 // ask_user rule directly), enqueue and block.
+//
+// As a side effect, when the advisor is consulted, the request's
+// `Headers` map gets a transient `X-Drawbridge-LLM-Input-Hash`
+// entry the audit-write path strips back out and stores in
+// `llm_input_hash`. This couples advisor input to the audit
+// record without threading a side-channel.
 func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types.Decision {
 	if base.Effect == types.EffectAskLLM && s.advisor != nil {
 		ctx := s.rootCtx
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		// Build redacted-headers view for the advisor.
 		hdrs := map[string]string{}
 		for k := range req.Headers {
 			v := req.Headers.Get(k)
@@ -430,6 +439,15 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 				hdrs[k] = v
 			}
 		}
+		// Build the same Input the advisor sees, hash it, stash on
+		// the request so the audit-write path can record it.
+		input := advisor.Input{
+			Method: req.Method, Scheme: req.Scheme, Host: req.Host, Port: req.Port,
+			Path: req.Path, HeadersRedacted: hdrs, Identity: req.IdentityID,
+			RuleSetVersion: s.engine.RuleSetVersion(),
+		}
+		req.Headers.Set("X-Drawbridge-LLM-Input-Hash", advisor.CanonicalizeInput(input))
+
 		d, _ := s.advisor.Classify(ctx, req, s.engine.RuleSetVersion(), nil, hdrs)
 		if d.Effect == types.EffectAllow || d.Effect == types.EffectDeny {
 			return d
@@ -502,6 +520,9 @@ func stripHopByHop(h http.Header) {
 		"Connection", "Proxy-Connection", "Proxy-Authorization",
 		"Proxy-Authenticate", "Keep-Alive", "TE", "Trailers",
 		"Transfer-Encoding", "Upgrade",
+		// drawbridge-internal hint headers MUST NOT leak to origins.
+		"X-Drawbridge-LLM-Input-Hash",
+		"X-Original-Query",
 	} {
 		h.Del(name)
 	}
@@ -639,6 +660,7 @@ func setReadDeadlineNow(c net.Conn) error {
 // writeAuditWithBody is like writeAudit but also redacts and stores a
 // body sample (used by the interception path).
 func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, body []byte, status int, size int64, latency time.Duration, errStr string) {
+	llmInputHash := req.Headers.Get("X-Drawbridge-LLM-Input-Hash")
 	queryRedacted, _ := s.redactor.Query(req.Headers.Get("X-Original-Query"))
 	headers, headerCount := s.redactor.Headers(req.Headers, d.Modifiers)
 	_ = headers
@@ -663,7 +685,7 @@ func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, b
 		RuleSetVersion:       s.engine.RuleSetVersion(),
 		LLMAdvisorID:         d.AdvisorID,
 		LLMConfidence:        "n/a",
-		LLMInputHash:         "",
+		LLMInputHash:         llmInputHash,
 		Reason:               d.Reason,
 		RedactionApplied:     headerCount+bodyRes.RedactedFields > 0,
 		RedactedFieldCount:   headerCount + bodyRes.RedactedFields,
@@ -690,6 +712,7 @@ func inspectionStatus(hasBody, truncated bool) string {
 }
 
 func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryRedacted string, redactedCount int, status int, size int64, latency time.Duration, errStr string) {
+	llmInputHash := req.Headers.Get("X-Drawbridge-LLM-Input-Hash")
 	entry := audit.Entry{
 		DrawbridgeVersion:    Version,
 		AuditSchemaVersion:   1,
@@ -709,7 +732,7 @@ func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryReda
 		RuleSetVersion:       s.engine.RuleSetVersion(),
 		LLMAdvisorID:         d.AdvisorID,
 		LLMConfidence:        "n/a",
-		LLMInputHash:         "",
+		LLMInputHash:         llmInputHash,
 		Reason:               d.Reason,
 		RedactionApplied:     redactedCount > 0,
 		RedactedFieldCount:   redactedCount,
@@ -763,6 +786,55 @@ func modifierSetForAdvisor() map[string]bool {
 		out[m] = true
 	}
 	return out
+}
+
+// buildOriginRoots resolves the configured origin-trust mode into a
+// concrete x509 cert pool.
+func buildOriginRoots(t config.OriginTrust) (*x509.CertPool, error) {
+	mode := t.Mode
+	if mode == "" {
+		mode = "system"
+	}
+	var pool *x509.CertPool
+	switch mode {
+	case "system":
+		p, err := x509.SystemCertPool()
+		if err != nil || p == nil {
+			p = x509.NewCertPool()
+		}
+		pool = p
+	case "file":
+		pool = x509.NewCertPool()
+		if err := appendFileToPool(pool, t.Path); err != nil {
+			return nil, err
+		}
+	case "mixed":
+		p, err := x509.SystemCertPool()
+		if err != nil || p == nil {
+			p = x509.NewCertPool()
+		}
+		if err := appendFileToPool(p, t.Path); err != nil {
+			return nil, err
+		}
+		pool = p
+	default:
+		return nil, fmt.Errorf("unknown origin_trust.mode %q (want system|file|mixed)", mode)
+	}
+	return pool, nil
+}
+
+func appendFileToPool(p *x509.CertPool, path string) error {
+	if path == "" {
+		return fmt.Errorf("origin_trust.path is required when mode is file or mixed")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !p.AppendCertsFromPEM(data) {
+		return fmt.Errorf("no PEM certs found in %s", path)
+	}
+	return nil
 }
 
 // SetAdvisorProvider lets tests swap the advisor's underlying

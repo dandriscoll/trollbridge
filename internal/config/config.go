@@ -36,11 +36,20 @@ type Listen struct {
 }
 
 type Interception struct {
-	Enabled          bool     `yaml:"enabled"`
-	CA               CACfg    `yaml:"ca"`
-	LeafKeyType      string   `yaml:"leaf_key_type"` // rsa-4096 | ecdsa-p256
-	PassthroughHosts []string `yaml:"passthrough_hosts"`
-	LeafCertTTLHours int      `yaml:"leaf_cert_ttl_hours"`
+	Enabled          bool        `yaml:"enabled"`
+	CA               CACfg       `yaml:"ca"`
+	LeafKeyType      string      `yaml:"leaf_key_type"` // rsa-4096 | ecdsa-p256
+	PassthroughHosts []string    `yaml:"passthrough_hosts"`
+	LeafCertTTLHours int         `yaml:"leaf_cert_ttl_hours"`
+	OriginTrust      OriginTrust `yaml:"origin_trust"`
+}
+
+// OriginTrust controls how drawbridge verifies origin TLS certs.
+//   mode: "system" (default), "file", or "mixed"
+//   path: PEM file with extra trust roots (mode=file or mixed)
+type OriginTrust struct {
+	Mode string `yaml:"mode"`
+	Path string `yaml:"path"`
 }
 
 type CACfg struct {
@@ -85,10 +94,12 @@ type Logging struct {
 }
 
 type Approvals struct {
-	ControlListen  string `yaml:"control_listen"`
-	TimeoutSeconds int    `yaml:"timeout_seconds"`
-	OnTimeout      string `yaml:"on_timeout"`
-	MaxPending     int    `yaml:"max_pending"`
+	ControlListen     string `yaml:"control_listen"`
+	TimeoutSeconds    int    `yaml:"timeout_seconds"`
+	OnTimeout         string `yaml:"on_timeout"`
+	MaxPending        int    `yaml:"max_pending"`
+	ControlAuthMode   string `yaml:"control_auth_mode"`        // none | bearer
+	ControlBearerSHA  string `yaml:"control_bearer_token_sha256"`
 }
 
 type Forwarder struct {

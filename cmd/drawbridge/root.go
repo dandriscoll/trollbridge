@@ -59,18 +59,41 @@ conditions. See DESIGN.md for the full specification.`,
 		SilenceErrors: true,
 	}
 
+	// Phase 5: command groupings per DESIGN.md §13.5.
+	const (
+		groupOperate   = "operate"
+		groupConfigure = "configure"
+		groupAudit     = "audit"
+		groupCA        = "ca"
+	)
+	cmd.AddGroup(
+		&cobra.Group{ID: groupOperate, Title: "Operate:"},
+		&cobra.Group{ID: groupConfigure, Title: "Configure:"},
+		&cobra.Group{ID: groupAudit, Title: "Audit:"},
+		&cobra.Group{ID: groupCA, Title: "Manage CA:"},
+	)
+
+	op := func(c *cobra.Command, group string) *cobra.Command {
+		c.GroupID = group
+		return c
+	}
+
 	cmd.AddCommand(
-		newRunCmd(),
-		newInitCmd(),
-		newValidateCmd(),
-		newDecisionsCmd(),
-		newRulesCmd(),
-		newLogsCmd(),
-		newApproveCmd(),
-		newDenyCmd(),
-		newSessionsCmd(),
-		newCACmd(),
-		newVersionCmd(),
+		op(newRunCmd(), groupOperate),
+		op(newSelftestCmd(), groupOperate),
+		op(newVersionCmd(), groupOperate),
+
+		op(newInitCmd(), groupConfigure),
+		op(newValidateCmd(), groupConfigure),
+		op(newRulesCmd(), groupConfigure),
+
+		op(newDecisionsCmd(), groupAudit),
+		op(newLogsCmd(), groupAudit),
+		op(newSessionsCmd(), groupAudit),
+		op(newApproveCmd(), groupAudit),
+		op(newDenyCmd(), groupAudit),
+
+		op(newCACmd(), groupCA),
 	)
 	return cmd
 }
