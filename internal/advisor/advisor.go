@@ -20,6 +20,11 @@ import (
 
 // Input is the structured payload sent to the advisor. The fields
 // here mirror DESIGN.md §9.3.
+//
+// AllowList and DenyList are read-only context: the advisor sees
+// what the operator already trusts/blocks but cannot modify these
+// lists. List mutation is human-only (console input or manual
+// file edit).
 type Input struct {
 	Method          string            `json:"method"`
 	Scheme          string            `json:"scheme"`
@@ -32,6 +37,8 @@ type Input struct {
 	Tool            string            `json:"tool,omitempty"`
 	RecentHistory   []RecentDecision  `json:"recent_history,omitempty"`
 	RuleSetVersion  string            `json:"rule_set_version"`
+	AllowList       []string          `json:"allow_list,omitempty"`
+	DenyList        []string          `json:"deny_list,omitempty"`
 }
 
 // RecentDecision is a compact record of a prior decision used as
@@ -101,6 +108,14 @@ func New(cfg Config, prov Provider) *Service {
 // ErrDisabled means the advisor is not configured.
 var ErrDisabled = errors.New("advisor disabled")
 
+// ListContext bundles the operator's flat allow/deny lists for
+// inclusion in advisor input. The advisor receives them as
+// read-only context.
+type ListContext struct {
+	Allow []string
+	Deny  []string
+}
+
 // Classify runs the advisor (with caching), validates the result,
 // and returns either a Decision the engine should apply, or a
 // fallback decision when the advisor is unavailable / output
@@ -110,7 +125,12 @@ var ErrDisabled = errors.New("advisor disabled")
 // knows the rule said "ask_llm" so any of {allow, deny, ask_user}
 // the advisor returns is acceptable; rules saying "ask_user"
 // don't reach this code at all.
-func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSetVersion string, recent []RecentDecision, headersRedacted map[string]string) (types.Decision, string) {
+//
+// `lists` MAY be nil. When provided, the entries are included in
+// the advisor's Input as read-only context. The advisor MUST NOT
+// mutate either list — and the Service offers no API path that
+// would let it.
+func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSetVersion string, recent []RecentDecision, headersRedacted map[string]string, lists *ListContext) (types.Decision, string) {
 	if !s.cfg.Enabled || s.prov == nil {
 		return s.unavailableDecision("advisor disabled"), ""
 	}
@@ -129,6 +149,10 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 		Identity:        req.IdentityID,
 		RecentHistory:   recent,
 		RuleSetVersion:  ruleSetVersion,
+	}
+	if lists != nil {
+		in.AllowList = capList(lists.Allow, 200)
+		in.DenyList = capList(lists.Deny, 200)
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
@@ -259,6 +283,19 @@ func buildCacheKey(ruleSetVersion string, req *types.RequestEvent) string {
 func CanonicalizeInput(in Input) string {
 	buf, _ := json.Marshal(in)
 	return hashString(string(buf))
+}
+
+// capList returns the first n entries of `entries` (or all of them
+// if shorter) so the LLM input doesn't blow up on huge lists.
+func capList(entries []string, n int) []string {
+	if len(entries) <= n {
+		out := make([]string, len(entries))
+		copy(out, entries)
+		return out
+	}
+	out := make([]string, n)
+	copy(out, entries[:n])
+	return out
 }
 
 type cacheValue struct {

@@ -8,7 +8,7 @@ import (
 	"syscall"
 
 	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/hostlist"
+	"github.com/dandriscoll/drawbridge/internal/console"
 	"github.com/dandriscoll/drawbridge/internal/policy"
 	"github.com/dandriscoll/drawbridge/internal/server"
 	"github.com/spf13/cobra"
@@ -16,6 +16,7 @@ import (
 
 func newRunCmd() *cobra.Command {
 	var configPath string
+	var noConsole bool
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Start the proxy in the foreground.",
@@ -40,21 +41,17 @@ func newRunCmd() *cobra.Command {
 				return &runtimeErr{err}
 			}
 
-			// Fast-path lists.
-			allow, err := hostlist.LoadFiles("allow", cfg.ResolveAllowFiles(configPath))
-			if err != nil {
-				return &configErr{err}
-			}
-			deny, err := hostlist.LoadFiles("deny", cfg.ResolveDenyFiles(configPath))
-			if err != nil {
-				return &configErr{err}
-			}
-			srv.SetHostLists(allow, deny)
-
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			// SIGHUP triggers rule reload.
+			// Fast-path lists with file-modification watcher.
+			allowPaths := cfg.ResolveAllowFiles(configPath)
+			denyPaths := cfg.ResolveDenyFiles(configPath)
+			if err := srv.WatchAndReload(ctx, allowPaths, denyPaths); err != nil {
+				return &configErr{err}
+			}
+
+			// SIGHUP triggers YAML rule reload.
 			hup := make(chan os.Signal, 1)
 			signal.Notify(hup, syscall.SIGHUP)
 			go func() {
@@ -68,6 +65,16 @@ func newRunCmd() *cobra.Command {
 				}
 			}()
 
+			// Console REPL when stdin is a tty.
+			if !noConsole && console.IsInteractive(os.Stdin) {
+				go func() {
+					_ = console.Run(ctx, console.Config{
+						AllowPaths: allowPaths,
+						DenyPaths:  denyPaths,
+					})
+				}()
+			}
+
 			fmt.Fprintf(os.Stderr, "drawbridge: listening on %s, mode=%s, rules=%d (v%s)\n",
 				srv.Addr(), cfg.Mode, len(engine.Rules()), engine.RuleSetVersion())
 
@@ -78,5 +85,6 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml (default: $DRAWBRIDGE_CONFIG, then $XDG_CONFIG_HOME/drawbridge/drawbridge.yaml)")
+	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the interactive console even when stdin is a tty")
 	return cmd
 }

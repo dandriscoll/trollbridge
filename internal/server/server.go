@@ -58,6 +58,12 @@ type Server struct {
 	allowList *hostlist.HostList
 	denyList  *hostlist.HostList
 
+	listsMu      sync.Mutex
+	allowPaths   []string
+	denyPaths    []string
+	allowWatcher *hostlist.Watcher
+	denyWatcher  *hostlist.Watcher
+
 	transport *http.Transport
 	logger    *log.Logger
 
@@ -448,16 +454,26 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 				hdrs[k] = v
 			}
 		}
+		// Build read-only list context the advisor sees as input.
+		// The advisor MAY recommend actions based on these; the
+		// advisor MUST NOT mutate them. List mutation is human-
+		// only (console + manual file edits).
+		lists := &advisor.ListContext{
+			Allow: rawPatterns(s.AllowList()),
+			Deny:  rawPatterns(s.DenyList()),
+		}
 		// Build the same Input the advisor sees, hash it, stash on
 		// the request so the audit-write path can record it.
 		input := advisor.Input{
 			Method: req.Method, Scheme: req.Scheme, Host: req.Host, Port: req.Port,
 			Path: req.Path, HeadersRedacted: hdrs, Identity: req.IdentityID,
 			RuleSetVersion: s.engine.RuleSetVersion(),
+			AllowList:      lists.Allow,
+			DenyList:       lists.Deny,
 		}
 		req.Headers.Set("X-Drawbridge-LLM-Input-Hash", advisor.CanonicalizeInput(input))
 
-		d, _ := s.advisor.Classify(ctx, req, s.engine.RuleSetVersion(), nil, hdrs)
+		d, _ := s.advisor.Classify(ctx, req, s.engine.RuleSetVersion(), nil, hdrs, lists)
 		if d.Effect == types.EffectAllow || d.Effect == types.EffectDeny {
 			return d
 		}
@@ -793,6 +809,19 @@ func statusFromEffect(e types.Effect) int {
 // silence imports we may not use in some build configs.
 var _ = config.Config{}
 
+// rawPatterns returns the raw line text of every pattern on the
+// supplied list. Used to surface lists to the advisor as input.
+func rawPatterns(h *hostlist.HostList) []string {
+	if h == nil {
+		return nil
+	}
+	out := make([]string, 0, len(h.Patterns))
+	for _, p := range h.Patterns {
+		out = append(out, p.Raw)
+	}
+	return out
+}
+
 // modifierSetForAdvisor returns the names of modifiers the advisor
 // is allowed to recommend. We accept the same set the engine knows.
 func modifierSetForAdvisor() map[string]bool {
@@ -856,8 +885,91 @@ func appendFileToPool(p *x509.CertPool, path string) error {
 // nil. Lists are evaluated BEFORE the rule engine and BEFORE the
 // LLM advisor — a match short-circuits the pipeline.
 func (s *Server) SetHostLists(allow, deny *hostlist.HostList) {
+	s.listsMu.Lock()
 	s.allowList = allow
 	s.denyList = deny
+	s.listsMu.Unlock()
+}
+
+// AllowList returns the current allowlist (used by the advisor
+// input builder; safe under concurrent reload).
+func (s *Server) AllowList() *hostlist.HostList {
+	s.listsMu.Lock()
+	defer s.listsMu.Unlock()
+	return s.allowList
+}
+
+// DenyList returns the current denylist.
+func (s *Server) DenyList() *hostlist.HostList {
+	s.listsMu.Lock()
+	defer s.listsMu.Unlock()
+	return s.denyList
+}
+
+// AllowPaths returns the configured allow.txt paths (for the
+// console writer).
+func (s *Server) AllowPaths() []string { return s.allowPaths }
+
+// DenyPaths returns the configured deny.txt paths.
+func (s *Server) DenyPaths() []string { return s.denyPaths }
+
+// WatchAndReload registers the allow / deny paths, loads them
+// once, and starts mtime watchers that reload on change. Stops
+// when ctx is cancelled.
+func (s *Server) WatchAndReload(ctx context.Context, allowPaths, denyPaths []string) error {
+	s.allowPaths = append([]string(nil), allowPaths...)
+	s.denyPaths = append([]string(nil), denyPaths...)
+
+	if err := s.reloadAllow(); err != nil {
+		return err
+	}
+	if err := s.reloadDeny(); err != nil {
+		return err
+	}
+
+	if len(allowPaths) > 0 {
+		s.allowWatcher = hostlist.NewWatcher(allowPaths, func() {
+			if err := s.reloadAllow(); err != nil {
+				s.logger.Printf("allowlist reload failed: %v", err)
+			} else {
+				s.logger.Printf("allowlist reloaded (%d patterns)", len(s.AllowList().Patterns))
+			}
+		}, time.Second)
+		s.allowWatcher.Start(ctx)
+	}
+	if len(denyPaths) > 0 {
+		s.denyWatcher = hostlist.NewWatcher(denyPaths, func() {
+			if err := s.reloadDeny(); err != nil {
+				s.logger.Printf("denylist reload failed: %v", err)
+			} else {
+				s.logger.Printf("denylist reloaded (%d patterns)", len(s.DenyList().Patterns))
+			}
+		}, time.Second)
+		s.denyWatcher.Start(ctx)
+	}
+	return nil
+}
+
+func (s *Server) reloadAllow() error {
+	h, err := hostlist.LoadFiles("allow", s.allowPaths)
+	if err != nil {
+		return err
+	}
+	s.listsMu.Lock()
+	s.allowList = h
+	s.listsMu.Unlock()
+	return nil
+}
+
+func (s *Server) reloadDeny() error {
+	h, err := hostlist.LoadFiles("deny", s.denyPaths)
+	if err != nil {
+		return err
+	}
+	s.listsMu.Lock()
+	s.denyList = h
+	s.listsMu.Unlock()
+	return nil
 }
 
 // fastPathDecide returns a Decision (and true) when the request
@@ -865,7 +977,8 @@ func (s *Server) SetHostLists(allow, deny *hostlist.HostList) {
 // (zero Decision, false) when no list matches and the engine
 // should run.
 func (s *Server) fastPathDecide(host string, port int, path string) (types.Decision, bool) {
-	if pat, ok := s.denyList.Match(host, port, path); ok {
+	allow, deny := s.AllowList(), s.DenyList()
+	if pat, ok := deny.Match(host, port, path); ok {
 		return types.Decision{
 			Effect: types.EffectDeny,
 			Source: types.SourceDenyList,
@@ -873,7 +986,7 @@ func (s *Server) fastPathDecide(host string, port int, path string) (types.Decis
 			Reason: "matched deny list: " + pat.Raw,
 		}, true
 	}
-	if pat, ok := s.allowList.Match(host, port, path); ok {
+	if pat, ok := allow.Match(host, port, path); ok {
 		return types.Decision{
 			Effect: types.EffectAllow,
 			Source: types.SourceAllowList,

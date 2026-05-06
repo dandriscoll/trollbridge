@@ -772,9 +772,16 @@ fields by default:
   "recent_history": [
     {"host": "github.com", "path": "/some/repo/issues/42", "effect": "allow"}
   ],
-  "rule_set_version": "2026-05-06-3"
+  "rule_set_version": "2026-05-06-3",
+  "allow_list": ["api.github.com", "*.npmjs.org"],
+  "deny_list":  ["169.254.169.254", "pastebin.com"]
 }
 ```
+
+The `allow_list` / `deny_list` fields contain the operator's
+current flat lists (§10.8) so the advisor can use them as
+classification context. The advisor MUST NOT mutate either
+list — see §10.8.1.
 
 The advisor MUST NOT receive:
 
@@ -1035,6 +1042,69 @@ metadata.azure.com
 `drawbridge init` writes default `allow.txt` and `deny.txt`
 files alongside `drawbridge.yaml` so a fresh deployment has a
 working starting point.
+
+#### 10.8.1 Mutation is human-only
+
+The flat lists are mutated only by:
+
+1. The operator hand-editing the file in any text editor.
+2. The interactive console (`drawbridge run` with stdin
+   attached to a tty); see §13.7.
+
+The LLM advisor MUST NOT modify either list. The advisor's
+output schema (§9.4) MAY include a `suggested_rule` field
+surfaced to the operator, but no code path in drawbridge
+writes the lists in response to advisor output. This is a
+load-bearing safety property: a malicious or jailbroken advisor
+cannot expand its own permitted destinations.
+
+#### 10.8.2 Hot reload
+
+drawbridge watches each configured allow/deny file's mtime and
+size at a 1-second cadence. When a change is detected, the file
+is re-parsed and the in-memory list pointer is swapped
+atomically. Reload events are written to the operational log:
+`drawbridge: allowlist reloaded (N patterns)`.
+
+If the new file fails to parse, drawbridge MUST keep the prior
+in-memory list and emit a warning. The proxy never serves with
+a half-loaded list.
+
+Mtime polling (rather than fsnotify) is the chosen mechanism:
+no new dependency, robust across atomic-rename editors, and the
+1-second latency is acceptable for the operator-edit workflow.
+
+#### 10.8.3 Sorted insertion
+
+When drawbridge writes a list file (via the console), the file
+MUST be re-sorted before write. Sort key:
+
+1. Reversed labels of the host (case-insensitive).
+2. Wildcard `*` ordered AFTER literal labels at the same
+   position. So `*.github.com` falls AFTER `api.github.com`
+   rather than at the top of the file.
+3. Port (numeric; omitted or `*` = 0, so `host` sorts before
+   `host:443`).
+4. Path string.
+5. Raw line text as a final stability tiebreak.
+
+Leading comment lines (lines starting with `#` before any
+non-comment line) are preserved at the top of the file in
+their original order. Inline comments after a pattern stay
+with their pattern. Blank lines among patterns are dropped.
+
+Hand-written files are NOT re-sorted on read. The watcher only
+parses the file; it does not write back. Sorting fires only
+when the console writes (because that is when drawbridge
+authors content).
+
+#### 10.8.4 Advisor receives lists as read-only input
+
+When the advisor is consulted, the request's `Input` (§9.3)
+includes the operator's current allow and deny lines (capped
+at 200 per list to bound the LLM input). This lets the advisor
+classify a request in light of what the operator already
+trusts or blocks. The lists remain read-only — see §10.8.1.
 
 ---
 
@@ -1353,6 +1423,48 @@ drawbridge MUST honor:
 drawbridge MUST NOT silently honor any env var that overrides
 security-relevant config (mode, interception, CA paths). These are
 file-only.
+
+### 13.7 Interactive console
+
+When `drawbridge run` is invoked with stdin attached to a
+terminal, drawbridge MUST start an interactive REPL on stdin
+that lets the operator mutate the flat allow / deny lists in
+flight. The console is silently disabled when stdin is not a
+tty (systemd, Docker without `-it`, Incus exec without a pty)
+so service deployments are unaffected. The `--no-console` flag
+disables it explicitly.
+
+Commands:
+
+- `allow <pattern>` — append `<pattern>` to the first
+  configured allow file, validating the pattern first. The
+  file is re-sorted (§10.8.3); the watcher (§10.8.2) picks up
+  the modification and reloads the in-memory list.
+- `deny <pattern>` — same for the first configured deny file.
+- `remove <pattern>` — remove the matching line (case-
+  insensitive on the pattern field) from any configured
+  allow/deny file. Removes from BOTH if the pattern appears
+  in both.
+- `list [allow|deny|all]` — print the current patterns.
+- `reload` — no-op (the watcher reloads on mtime change
+  automatically); kept for operator muscle memory.
+- `help` — list the commands.
+- `quit` / `exit` — leave the console; the proxy keeps
+  running.
+
+EOF (Ctrl-D) on stdin also exits the console.
+
+The console writes the list files using an atomic
+write-temp-then-rename. Concurrent edits by the operator's
+text editor race with the same rename; either side may win,
+the watcher picks up the result, and the in-memory list is
+reloaded.
+
+The console MUST NOT be reachable from the network. The
+control-plane HTTP API (§13.4 `approvals.control_listen`) is
+the network-facing operator surface for approvals; flat-list
+mutation is intentionally console-only because it is
+load-bearing security state.
 
 ---
 

@@ -42,6 +42,25 @@ For TLS interception:
 # set interception.enabled: true in drawbridge.yaml
 ```
 
+When `drawbridge run` is interactive, it presents a console
+prompt for live edits to the flat allow / deny lists:
+
+```
+drawbridge> allow api.github.com
+added api.github.com to allow.txt (3 patterns total)
+drawbridge> list allow
+allow:
+  127.0.0.1
+  api.github.com
+  localhost
+(3 patterns)
+```
+
+The console writes are sorted (§10.8.3); the file watcher
+(§10.8.2) picks up out-of-band edits within ~1 second.
+List mutation is human-only — the LLM advisor cannot modify
+allow.txt or deny.txt under any circumstance.
+
 See `docs/deploy.md` for deployment recipes and `DESIGN.md` for
 the full specification.
 
