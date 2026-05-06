@@ -1,0 +1,144 @@
+# drawbridge example configuration
+#
+# Annotated example showing every key the design defines. Comments
+# explain the choice and call out the security-relevant defaults.
+# See DESIGN.md for the full specification.
+
+drawbridge_version: 1
+
+# -----------------------------------------------------------------
+# listen — where drawbridge accepts proxy traffic from agents.
+# -----------------------------------------------------------------
+listen:
+  address: 127.0.0.1     # bind to localhost for the local-dev topology;
+                         # set to the host bridge IP for the Incus topology
+  port: 8080
+
+# -----------------------------------------------------------------
+# mode — global default policy posture.
+#   default-deny  — only allow rules forward; everything else is denied.
+#   default-allow — only deny rules block; everything else forwards.
+#                   Audit-log review is the primary control here.
+#   default-ask   — unmatched requests are held for LLM/operator review.
+# -----------------------------------------------------------------
+mode: default-ask
+
+# -----------------------------------------------------------------
+# interception — TLS termination for HTTPS visibility.
+#
+# When disabled, drawbridge sees only host:port for HTTPS (CONNECT
+# tunneling). Path / method / headers / body rules cannot fire on
+# HTTPS without interception. See DESIGN.md §6 / §7.
+# -----------------------------------------------------------------
+interception:
+  enabled: false
+  ca:
+    cert_path: /etc/drawbridge/drawbridge-ca.crt
+    key_path:  /etc/drawbridge/drawbridge-ca.key
+  passthrough_hosts:
+    # Hosts whose certs are pinned (or whose interception you want
+    # to skip for any reason). Wildcards supported.
+    - "*.googleapis.com"
+    - "login.microsoftonline.com"
+  leaf_cert_ttl_hours: 24
+
+# -----------------------------------------------------------------
+# llm — advisor configuration. Disabled by default.
+#
+# The advisor is consulted only when a rule says ask_llm or when the
+# proxy is in default-ask mode and no rule matched. The advisor's
+# decision is validated against a fixed schema and CANNOT elevate.
+# -----------------------------------------------------------------
+llm:
+  enabled: false
+  provider: anthropic
+  model: claude-opus-4-7
+  endpoint: https://api.anthropic.com
+  api_key_path: /etc/drawbridge/llm.key   # file ref, not inline
+  timeout_seconds: 8
+  cache_ttl_seconds: 300
+  send_body: false                        # never send bodies by default
+  on_unavailable: ask_user                # ask_user | deny | allow
+  confidence_floor: medium                # below this, fall back to ask_user
+
+# -----------------------------------------------------------------
+# redaction — applied before forward, before LLM input, before audit.
+# -----------------------------------------------------------------
+redaction:
+  default_modifiers:
+    - redact_authorization_header
+    - redact_cookie
+  body_redactors:
+    - jsonpath: $.password
+    - jsonpath: $.api_key
+    - jsonpath: $.token
+    - regex: "(?i)bearer [A-Za-z0-9._-]+"
+    - regex: "(?i)aws_secret_access_key=[A-Za-z0-9/+=]+"
+  query_redactors:
+    - regex: "(?i)token|key|secret|password"
+
+# -----------------------------------------------------------------
+# logging — audit, operational, metrics.
+# -----------------------------------------------------------------
+logging:
+  audit_path: /var/log/drawbridge/audit.jsonl
+  audit_buffer_size: 1024
+  audit_overflow: deny           # deny (safe) | drop | block
+  operational_path: stderr
+  metrics_listen: ""             # "127.0.0.1:9090" to expose Prometheus
+
+# -----------------------------------------------------------------
+# approvals — held-request control plane.
+# -----------------------------------------------------------------
+approvals:
+  control_listen: 127.0.0.1:8081
+  timeout_seconds: 300
+  on_timeout: deny
+  max_pending: 100
+
+# -----------------------------------------------------------------
+# identities — how clients are recognized.
+#
+# mTLS > bearer token > source IP > advisory header. See DESIGN.md
+# §8.4. Anonymous identity matches no rule that requires a specific
+# identity.
+# -----------------------------------------------------------------
+identities:
+  - id: coding-agent
+    match:
+      mtls_cn: agent.local
+  - id: ci-runner
+    match:
+      bearer_token_sha256: "REPLACE_WITH_SHA256_OF_TOKEN"
+  - id: dev-laptop
+    match:
+      source_ip: 127.0.0.1
+
+# -----------------------------------------------------------------
+# policy — rule files loaded at startup, reloadable on SIGHUP.
+# -----------------------------------------------------------------
+policy:
+  include:
+    - rules/base.yaml
+    - rules/dev-overrides.yaml
+  # Optional: drawbridge ships a curated suggested deny set for
+  # commonly-abused destinations. Operators can opt in:
+  # - rules/suggested-denies.yaml
+
+# -----------------------------------------------------------------
+# upstream — drawbridge's own outbound routing for forwarded
+# requests and LLM calls. Useful behind a corporate proxy.
+# -----------------------------------------------------------------
+upstream:
+  proxy: ""
+  no_proxy:
+    - localhost
+    - 127.0.0.1
+    - 169.254.169.254     # cloud metadata; usually denied at policy
+                          # but also explicitly excluded from upstream
+
+# -----------------------------------------------------------------
+# decisioncache — short-lived per-request decision memo.
+# -----------------------------------------------------------------
+decisioncache:
+  ttl_seconds: 60         # 0 to disable caching (most defensive)

@@ -9,6 +9,7 @@ that an engineering agent can implement it incrementally.
 
 - [`DESIGN.md`](DESIGN.md) — full design document.
 - [`config.example.yaml`](config.example.yaml) — example configuration.
+- [`rules/base.example.yaml`](rules/base.example.yaml) — example rule set.
 
 ## Status
 

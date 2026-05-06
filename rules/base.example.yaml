@@ -1,0 +1,94 @@
+# Example base rule set referenced from config.example.yaml.
+#
+# Rule semantics: see DESIGN.md §8 and §10.
+#  - First match wins; ties broken by priority (higher first), then
+#    declared order.
+#  - All match clauses combine with AND.
+#  - effect is one of: allow | deny | ask_user | ask_llm.
+#  - modifiers are applied before forward (or before audit-write).
+
+- id: deny-cloud-metadata
+  description: |
+    Cloud metadata services are credential-bearing and should never be
+    reachable by an agent. Highest priority; applies to all identities.
+  priority: 1000
+  match:
+    host:
+      - 169.254.169.254
+      - metadata.google.internal
+      - metadata.azure.com
+  effect: deny
+
+- id: allow-github-api-readonly
+  description: |
+    Coding agent may read public GitHub data via the API. Writes go
+    through a separate higher-scrutiny rule.
+  priority: 200
+  match:
+    identity: coding-agent
+    host: api.github.com
+    port: 443
+    method: ["GET", "HEAD"]
+  effect: allow
+  modifiers:
+    - redact_authorization_header
+
+- id: allow-npm-registry
+  description: |
+    Coding agent may fetch packages. Read-only methods only.
+  priority: 200
+  match:
+    identity: coding-agent
+    host:
+      - registry.npmjs.org
+      - "*.npmjs.org"
+    port: 443
+    method: ["GET", "HEAD"]
+  effect: allow
+
+- id: allow-pypi
+  description: Coding agent may fetch Python packages.
+  priority: 200
+  match:
+    identity: coding-agent
+    host:
+      - pypi.org
+      - files.pythonhosted.org
+    port: 443
+    method: ["GET", "HEAD"]
+  effect: allow
+
+- id: ask-on-mutating-github
+  description: |
+    POST/PUT/PATCH/DELETE to GitHub are mutating; require operator
+    approval rather than passing them silently.
+  priority: 300
+  match:
+    identity: coding-agent
+    host: api.github.com
+    port: 443
+    method: ["POST", "PUT", "PATCH", "DELETE"]
+  effect: ask_user
+
+- id: deny-pastebin-class
+  description: |
+    Common exfil destinations. Explicit deny so the audit log
+    captures attempts attributable to the rule.
+  priority: 500
+  match:
+    host:
+      - pastebin.com
+      - hastebin.com
+      - paste.ee
+      - "*.pastebin.com"
+  effect: deny
+
+- id: ask-llm-everything-else
+  description: |
+    For default-ask mode: anything not matched above gets advisor
+    classification. The deterministic engine still validates the
+    advisor's recommendation.
+  priority: 1
+  match:
+    identity: coding-agent
+  effect: ask_llm
