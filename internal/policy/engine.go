@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/dandriscoll/drawbridge/internal/types"
 	"gopkg.in/yaml.v3"
@@ -22,6 +23,9 @@ type Engine struct {
 	rules   []Rule
 	version string
 	knownModifiers map[string]bool
+
+	history *History
+	clock   func() time.Time
 }
 
 // NewEngine constructs an Engine from a top-level mode and a list
@@ -36,12 +40,20 @@ func NewEngine(mode string, includePaths []string, knownModifiers []string) (*En
 		mode:           mode,
 		include:        includePaths,
 		knownModifiers: known,
+		history:        NewHistory(2048),
+		clock:          func() time.Time { return time.Now().UTC() },
 	}
 	if err := e.Reload(); err != nil {
 		return nil, err
 	}
 	return e, nil
 }
+
+// SetClock overrides the engine's time source (for tests).
+func (e *Engine) SetClock(fn func() time.Time) { e.clock = fn }
+
+// History returns the engine's decision-history buffer.
+func (e *Engine) History() *History { return e.history }
 
 // Reload re-reads rule files and atomically swaps the active set on
 // success. On error, prior rules are kept.
@@ -121,8 +133,12 @@ func (e *Engine) Decide(req *types.RequestEvent) types.Decision {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
+	ctx := evalContext{
+		now:     e.clock(),
+		history: e.history,
+	}
 	for _, r := range e.rules {
-		if r.matches(req) {
+		if r.matches(req, ctx) {
 			reason := r.Description
 			if reason == "" {
 				reason = fmt.Sprintf("rule %s matched", r.ID)
@@ -168,4 +184,12 @@ func Phase1KnownModifiers() []string {
 		"redact_authorization_header",
 		"redact_cookie",
 	}
+}
+
+// KnownModifiers is the union of all modifier names recognized at
+// the current build's phase. Phase 2 adds no new modifiers (the
+// approval-flow effect arrives via `effect: ask_user` in the rule
+// shape, not via modifiers).
+func KnownModifiers() []string {
+	return Phase1KnownModifiers()
 }

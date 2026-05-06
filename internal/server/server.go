@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,10 +18,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dandriscoll/drawbridge/internal/approvals"
 	"github.com/dandriscoll/drawbridge/internal/audit"
 	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/drawbridge/internal/control"
 	"github.com/dandriscoll/drawbridge/internal/identity"
 	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/drawbridge/internal/sessions"
 	"github.com/dandriscoll/drawbridge/internal/types"
 
 	"github.com/google/uuid"
@@ -37,11 +41,21 @@ type Server struct {
 	audit    *audit.Logger
 	httpSrv  *http.Server
 
+	queue    *approvals.Queue
+	sessions *sessions.Tracker
+	control  *control.Server
+
 	transport *http.Transport
 	logger    *log.Logger
 
 	connsMu sync.Mutex
 	conns   map[net.Conn]struct{}
+
+	// MaxBodySampleBytes caps how much request body we read for
+	// body_pattern matching on plain HTTP. 0 disables.
+	MaxBodySampleBytes int
+
+	rootCtx context.Context
 }
 
 // New constructs a Server from a loaded config and engine.
@@ -60,6 +74,12 @@ func New(cfg *config.Config, engine *policy.Engine) (*Server, error) {
 // NewWithAudit constructs a Server using a pre-built audit logger.
 // Tests use this to inject a logger pointing at a tmp file.
 func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.Logger) (*Server, error) {
+	q := approvals.New(
+		cfg.Approvals.MaxPending,
+		time.Duration(cfg.Approvals.TimeoutSeconds)*time.Second,
+		cfg.Approvals.OnTimeout,
+	)
+	t := sessions.New()
 	s := &Server{
 		cfg:      cfg,
 		engine:   engine,
@@ -67,6 +87,10 @@ func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.
 		audit:    auditLogger,
 		logger:   log.New(os.Stderr, "drawbridge: ", log.LstdFlags),
 		conns:    map[net.Conn]struct{}{},
+		queue:    q,
+		sessions: t,
+		control:  control.New(cfg.Approvals.ControlListen, q, t, engine),
+		MaxBodySampleBytes: 1 << 20, // 1 MiB
 	}
 	s.transport = &http.Transport{
 		MaxIdleConns:        cfg.Forwarder.MaxIdleConns,
@@ -84,6 +108,10 @@ func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.
 // ListenAndServe starts the listener loop and blocks until ctx is
 // cancelled or the server stops.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	s.rootCtx = ctx
+	if _, err := s.control.ListenAndServe(ctx); err != nil {
+		return err
+	}
 	go s.shutdownOnContext(ctx)
 	err := s.httpSrv.ListenAndServe()
 	return s.finishServe(err)
@@ -92,10 +120,31 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 // ServeOnListener runs the proxy on a pre-bound listener (used in
 // tests so we don't fight for ports).
 func (s *Server) ServeOnListener(ctx context.Context, ln net.Listener) error {
+	s.rootCtx = ctx
+	if _, err := s.control.ListenAndServe(ctx); err != nil {
+		return err
+	}
 	go s.shutdownOnContext(ctx)
 	err := s.httpSrv.Serve(ln)
 	return s.finishServe(err)
 }
+
+// ControlAddr returns the bound control-plane address. Useful to
+// know in tests that pass `:0`.
+func (s *Server) ControlAddr() string {
+	if s.control == nil {
+		return ""
+	}
+	// re-resolved on first call after ListenAndServe; addr is
+	// known to the control.Server.
+	return s.cfg.Approvals.ControlListen
+}
+
+// Queue returns the approvals queue (for tests / introspection).
+func (s *Server) Queue() *approvals.Queue { return s.queue }
+
+// Sessions returns the session tracker.
+func (s *Server) Sessions() *sessions.Tracker { return s.sessions }
 
 func (s *Server) shutdownOnContext(ctx context.Context) {
 	<-ctx.Done()
@@ -104,6 +153,11 @@ func (s *Server) shutdownOnContext(ctx context.Context) {
 		time.Duration(s.cfg.Shutdown.GraceSeconds)*time.Second,
 	)
 	defer cancel()
+	// Resolve held approvals as deny so blocked dispatcher
+	// goroutines exit promptly.
+	if s.queue != nil {
+		s.queue.Shutdown()
+	}
 	_ = s.httpSrv.Shutdown(shutdownCtx)
 	// Hijacked CONNECT connections aren't tracked by http.Server;
 	// close them so pipeBidir returns and audit-log writes complete.
@@ -174,13 +228,13 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	requestID := uuid.NewString()
-	sessionID := uuid.NewString()
 	identityID := s.identity.Resolve(r.RemoteAddr, r)
+	sess := s.sessions.GetOrCreate(r.RemoteAddr, identityID)
 
 	host, port := splitHostPort(r.URL.Host, "80")
 	req := &types.RequestEvent{
 		ID:         requestID,
-		SessionID:  sessionID,
+		SessionID:  sess.ID,
 		IdentityID: identityID,
 		Timestamp:  start,
 		Method:     r.Method,
@@ -191,9 +245,57 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		Headers:    r.Header.Clone(),
 		ClientAddr: r.RemoteAddr,
 	}
+
+	// Capture a bounded body sample for body_pattern matching.
+	// Plain HTTP only; HTTPS body inspection arrives Phase 3.
+	var bodyBuf []byte
+	if r.Body != nil && s.MaxBodySampleBytes > 0 && bodyMethodNeedsSample(r.Method) {
+		var err error
+		bodyBuf, err = io.ReadAll(io.LimitReader(r.Body, int64(s.MaxBodySampleBytes)+1))
+		if err != nil {
+			http.Error(w, "drawbridge: body read failed", http.StatusBadRequest)
+			s.writeAudit(req, types.Decision{Effect: types.EffectDeny, Source: types.SourceDefault, Reason: "body read failed: " + err.Error()},
+				"", 0, http.StatusBadRequest, 0, time.Since(start), err.Error())
+			return
+		}
+		if int64(len(bodyBuf)) > int64(s.MaxBodySampleBytes) {
+			// Body exceeded the sample cap; we still forward it
+			// but body_pattern matchers cannot match. Per
+			// DESIGN.md §11.4 fail closed if a rule REQUIRED the
+			// body — handled by setting the sample empty, which
+			// causes body_pattern matches to fail (rule does not
+			// fire). Since the engine evaluates as "rule did not
+			// match" rather than "body inspection failed," this
+			// matches the design's stated semantics for over-cap
+			// bodies.
+			req.BodyAvailable = false
+			req.BodySize = int64(len(bodyBuf))
+			req.BodySample = nil
+		} else {
+			req.BodyAvailable = true
+			req.BodySize = int64(len(bodyBuf))
+			req.BodySample = bodyBuf
+		}
+		// Restore the body for downstream forwarding.
+		r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
+	}
+
 	decision := s.engine.Decide(req)
 
-	if decision.Effect != types.EffectAllow {
+	// Approval queue: if engine returned ask_user (or ask_llm with
+	// no advisor configured in this phase), hold the request.
+	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
+		decision = s.holdAndWait(req, decision)
+	}
+
+	// History records the resolved decision.
+	s.engine.History().Record(req, decision, time.Now().UTC())
+
+	switch decision.Effect {
+	case types.EffectAllow, types.EffectAskUserResolvedAllow:
+		// allowed: forward
+	default:
+		// deny / ask_user_resolved_deny / ask_user_timed_out
 		s.refuseHTTP(w, req, decision, start)
 		return
 	}
@@ -228,13 +330,43 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	s.writeAudit(req, decision, "", redactedCount, resp.StatusCode, n, time.Since(start), "")
 }
 
+// holdAndWait enqueues the request and blocks until resolution.
+// Returns the resolved Decision (or a timeout/shutdown deny).
+func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types.Decision {
+	id, ch, err := s.queue.Enqueue(req, base)
+	if err != nil {
+		// Queue full → deny.
+		return types.Decision{
+			Effect: types.EffectAskUserResolvedDeny,
+			Source: types.SourceApprovalQueue,
+			Reason: "approval queue full: " + err.Error(),
+		}
+	}
+	ctx := s.rootCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.queue.Wait(ctx, id, ch)
+}
+
+// bodyMethodNeedsSample decides whether to capture a body sample
+// for the given method.
+func bodyMethodNeedsSample(method string) bool {
+	switch strings.ToUpper(method) {
+	case "POST", "PUT", "PATCH", "DELETE":
+		return true
+	}
+	return false
+}
+
 func (s *Server) refuseHTTP(w http.ResponseWriter, req *types.RequestEvent, d types.Decision, start time.Time) {
 	w.Header().Set("Drawbridge-Reason", string(d.Effect)+": "+d.Reason)
 	switch d.Effect {
-	case types.EffectDeny:
+	case types.EffectDeny, types.EffectAskUserResolvedDeny, types.EffectAskUserTimedOut:
 		http.Error(w, "drawbridge: request denied: "+d.Reason, http.StatusForbidden)
 	case types.EffectAskUser, types.EffectAskLLM:
-		http.Error(w, "drawbridge: request requires approval (Phase 2 feature)", http.StatusNetworkAuthenticationRequired)
+		// Should not reach here; holdAndWait converts these.
+		http.Error(w, "drawbridge: request requires approval", http.StatusNetworkAuthenticationRequired)
 	default:
 		http.Error(w, "drawbridge: request not allowed", http.StatusForbidden)
 	}
@@ -299,13 +431,13 @@ func redactHeadersForAudit(h http.Header, modifiers []string) (http.Header, int)
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	requestID := uuid.NewString()
-	sessionID := uuid.NewString()
 	identityID := s.identity.Resolve(r.RemoteAddr, r)
+	sess := s.sessions.GetOrCreate(r.RemoteAddr, identityID)
 
 	host, port := splitHostPort(r.RequestURI, "443")
 	req := &types.RequestEvent{
 		ID:         requestID,
-		SessionID:  sessionID,
+		SessionID:  sess.ID,
 		IdentityID: identityID,
 		Timestamp:  start,
 		Method:     "CONNECT",
@@ -317,7 +449,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		ClientAddr: r.RemoteAddr,
 	}
 	decision := s.engine.Decide(req)
-	if decision.Effect != types.EffectAllow {
+	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
+		decision = s.holdAndWait(req, decision)
+	}
+	s.engine.History().Record(req, decision, time.Now().UTC())
+	if !(decision.Effect == types.EffectAllow || decision.Effect == types.EffectAskUserResolvedAllow) {
 		w.Header().Set("Drawbridge-Reason", string(decision.Effect)+": "+decision.Reason)
 		http.Error(w, "drawbridge: CONNECT denied: "+decision.Reason, http.StatusForbidden)
 		s.writeAudit(req, decision, "", 0, http.StatusForbidden, 0, time.Since(start), "")

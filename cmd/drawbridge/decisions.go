@@ -28,7 +28,11 @@ func newDecisionsCmd() *cobra.Command {
 				return &configErr{err}
 			}
 			if pending {
-				fmt.Fprintln(cmd.OutOrStdout(), "drawbridge decisions --pending: approval queue is a Phase 2 feature; nothing to show.")
+				body, err := controlGET(cfg, "/v1/holds")
+				if err != nil {
+					return &runtimeErr{err}
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), string(body))
 				return nil
 			}
 			cutoff := time.Now().Add(-since)

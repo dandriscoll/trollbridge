@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/dandriscoll/drawbridge/internal/types"
 )
@@ -36,6 +37,28 @@ type Match struct {
 	Tool         string       `yaml:"tool"`
 	ContentType  string       `yaml:"content_type"`
 	BodyPattern  string       `yaml:"body_pattern"`
+	Time         *TimeWindow  `yaml:"time"`
+	PriorDecision *PriorDecisionMatch `yaml:"prior_decision"`
+}
+
+// TimeWindow is an hour-of-day + weekday window.
+//
+// Hours is "HH:MM-HH:MM" in the configured TZ (default UTC).
+// Weekdays is a list of "Mon" .. "Sun" (case-insensitive), or
+// "all" / nil to match any weekday.
+type TimeWindow struct {
+	Hours    string   `yaml:"hours"`
+	Weekdays []string `yaml:"weekdays"`
+	TZ       string   `yaml:"tz"`
+}
+
+// PriorDecisionMatch fires when an audit-log entry within the
+// configured window matches.
+type PriorDecisionMatch struct {
+	Effect        string `yaml:"effect"`
+	SameIdentity  bool   `yaml:"same_identity"`
+	SameHost      bool   `yaml:"same_host"`
+	WithinSeconds int    `yaml:"within_seconds"`
 }
 
 // StringOrList accepts either a single string or a list of strings
@@ -76,8 +99,9 @@ func (s *IntOrList) UnmarshalYAML(unmarshal func(any) error) error {
 }
 
 // matches returns true if the Rule's Match clauses all fire on the
-// supplied RequestEvent.
-func (r *Rule) matches(req *types.RequestEvent) bool {
+// supplied RequestEvent. evalCtx supplies the current time and any
+// prior-decision history needed for cross-clause checks.
+func (r *Rule) matches(req *types.RequestEvent, ctx evalContext) bool {
 	m := &r.Match
 
 	if len(m.Host) > 0 && !matchHost(m.Host, req.Host) {
@@ -114,9 +138,37 @@ func (r *Rule) matches(req *types.RequestEvent) bool {
 			return false
 		}
 	}
-	// body_pattern is Phase 2/3 (requires body inspection); ignore here.
+	if m.Time != nil && !m.Time.inWindow(ctx.now) {
+		return false
+	}
+	if m.PriorDecision != nil {
+		if ctx.history == nil || !ctx.history.Match(req, m.PriorDecision, ctx.now) {
+			return false
+		}
+	}
+	if m.BodyPattern != "" {
+		// Phase 2: body matching only for plain HTTP and only when
+		// the dispatcher captured a sample.
+		if len(req.BodySample) == 0 {
+			return false
+		}
+		re, err := regexp.Compile(m.BodyPattern)
+		if err != nil {
+			return false
+		}
+		if !re.Match(req.BodySample) {
+			return false
+		}
+	}
 	_ = m.Tool
 	return true
+}
+
+// evalContext is the per-call context shared across rule
+// evaluations (now-time, history, etc.).
+type evalContext struct {
+	now     time.Time
+	history *History
 }
 
 // matchHost checks an exact-or-wildcard host match.
