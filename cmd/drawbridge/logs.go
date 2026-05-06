@@ -18,7 +18,7 @@ func newLogsCmd() *cobra.Command {
 		Use:   "logs",
 		Short: "Inspect the audit log.",
 	}
-	cmd.AddCommand(newLogsTailCmd())
+	cmd.AddCommand(newLogsTailCmd(), newLogsReplayCmd())
 	return cmd
 }
 

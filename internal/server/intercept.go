@@ -66,7 +66,26 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
-			return nil // client closed
+			// Malformed request from inside the tunnel. Audit-log
+			// the parse failure so an operator reviewing logs
+			// can see suspicious behavior, even though we have
+			// no path / method to attribute. Carry-forward 033.I.4.
+			s.writeAudit(&types.RequestEvent{
+				ID:         uuid.NewString(),
+				SessionID:  sessionID,
+				IdentityID: identityID,
+				Timestamp:  time.Now().UTC(),
+				Method:     "?",
+				Scheme:     "https-intercepted",
+				Host:       host,
+				Port:       port,
+				ClientAddr: clientConn.RemoteAddr().String(),
+			}, types.Decision{
+				Effect: types.EffectDeny,
+				Source: types.SourceDefault,
+				Reason: "malformed HTTP/1.1 request inside intercepted TLS tunnel",
+			}, "", 0, http.StatusBadRequest, 0, 0, err.Error())
+			return nil
 		}
 		// Reconstruct a full URL because http.ReadRequest gives us
 		// just the path.

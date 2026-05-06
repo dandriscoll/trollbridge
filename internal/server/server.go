@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dandriscoll/drawbridge/internal/advisor"
 	"github.com/dandriscoll/drawbridge/internal/approvals"
 	"github.com/dandriscoll/drawbridge/internal/audit"
 	"github.com/dandriscoll/drawbridge/internal/ca"
@@ -51,6 +52,7 @@ type Server struct {
 	ca           *ca.CA
 	originRoots  *x509.CertPool
 	redactor     *redact.Config
+	advisor      *advisor.Service
 
 	transport *http.Transport
 	logger    *log.Logger
@@ -140,6 +142,33 @@ func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.
 		roots = x509.NewCertPool()
 	}
 	s.originRoots = roots
+
+	// Initialize advisor service. Provider can be nil (disabled).
+	advCfg := advisor.Config{
+		Enabled:         cfg.LLM.Enabled,
+		ConfidenceFloor: cfg.LLM.ConfidenceFloor,
+		OnUnavailable:   cfg.LLM.OnUnavailable,
+		CacheTTL:        time.Duration(cfg.LLM.CacheTTLSeconds) * time.Second,
+		Timeout:         time.Duration(cfg.LLM.TimeoutSeconds) * time.Second,
+		KnownModifiers:  modifierSetForAdvisor(),
+	}
+	var prov advisor.Provider
+	if cfg.LLM.Enabled {
+		// Default provider: HTTPClassifier pointing at the
+		// configured endpoint. Operators wiring Anthropic-shaped
+		// endpoints can swap the JSON shape on the receiving end.
+		apiKey := ""
+		if cfg.LLM.APIKeyPath != "" {
+			if data, err := os.ReadFile(cfg.LLM.APIKeyPath); err == nil {
+				apiKey = strings.TrimSpace(string(data))
+			}
+		}
+		prov = &advisor.HTTPClassifier{
+			Endpoint: cfg.LLM.Endpoint,
+			APIKey:   apiKey,
+		}
+	}
+	s.advisor = advisor.New(advCfg, prov)
 	s.transport = &http.Transport{
 		MaxIdleConns:        cfg.Forwarder.MaxIdleConns,
 		MaxIdleConnsPerHost: cfg.Forwarder.MaxIdleConnsPerHost,
@@ -380,12 +409,36 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	s.writeAudit(req, decision, "", redactedCount, resp.StatusCode, n, time.Since(start), "")
 }
 
-// holdAndWait enqueues the request and blocks until resolution.
-// Returns the resolved Decision (or a timeout/shutdown deny).
+// holdAndWait routes ask_llm decisions through the advisor first;
+// if the advisor's resolved effect is allow/deny, return it. If
+// the advisor falls back to ask_user (or we're handling an
+// ask_user rule directly), enqueue and block.
 func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types.Decision {
+	if base.Effect == types.EffectAskLLM && s.advisor != nil {
+		ctx := s.rootCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		// Build redacted-headers view for the advisor.
+		hdrs := map[string]string{}
+		for k := range req.Headers {
+			v := req.Headers.Get(k)
+			switch strings.ToLower(k) {
+			case "authorization", "cookie", "proxy-authorization":
+				hdrs[k] = "<redacted>"
+			default:
+				hdrs[k] = v
+			}
+		}
+		d, _ := s.advisor.Classify(ctx, req, s.engine.RuleSetVersion(), nil, hdrs)
+		if d.Effect == types.EffectAllow || d.Effect == types.EffectDeny {
+			return d
+		}
+		// Advisor said ask_user (or fell back). Continue to queue.
+		base = d
+	}
 	id, ch, err := s.queue.Enqueue(req, base)
 	if err != nil {
-		// Queue full → deny.
 		return types.Decision{
 			Effect: types.EffectAskUserResolvedDeny,
 			Source: types.SourceApprovalQueue,
@@ -701,3 +754,39 @@ func statusFromEffect(e types.Effect) int {
 
 // silence imports we may not use in some build configs.
 var _ = config.Config{}
+
+// modifierSetForAdvisor returns the names of modifiers the advisor
+// is allowed to recommend. We accept the same set the engine knows.
+func modifierSetForAdvisor() map[string]bool {
+	out := map[string]bool{}
+	for _, m := range policy.KnownModifiers() {
+		out[m] = true
+	}
+	return out
+}
+
+// SetAdvisorProvider lets tests swap the advisor's underlying
+// provider (e.g., a MockProvider).
+func (s *Server) SetAdvisorProvider(p advisor.Provider) {
+	advCfg := advisor.Config{
+		Enabled:         true,
+		ConfidenceFloor: s.cfg.LLM.ConfidenceFloor,
+		OnUnavailable:   s.cfg.LLM.OnUnavailable,
+		CacheTTL:        time.Duration(s.cfg.LLM.CacheTTLSeconds) * time.Second,
+		Timeout:         time.Duration(s.cfg.LLM.TimeoutSeconds) * time.Second,
+		KnownModifiers:  modifierSetForAdvisor(),
+	}
+	if advCfg.ConfidenceFloor == "" {
+		advCfg.ConfidenceFloor = "medium"
+	}
+	if advCfg.OnUnavailable == "" {
+		advCfg.OnUnavailable = "ask_user"
+	}
+	if advCfg.CacheTTL <= 0 {
+		advCfg.CacheTTL = 5 * time.Minute
+	}
+	if advCfg.Timeout <= 0 {
+		advCfg.Timeout = 8 * time.Second
+	}
+	s.advisor = advisor.New(advCfg, p)
+}
