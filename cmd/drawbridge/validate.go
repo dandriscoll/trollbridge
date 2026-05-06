@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/drawbridge/internal/hostlist"
 	"github.com/dandriscoll/drawbridge/internal/policy"
 	"github.com/spf13/cobra"
 )
@@ -29,9 +30,25 @@ func newValidateCmd() *cobra.Command {
 			if err != nil {
 				return &configErr{err}
 			}
+			allow, err := hostlist.LoadFiles("allow", cfg.ResolveAllowFiles(configPath))
+			if err != nil {
+				return &configErr{err}
+			}
+			deny, err := hostlist.LoadFiles("deny", cfg.ResolveDenyFiles(configPath))
+			if err != nil {
+				return &configErr{err}
+			}
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"drawbridge validate: OK\n  config: %s\n  mode:   %s\n  rules:  %d (version %s)\n  known modifiers: %v\n",
-				configPath, cfg.Mode, len(engine.Rules()), engine.RuleSetVersion(),
+				"drawbridge validate: OK\n"+
+					"  config:    %s\n"+
+					"  mode:      %s\n"+
+					"  allowlist: %d patterns\n"+
+					"  denylist:  %d patterns\n"+
+					"  rules:     %d (version %s)\n"+
+					"  known modifiers: %v\n",
+				configPath, cfg.Mode,
+				len(allow.Patterns), len(deny.Patterns),
+				len(engine.Rules()), engine.RuleSetVersion(),
 				policy.Phase1KnownModifiers())
 			return nil
 		},

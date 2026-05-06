@@ -862,15 +862,45 @@ and produce a report of which past decisions would change.
 
 ## 10. Deterministic rule engine
 
+### 10.0 Decision pipeline
+
+drawbridge evaluates each request in a fixed order. The first
+stage that fires produces the decision; later stages do not run.
+
+1. **Deny list (flat text).** Match against `policy.deny_files`
+   patterns. A match is a final deny. The rule engine is not
+   consulted; the LLM advisor is not consulted; no approval is
+   requested.
+2. **Allow list (flat text).** Match against
+   `policy.allow_files` patterns. A match is a final allow. Same
+   short-circuit semantics as the deny list.
+3. **YAML rule engine.** Evaluate `policy.include` rules in
+   priority order; first match decides. Rules MAY produce
+   `allow` / `deny` / `ask_user` / `ask_llm`.
+4. **LLM advisor.** Only invoked when the rule engine returned
+   `ask_llm` (and the advisor is enabled). The advisor's
+   recommendation is validated and never elevates the engine's
+   answer.
+5. **Approval queue.** Holds `ask_user` requests until an
+   operator decides or the configured timeout fires.
+6. **Default mode.** If nothing fired, `default-deny` /
+   `default-allow` / `default-ask` resolves the request.
+
+The flat-list tier exists so the common case ("the agent should
+be able to reach github.com") is one line of plain text. The
+YAML tier is for the cases that need structure: time windows,
+body patterns, identity scoping, ask_user, ask_llm.
+
 ### 10.1 Authority
 
-The deterministic rule engine is the **only** authoritative decision
-boundary. The LLM advisor is consulted only when a rule explicitly
-delegates (`effect: ask_llm`) or when the proxy is in `default-ask`
-mode and no rule matched.
+The deterministic decision is the **only** authoritative
+boundary. The LLM advisor is consulted only when a rule
+explicitly delegates (`effect: ask_llm`) or when the proxy is
+in `default-ask` mode and no rule matched.
 
-This ordering is non-negotiable: a malicious or jailbroken LLM cannot
-bypass deterministic `deny` rules.
+This ordering is non-negotiable: a malicious or jailbroken LLM
+cannot bypass the flat deny list, the YAML rule engine's deny
+rules, or the engine's authority over the advisor.
 
 ### 10.2 Evaluation
 
@@ -937,6 +967,74 @@ type Engine interface {
 
 Default implementation: the YAML engine. Other implementations are
 out of scope for Phase 1 but the seam exists.
+
+### 10.8 Flat allow / deny lists (fast path)
+
+The flat lists are the simplest authoring surface and the
+load-bearing reason most deployments do not need YAML rules at
+all. They live in plain-text files referenced by
+`policy.allow_files` and `policy.deny_files`.
+
+Format: one pattern per line. Blank lines and lines starting
+with `#` are ignored; an inline comment after whitespace + `#`
+is also stripped. Each pattern is
+
+```
+host[:port][/path]
+```
+
+with these wildcard semantics:
+
+- `host`
+  - exact label match (case-insensitive): `api.github.com`
+  - bare `*`: any host (use sparingly).
+  - `*.example.com`: any subdomain of `example.com` (one or
+    more labels). Does NOT match the apex `example.com`. This
+    matches the YAML rule engine's existing host-wildcard
+    semantics.
+  - Mid-string wildcards (`api.*.example.com`) are NOT
+    supported and MUST cause a parse error.
+- `port`
+  - omitted or `*`: any port.
+  - integer 1..65535: exact port.
+- `path` (after the first `/` of the pattern)
+  - omitted or `/*`: any path (including `/`).
+  - `/api/*`: prefix match (`/api/foo`, `/api/`, etc.).
+  - `/exact`: exact match only.
+  - Mid-string `*` in paths is NOT supported.
+
+Pipeline placement is per §10.0: the deny list is checked
+first, then the allow list, then the YAML engine. Deny wins on
+overlap. A flat-list match short-circuits — no rule is
+evaluated, no advisor consulted, no approval requested.
+
+The audit log distinguishes flat-list decisions:
+`decision_source` is `denylist` or `allowlist`, and `rule_id`
+is the source-file location (`<path>:<line>`) so the operator
+can locate the matched line.
+
+Example `allow.txt`:
+
+```
+# Coding agent baseline.
+api.github.com
+*.npmjs.org
+pypi.org
+files.pythonhosted.org
+```
+
+Example `deny.txt`:
+
+```
+# Cloud instance metadata services.
+169.254.169.254
+metadata.google.internal
+metadata.azure.com
+```
+
+`drawbridge init` writes default `allow.txt` and `deny.txt`
+files alongside `drawbridge.yaml` so a fresh deployment has a
+working starting point.
 
 ---
 
@@ -1191,6 +1289,13 @@ identities:
       bearer_token_sha256: "<hash>"
 
 policy:
+  # Fast-path flat lists (§10.8). Evaluated BEFORE the rule engine
+  # and BEFORE the LLM advisor. A match here is the final decision.
+  allow_files:
+    - allow.txt
+  deny_files:
+    - deny.txt
+  # Structured rules for advanced cases (time, body, ask_user, ask_llm).
   include:
     - rules/base.yaml
     - rules/dev-overrides.yaml
@@ -1322,7 +1427,7 @@ Metric labels MUST be bounded. The core decision metric is
 `drawbridge_decisions_total` with labels:
 
 - `effect` — `allow | deny | ask_user_resolved_allow | ask_user_resolved_deny | ask_user_timed_out`
-- `decision_source` — `rule | default | llm_advisor | approval_queue | approval_timeout`
+- `decision_source` — `allowlist | denylist | rule | default | llm_advisor | approval_queue | approval_timeout`
 - `identity_id` — small operator-controlled set; bounded by config
 - `host_class` — coarse classification (e.g., `internal | api | cdn |
   unknown`), NOT the raw host (raw host is unbounded cardinality)
@@ -1349,8 +1454,9 @@ Each entry MUST contain:
 - `query_redacted` — the query string after redaction, or `""`.
 - `decision` — `allow` | `deny` | `ask_user_resolved_allow` |
   `ask_user_resolved_deny` | `ask_user_timed_out`.
-- `decision_source` — `rule` | `default` | `llm_advisor` |
-  `approval_queue` | `approval_timeout`.
+- `decision_source` — `allowlist` | `denylist` | `rule` |
+  `default` | `llm_advisor` | `approval_queue` |
+  `approval_timeout`.
 - `rule_id` — string, `""` if not from a rule.
 - `rule_set_version` — string.
 - `llm_advisor_id` — string, `""` if not consulted.

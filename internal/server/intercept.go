@@ -153,7 +153,10 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		req.BodySize = int64(len(bodyBuf))
 	}
 
-	decision := s.engine.Decide(req)
+	decision, fastHit := s.fastPathDecide(host, port, req.Path)
+	if !fastHit {
+		decision = s.engine.Decide(req)
+	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
 		decision = s.holdAndWait(req, decision)
 	}

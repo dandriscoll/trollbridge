@@ -124,7 +124,9 @@ type IdentityMatch struct {
 }
 
 type Policy struct {
-	Include []string `yaml:"include"`
+	Include    []string `yaml:"include"`
+	AllowFiles []string `yaml:"allow_files"`
+	DenyFiles  []string `yaml:"deny_files"`
 }
 
 type Upstream struct {
@@ -244,9 +246,25 @@ func (c *Config) validate(path string) error {
 // ResolveIncludePaths returns rule-file paths from c.Policy.Include
 // resolved relative to the config file's directory.
 func (c *Config) ResolveIncludePaths(configPath string) []string {
+	return resolveRelative(configPath, c.Policy.Include)
+}
+
+// ResolveAllowFiles returns flat-list paths resolved against the
+// config file's directory.
+func (c *Config) ResolveAllowFiles(configPath string) []string {
+	return resolveRelative(configPath, c.Policy.AllowFiles)
+}
+
+// ResolveDenyFiles returns flat-list paths resolved against the
+// config file's directory.
+func (c *Config) ResolveDenyFiles(configPath string) []string {
+	return resolveRelative(configPath, c.Policy.DenyFiles)
+}
+
+func resolveRelative(configPath string, items []string) []string {
 	dir := filepath.Dir(configPath)
-	out := make([]string, 0, len(c.Policy.Include))
-	for _, p := range c.Policy.Include {
+	out := make([]string, 0, len(items))
+	for _, p := range items {
 		if filepath.IsAbs(p) {
 			out = append(out, p)
 		} else {

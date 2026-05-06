@@ -134,9 +134,21 @@ identities:
       source_ip: 127.0.0.1
 
 # -----------------------------------------------------------------
-# policy — rule files loaded at startup, reloadable on SIGHUP.
+# policy — fast-path flat lists + optional structured YAML rules.
+#
+# The flat lists are the simple authoring surface. Each line is
+# `host[:port][/path]` with `*` wildcards (see DESIGN.md §10.8).
+# A match here is the final decision: the rule engine is NOT
+# consulted and the LLM advisor is NOT invoked. Deny wins.
+#
+# Reach for `include:` only when you need time windows, body
+# patterns, identity scoping, or ask_user / ask_llm effects.
 # -----------------------------------------------------------------
 policy:
+  allow_files:
+    - allow.txt
+  deny_files:
+    - deny.txt
   include:
     - rules/base.yaml
     - rules/dev-overrides.yaml

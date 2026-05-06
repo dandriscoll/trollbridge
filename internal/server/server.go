@@ -25,6 +25,7 @@ import (
 	"github.com/dandriscoll/drawbridge/internal/ca"
 	"github.com/dandriscoll/drawbridge/internal/config"
 	"github.com/dandriscoll/drawbridge/internal/control"
+	"github.com/dandriscoll/drawbridge/internal/hostlist"
 	"github.com/dandriscoll/drawbridge/internal/identity"
 	"github.com/dandriscoll/drawbridge/internal/policy"
 	"github.com/dandriscoll/drawbridge/internal/redact"
@@ -53,6 +54,9 @@ type Server struct {
 	originRoots  *x509.CertPool
 	redactor     *redact.Config
 	advisor      *advisor.Service
+
+	allowList *hostlist.HostList
+	denyList  *hostlist.HostList
 
 	transport *http.Transport
 	logger    *log.Logger
@@ -363,7 +367,12 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	decision := s.engine.Decide(req)
+	// Fast path: evaluate flat allow/deny lists BEFORE the rule
+	// engine and BEFORE the advisor. A match here short-circuits.
+	decision, fastHit := s.fastPathDecide(host, port, req.Path)
+	if !fastHit {
+		decision = s.engine.Decide(req)
+	}
 
 	// Approval queue: if engine returned ask_user (or ask_llm with
 	// no advisor configured in this phase), hold the request.
@@ -572,7 +581,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Headers:    r.Header.Clone(),
 		ClientAddr: r.RemoteAddr,
 	}
-	decision := s.engine.Decide(req)
+	// CONNECT only carries host:port, no path. Use "/" as the
+	// path for fast-path matching; only patterns with no path or
+	// path "/" or path-prefix can fire here.
+	decision, fastHit := s.fastPathDecide(host, port, "/")
+	if !fastHit {
+		decision = s.engine.Decide(req)
+	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
 		decision = s.holdAndWait(req, decision)
 	}
@@ -835,6 +850,38 @@ func appendFileToPool(p *x509.CertPool, path string) error {
 		return fmt.Errorf("no PEM certs found in %s", path)
 	}
 	return nil
+}
+
+// SetHostLists wires the parsed allow / deny lists. Either may be
+// nil. Lists are evaluated BEFORE the rule engine and BEFORE the
+// LLM advisor — a match short-circuits the pipeline.
+func (s *Server) SetHostLists(allow, deny *hostlist.HostList) {
+	s.allowList = allow
+	s.denyList = deny
+}
+
+// fastPathDecide returns a Decision (and true) when the request
+// matches the deny list (deny wins) or the allow list. Returns
+// (zero Decision, false) when no list matches and the engine
+// should run.
+func (s *Server) fastPathDecide(host string, port int, path string) (types.Decision, bool) {
+	if pat, ok := s.denyList.Match(host, port, path); ok {
+		return types.Decision{
+			Effect: types.EffectDeny,
+			Source: types.SourceDenyList,
+			RuleID: pat.Source,
+			Reason: "matched deny list: " + pat.Raw,
+		}, true
+	}
+	if pat, ok := s.allowList.Match(host, port, path); ok {
+		return types.Decision{
+			Effect: types.EffectAllow,
+			Source: types.SourceAllowList,
+			RuleID: pat.Source,
+			Reason: "matched allow list: " + pat.Raw,
+		}, true
+	}
+	return types.Decision{}, false
 }
 
 // SetAdvisorProvider lets tests swap the advisor's underlying

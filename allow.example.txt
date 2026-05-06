@@ -1,0 +1,25 @@
+# Example allow list. One pattern per line; comments start with `#`.
+# Format: host[:port][/path]
+#
+# Wildcards:
+#   *               any host
+#   *.example.com   any subdomain (a.example.com, a.b.example.com);
+#                   does NOT match the bare apex example.com
+#   host:443        exact port
+#   host            any port
+#   host/api/*      path prefix
+#   host/exact      exact path
+
+# Coding-agent baseline.
+api.github.com
+codeload.github.com
+*.githubusercontent.com
+github.com
+*.npmjs.org
+registry.npmjs.org
+pypi.org
+files.pythonhosted.org
+
+# Localhost (dev convenience).
+localhost
+127.0.0.1

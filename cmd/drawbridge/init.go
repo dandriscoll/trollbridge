@@ -34,31 +34,65 @@ identities:
       source_ip: 127.0.0.1
 
 policy:
+  # Fast-path lists. Evaluated BEFORE YAML rules and BEFORE the LLM
+  # advisor. A match is the final decision. Format per host[:port][/path].
+  allow_files:
+    - allow.txt
+  deny_files:
+    - deny.txt
+  # Structured rules for advanced cases (time windows, body patterns,
+  # ask_user, ask_llm). Optional.
   include:
     - rules.yaml
 `
 
-const defaultRulesYAML = `# Default rules.
-- id: deny-cloud-metadata
-  description: |
-    Cloud metadata services are credential-bearing and should never
-    be reachable by an agent.
-  priority: 1000
-  match:
-    host:
-      - 169.254.169.254
-      - metadata.google.internal
-      - metadata.azure.com
-  effect: deny
+const defaultRulesYAML = `# Optional structured rules. The simple cases live in allow.txt
+# and deny.txt; reach for this file only when you need time
+# windows, body patterns, identity scoping, or ask_user / ask_llm
+# effects.
+#
+# Example:
+#
+# - id: ask-on-mutating-github
+#   description: Mutating calls to api.github.com require approval.
+#   priority: 300
+#   match:
+#     host: api.github.com
+#     method: ["POST", "PUT", "PATCH", "DELETE"]
+#   effect: ask_user
+`
 
-- id: allow-localhost
-  description: Localhost traffic is permitted (dev convenience).
-  priority: 100
-  match:
-    host:
-      - localhost
-      - 127.0.0.1
-  effect: allow
+const defaultAllowTxt = `# allow.txt — flat allow list. One pattern per line. Comments
+# start with '#'. A match here = final allow (no rule engine, no
+# advisor consulted). Format:  host[:port][/path]
+#
+# Wildcards:
+#   *               any host (use sparingly)
+#   *.example.com   any subdomain of example.com (a.example.com,
+#                   a.b.example.com); does NOT match bare example.com
+#   host:443        exact port
+#   host            any port
+#   host/api/*      path prefix /api/
+#   host/exact      exact path
+#
+# Edit and grow this file to fit your agent's needs.
+
+# localhost (dev convenience)
+localhost
+127.0.0.1
+`
+
+const defaultDenyTxt = `# deny.txt — flat deny list. A match here = final deny (no rule
+# engine, no advisor consulted). Deny wins over allow.
+#
+# The defaults below cover credential-bearing endpoints that an
+# agent should never reach. Add to this file before broadening
+# your allow.txt.
+
+# Cloud instance metadata services (credential-bearing).
+169.254.169.254
+metadata.google.internal
+metadata.azure.com
 `
 
 func newInitCmd() *cobra.Command {
@@ -77,6 +111,8 @@ func newInitCmd() *cobra.Command {
 			files := map[string]string{
 				filepath.Join(dir, "drawbridge.yaml"): defaultConfigYAML,
 				filepath.Join(dir, "rules.yaml"):      defaultRulesYAML,
+				filepath.Join(dir, "allow.txt"):       defaultAllowTxt,
+				filepath.Join(dir, "deny.txt"):        defaultDenyTxt,
 			}
 			created := []string{}
 			for path, content := range files {

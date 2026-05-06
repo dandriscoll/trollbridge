@@ -9,7 +9,11 @@ deps.
 - [`DESIGN.md`](DESIGN.md) — full design document.
 - [`docs/deploy.md`](docs/deploy.md) — deployment recipes.
 - [`config.example.yaml`](config.example.yaml) — annotated config.
-- [`rules/base.example.yaml`](rules/base.example.yaml) — example rules.
+- [`allow.example.txt`](allow.example.txt) /
+  [`deny.example.txt`](deny.example.txt) — flat allow/deny
+  lists (the simple authoring surface; see DESIGN.md §10.8).
+- [`rules/base.example.yaml`](rules/base.example.yaml) —
+  structured rules (for the advanced cases).
 - [`packaging/`](packaging/) — systemd unit, Dockerfile, Incus
   cloud-init, firewall snippets.
 

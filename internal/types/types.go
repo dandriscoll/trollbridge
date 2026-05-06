@@ -50,6 +50,8 @@ const (
 	SourceLLMAdvisor      DecisionSource = "llm_advisor"
 	SourceApprovalQueue   DecisionSource = "approval_queue"
 	SourceApprovalTimeout DecisionSource = "approval_timeout"
+	SourceAllowList       DecisionSource = "allowlist"
+	SourceDenyList        DecisionSource = "denylist"
 )
 
 // Decision is the policy engine's output for a RequestEvent.

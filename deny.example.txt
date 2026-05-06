@@ -1,0 +1,15 @@
+# Example deny list. A match here = final deny (no engine, no advisor).
+# Deny wins over allow.
+#
+# Format and wildcards: same as allow.txt. See DESIGN.md §10.8.
+
+# Cloud instance metadata services (credential-bearing endpoints).
+169.254.169.254
+metadata.google.internal
+metadata.azure.com
+
+# Common pastebins / gists frequently used as exfil destinations.
+pastebin.com
+*.pastebin.com
+hastebin.com
+paste.ee

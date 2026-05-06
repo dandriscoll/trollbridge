@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/drawbridge/internal/hostlist"
 	"github.com/dandriscoll/drawbridge/internal/policy"
 	"github.com/dandriscoll/drawbridge/internal/server"
 	"github.com/spf13/cobra"
@@ -38,6 +39,17 @@ func newRunCmd() *cobra.Command {
 			if err != nil {
 				return &runtimeErr{err}
 			}
+
+			// Fast-path lists.
+			allow, err := hostlist.LoadFiles("allow", cfg.ResolveAllowFiles(configPath))
+			if err != nil {
+				return &configErr{err}
+			}
+			deny, err := hostlist.LoadFiles("deny", cfg.ResolveDenyFiles(configPath))
+			if err != nil {
+				return &configErr{err}
+			}
+			srv.SetHostLists(allow, deny)
 
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
