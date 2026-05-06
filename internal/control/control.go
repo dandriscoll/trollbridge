@@ -18,12 +18,19 @@ import (
 	"github.com/dandriscoll/drawbridge/internal/sessions"
 )
 
+// CAOps is the subset of the CA package the control plane needs.
+type CAOps interface {
+	FlushCache()
+	SHA256Fingerprint() string
+}
+
 // Server is the control-plane HTTP listener.
 type Server struct {
 	addr     string
 	queue    *approvals.Queue
 	sessions *sessions.Tracker
 	engine   *policy.Engine
+	ca       CAOps
 	srv      *http.Server
 }
 
@@ -37,6 +44,11 @@ func New(addr string, q *approvals.Queue, t *sessions.Tracker, e *policy.Engine)
 		engine:   e,
 	}
 }
+
+// SetCA wires a CA into the control plane (post-construction so
+// that interception-disabled deployments can still expose the
+// other endpoints).
+func (s *Server) SetCA(c CAOps) { s.ca = c }
 
 // ListenAndServe starts the control plane on addr; returns the
 // concrete bound address (helpful when addr=":0").
@@ -56,6 +68,18 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	mux.HandleFunc("/v1/rules/reload", s.rulesReload)
 	mux.HandleFunc("/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
+	})
+	mux.HandleFunc("/v1/ca/flush-cache", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if s.ca == nil {
+			http.Error(w, "interception is not enabled; nothing to flush", http.StatusBadRequest)
+			return
+		}
+		s.ca.FlushCache()
+		writeJSON(w, map[string]string{"status": "flushed", "ca_fingerprint": s.ca.SHA256Fingerprint()})
 	})
 	s.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {

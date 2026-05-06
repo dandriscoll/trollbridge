@@ -137,7 +137,28 @@ func (e *Engine) Decide(req *types.RequestEvent) types.Decision {
 		now:     e.clock(),
 		history: e.history,
 	}
+	// Track whether any rule we passed required a body sample we
+	// don't have. If a rule's only un-met clause is body_pattern
+	// AND sample is missing, we fail closed even if no other rule
+	// fires, so an attacker can't defeat a body-pattern rule by
+	// padding the body past the cap. (Carry-forward 032.I.4.)
+	bodyRequiredRuleID := ""
 	for _, r := range e.rules {
+		if r.Match.BodyPattern != "" && len(req.BodySample) == 0 {
+			// Check whether all OTHER clauses on this rule fire.
+			// If they do, then but-for the missing body, this
+			// rule would have decided. Honor it as a fail-closed
+			// deny.
+			if rule := r; ruleMatchesIgnoringBody(&rule, req, ctx) {
+				bodyRequiredRuleID = r.ID
+				return types.Decision{
+					Effect: types.EffectDeny,
+					Source: types.SourceRule,
+					RuleID: r.ID,
+					Reason: fmt.Sprintf("rule %s required body inspection but body sample was unavailable; failing closed", r.ID),
+				}
+			}
+		}
 		if r.matches(req, ctx) {
 			reason := r.Description
 			if reason == "" {
@@ -152,6 +173,7 @@ func (e *Engine) Decide(req *types.RequestEvent) types.Decision {
 			}
 		}
 	}
+	_ = bodyRequiredRuleID
 
 	// No rule matched: fall through to default mode.
 	switch e.mode {

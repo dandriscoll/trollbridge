@@ -69,6 +69,7 @@ conditions. See DESIGN.md for the full specification.`,
 		newApproveCmd(),
 		newDenyCmd(),
 		newSessionsCmd(),
+		newCACmd(),
 		newVersionCmd(),
 	)
 	return cmd

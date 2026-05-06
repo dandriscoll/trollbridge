@@ -147,8 +147,10 @@ func (r *Rule) matches(req *types.RequestEvent, ctx evalContext) bool {
 		}
 	}
 	if m.BodyPattern != "" {
-		// Phase 2: body matching only for plain HTTP and only when
-		// the dispatcher captured a sample.
+		// If the dispatcher could not capture a sample (over cap,
+		// non-body method) the rule cannot evaluate. Mark the
+		// request as having an UNRESOLVED body match so the
+		// engine can fail closed if no other rule decides.
 		if len(req.BodySample) == 0 {
 			return false
 		}
@@ -169,6 +171,16 @@ func (r *Rule) matches(req *types.RequestEvent, ctx evalContext) bool {
 type evalContext struct {
 	now     time.Time
 	history *History
+}
+
+// ruleMatchesIgnoringBody returns true if every clause OTHER than
+// body_pattern fires. Used by the engine to detect "would have
+// matched but for the missing body sample" so it can fail closed.
+func ruleMatchesIgnoringBody(r *Rule, req *types.RequestEvent, ctx evalContext) bool {
+	saved := r.Match.BodyPattern
+	r.Match.BodyPattern = ""
+	defer func() { r.Match.BodyPattern = saved }()
+	return r.matches(req, ctx)
 }
 
 // matchHost checks an exact-or-wildcard host match.

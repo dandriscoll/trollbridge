@@ -5,6 +5,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -20,10 +21,12 @@ import (
 
 	"github.com/dandriscoll/drawbridge/internal/approvals"
 	"github.com/dandriscoll/drawbridge/internal/audit"
+	"github.com/dandriscoll/drawbridge/internal/ca"
 	"github.com/dandriscoll/drawbridge/internal/config"
 	"github.com/dandriscoll/drawbridge/internal/control"
 	"github.com/dandriscoll/drawbridge/internal/identity"
 	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/drawbridge/internal/redact"
 	"github.com/dandriscoll/drawbridge/internal/sessions"
 	"github.com/dandriscoll/drawbridge/internal/types"
 
@@ -44,6 +47,10 @@ type Server struct {
 	queue    *approvals.Queue
 	sessions *sessions.Tracker
 	control  *control.Server
+
+	ca           *ca.CA
+	originRoots  *x509.CertPool
+	redactor     *redact.Config
 
 	transport *http.Transport
 	logger    *log.Logger
@@ -92,6 +99,47 @@ func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.
 		control:  control.New(cfg.Approvals.ControlListen, q, t, engine),
 		MaxBodySampleBytes: 1 << 20, // 1 MiB
 	}
+	// Build the redactor config from cfg.Redaction.
+	redactorJSONPaths := []string{}
+	redactorBodyRegexes := []string{}
+	for _, br := range cfg.Redaction.BodyRedactors {
+		if br.JSONPath != "" {
+			redactorJSONPaths = append(redactorJSONPaths, br.JSONPath)
+		}
+		if br.Regex != "" {
+			redactorBodyRegexes = append(redactorBodyRegexes, br.Regex)
+		}
+	}
+	queryRegexes := []string{}
+	for _, qr := range cfg.Redaction.QueryRedactors {
+		queryRegexes = append(queryRegexes, qr.Regex)
+	}
+	rcfg, err := redact.Compile(redactorJSONPaths, redactorBodyRegexes, queryRegexes, cfg.Redaction.DefaultModifiers)
+	if err != nil {
+		return nil, fmt.Errorf("redaction compile: %w", err)
+	}
+	s.redactor = rcfg
+
+	// Load the CA only if interception is enabled.
+	if cfg.Interception.Enabled {
+		ttl := time.Duration(cfg.Interception.LeafCertTTLHours) * time.Hour
+		caObj, err := ca.Load(
+			cfg.Interception.CA.CertPath,
+			cfg.Interception.CA.KeyPath,
+			ca.KeyType(cfg.Interception.LeafKeyType),
+			ttl,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("interception enabled but CA load failed: %w", err)
+		}
+		s.ca = caObj
+		s.control.SetCA(caObj)
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil || roots == nil {
+		roots = x509.NewCertPool()
+	}
+	s.originRoots = roots
 	s.transport = &http.Transport{
 		MaxIdleConns:        cfg.Forwarder.MaxIdleConns,
 		MaxIdleConnsPerHost: cfg.Forwarder.MaxIdleConnsPerHost,
@@ -101,6 +149,13 @@ func NewWithAudit(cfg *config.Config, engine *policy.Engine, auditLogger *audit.
 		Addr:              net.JoinHostPort(cfg.Listen.Address, strconv.Itoa(cfg.Listen.Port)),
 		Handler:           http.HandlerFunc(s.serveHTTP),
 		ReadHeaderTimeout: 30 * time.Second,
+		ConnState: func(c net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				if s.sessions != nil {
+					s.sessions.Drop(c.RemoteAddr().String())
+				}
+			}
+		},
 	}
 	return s, nil
 }
@@ -490,10 +545,18 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.trackConn(clientConn)
-	s.trackConn(upstream)
 	defer s.untrackConn(clientConn)
-	defer s.untrackConn(upstream)
 
+	if s.shouldIntercept(host) {
+		// Phase 3: terminate TLS, dispatch per-request.
+		upstream.Close() // we'll dial upstream per-request
+		s.writeAudit(req, decision, "", 0, http.StatusOK, 0, time.Since(start), "")
+		_ = s.interceptCONNECT(clientConn, host, port, sess.ID, identityID)
+		return
+	}
+
+	s.trackConn(upstream)
+	defer s.untrackConn(upstream)
 	bytesIn, bytesOut := pipeBidir(clientConn, upstream)
 	s.writeAudit(req, decision, "", 0, http.StatusOK, bytesIn+bytesOut, time.Since(start), "")
 }
@@ -523,6 +586,59 @@ func setReadDeadlineNow(c net.Conn) error {
 		return d.SetReadDeadline(time.Now())
 	}
 	return nil
+}
+
+// writeAuditWithBody is like writeAudit but also redacts and stores a
+// body sample (used by the interception path).
+func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, body []byte, status int, size int64, latency time.Duration, errStr string) {
+	queryRedacted, _ := s.redactor.Query(req.Headers.Get("X-Original-Query"))
+	headers, headerCount := s.redactor.Headers(req.Headers, d.Modifiers)
+	_ = headers
+	bodyRes := s.redactor.Body(body, req.Headers.Get("Content-Type"))
+	sample, truncated := redact.SampleForAudit(bodyRes.Output, 4096)
+	entry := audit.Entry{
+		DrawbridgeVersion:    Version,
+		AuditSchemaVersion:   1,
+		RequestID:            req.ID,
+		SessionID:            req.SessionID,
+		IdentityID:           req.IdentityID,
+		ClientAddr:           req.ClientAddr,
+		Method:               req.Method,
+		Scheme:               req.Scheme,
+		Host:                 req.Host,
+		Port:                 req.Port,
+		Path:                 req.Path,
+		QueryRedacted:        queryRedacted,
+		Decision:             string(d.Effect),
+		DecisionSource:       string(d.Source),
+		RuleID:               d.RuleID,
+		RuleSetVersion:       s.engine.RuleSetVersion(),
+		LLMAdvisorID:         d.AdvisorID,
+		LLMConfidence:        "n/a",
+		LLMInputHash:         "",
+		Reason:               d.Reason,
+		RedactionApplied:     headerCount+bodyRes.RedactedFields > 0,
+		RedactedFieldCount:   headerCount + bodyRes.RedactedFields,
+		BodyInspectionStatus: inspectionStatus(len(body) > 0, truncated),
+		RequestBodySample:    string(sample),
+		ResponseStatus:       status,
+		ResponseSizeBytes:    size,
+		LatencyMS:            latency.Milliseconds(),
+		Error:                errStr,
+	}
+	if err := s.audit.Write(entry); err != nil {
+		s.logger.Printf("audit write: %v", err)
+	}
+}
+
+func inspectionStatus(hasBody, truncated bool) string {
+	if !hasBody {
+		return "not_required"
+	}
+	if truncated {
+		return "truncated"
+	}
+	return "inspected"
 }
 
 func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryRedacted string, redactedCount int, status int, size int64, latency time.Duration, errStr string) {

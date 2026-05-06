@@ -152,6 +152,10 @@ func (l *Logger) writeLoop(f *os.File) {
 	defer l.wg.Done()
 	defer f.Close()
 	enc := json.NewEncoder(f)
+	// Disable HTML escaping so redaction markers like "<redacted>"
+	// land as literal angle brackets in the audit log; this is a
+	// JSONL log, not HTML embedding.
+	enc.SetEscapeHTML(false)
 	for e := range l.ch {
 		if err := enc.Encode(e); err != nil {
 			fmt.Fprintf(os.Stderr, "audit: encode failed: %v\n", err)
