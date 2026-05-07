@@ -2,21 +2,34 @@
 # scripts/release.sh — bump version, tag, and cut a drawbridge release.
 #
 # Single-command release flow: reads the current version from the
-# README, prompts for major/minor, computes the new version, edits
-# the version-bearing files, commits + annotated-tags, cross-builds
-# the four realistic *nix target/arch combinations, pushes main
-# + the new tag to origin, and uploads the artifacts to a GitHub
-# release via the gh CLI.
+# README, prompts for major/minor/patch, computes the new version,
+# edits the version-bearing files, commits + annotated-tags,
+# cross-builds the four realistic *nix target/arch combinations,
+# pushes main + the new tag to origin, and uploads the artifacts to
+# a GitHub release via the gh CLI.
 #
 # Usage:
-#   scripts/release.sh [--bump <major|minor>] [--yes] [--dry-run] [--force] [--help]
+#   scripts/release.sh [--bump <major|minor|patch>] [--prerelease <suffix>]
+#                      [--yes] [--dry-run] [--force] [--help]
 #
 # Examples:
-#   scripts/release.sh                            # interactive: prompts for kind, then [y/N]
-#   scripts/release.sh --bump minor               # non-interactive kind, still prompts [y/N]
-#   scripts/release.sh --bump minor --yes         # non-interactive end-to-end
-#   scripts/release.sh --dry-run                  # apply bumps to working tree, build dist/, skip commit/tag/push/publish
-#   scripts/release.sh --bump major --force       # overwrite an already-published release at the new tag
+#   scripts/release.sh                                  # interactive: prompts for kind, then [y/N]
+#   scripts/release.sh --bump minor                     # non-interactive kind, still prompts [y/N]
+#   scripts/release.sh --bump minor --yes               # non-interactive end-to-end
+#   scripts/release.sh --bump patch --yes               # patch release, e.g., v0.2.0 -> v0.2.1
+#   scripts/release.sh --bump minor --prerelease rc.1   # pre-release, e.g., v0.1.0 -> v0.2.0-rc.1
+#   scripts/release.sh --dry-run                        # apply bumps to working tree, build dist/, skip commit/tag/push/publish
+#   scripts/release.sh --bump major --force             # overwrite an already-published release at the new tag
+#
+# Pre-release semantics (MVP — see issue #2 for limitations):
+#   - --prerelease <suffix> appends "-<suffix>" to the bumped version.
+#   - If the current version (parsed from README) already has a
+#     "-<suffix>" segment, the bump axis applies to the version
+#     BEFORE that suffix (so v0.2.0-rc.1 + --bump minor +
+#     --prerelease rc.2 -> v0.3.0-rc.2).
+#   - --prerelease REQUIRES --bump in the MVP. Iterating an rc on
+#     the same target version, or finalizing an rc to its release,
+#     is not yet supported; manually tag for those cases.
 #
 # Preflight (fail-closed before any destructive action):
 #   - working tree clean (tracked AND untracked),
@@ -46,6 +59,7 @@ set -euo pipefail
 # ---------- argument parsing ----------
 
 BUMP=""
+PRERELEASE=""
 YES=0
 DRY_RUN=0
 FORCE=0
@@ -59,7 +73,15 @@ while [[ $# -gt 0 ]]; do
         --bump)
             BUMP="${2:-}"
             if [[ -z "$BUMP" ]]; then
-                echo "release failed: --bump requires an argument; fix: --bump <major|minor>" >&2
+                echo "release failed: --bump requires an argument; fix: --bump <major|minor|patch>" >&2
+                exit 2
+            fi
+            shift 2
+            ;;
+        --prerelease)
+            PRERELEASE="${2:-}"
+            if [[ -z "$PRERELEASE" ]]; then
+                echo "release failed: --prerelease requires a non-empty suffix; fix: --prerelease rc.1 (or similar)" >&2
                 exit 2
             fi
             shift 2
@@ -74,6 +96,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# MVP: --prerelease requires --bump (iterate / finalize not yet
+# supported; see issue #2).
+if [[ -n "$PRERELEASE" && -z "$BUMP" ]]; then
+    echo "release failed: --prerelease requires --bump in the MVP (issue #2 v2 will support iterate/finalize); fix: pass --bump <axis> alongside --prerelease, or manually tag for iterate/finalize" >&2
+    exit 2
+fi
 
 # ---------- environment detection ----------
 
@@ -111,14 +140,16 @@ SERVER_GO="$REPO_ROOT/internal/server/server.go"
 
 # Anchor: the README's release-asset URL fragment, e.g.,
 #   releases/download/v0.1.0/drawbridge_v0.1.0_linux_amd64.tar.gz
+# Or with a pre-release suffix:
+#   releases/download/v0.2.0-rc.1/drawbridge_v0.2.0-rc.1_linux_amd64.tar.gz
 # Stable across releases because release.sh always tarball-names the
 # same way.
 discover_current_version() {
     local v
-    v="$(grep -oE 'releases/download/v[0-9]+\.[0-9]+\.[0-9]+/' "$README" | head -1 \
-        | sed -E 's|releases/download/v([0-9]+\.[0-9]+\.[0-9]+)/|\1|')"
+    v="$(grep -oE 'releases/download/v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?/' "$README" | head -1 \
+        | sed -E 's|releases/download/v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?)/|\1|')"
     if [[ -z "$v" ]]; then
-        echo "discover failed: cannot find a 'releases/download/vX.Y.Z/' URL in README; fix: ensure README has the install snippet from job 040" >&2
+        echo "discover failed: cannot find a 'releases/download/vX.Y.Z[-suffix]/' URL in README; fix: ensure README has the install snippet from job 040" >&2
         exit 1
     fi
     echo "$v"
@@ -133,21 +164,34 @@ prompt_bump_kind() {
     else
         # Read full word; one shot, no loop. Operator who fat-fingers
         # gets a clear error and re-runs.
-        read -r -p "bump kind [major|minor]: " answer
+        read -r -p "bump kind [major|minor|patch]: " answer
     fi
     # Case-fold so 'Major', 'MINOR', etc. all work.
     echo "$answer" | tr '[:upper:]' '[:lower:]'
 }
 
+# Strip an optional "-<suffix>" segment from a version string.
+# "0.2.0-rc.1" -> "0.2.0"; "0.2.0" -> "0.2.0".
+strip_prerelease() {
+    echo "${1%%-*}"
+}
+
 compute_new_version() {
+    # Accepts a current version with OR without a pre-release suffix
+    # (e.g., "0.2.0" or "0.2.0-rc.1"). The bump axis applies to the
+    # SemVer-numeric portion only; any suffix on the current version
+    # is dropped before the math, and the caller in main re-appends
+    # the new --prerelease suffix if one was supplied.
     local current="$1" kind="$2"
-    local major minor patch
-    IFS=. read -r major minor patch <<< "$current"
+    local numeric major minor patch
+    numeric="$(strip_prerelease "$current")"
+    IFS=. read -r major minor patch <<< "$numeric"
     case "$kind" in
         major) echo "$((major + 1)).0.0" ;;
         minor) echo "${major}.$((minor + 1)).0" ;;
+        patch) echo "${major}.${minor}.$((patch + 1))" ;;
         *)
-            echo "bump failed: invalid kind '$kind'; fix: use 'major' or 'minor'" >&2
+            echo "bump failed: invalid kind '$kind'; fix: use 'major', 'minor', or 'patch'" >&2
             exit 1
             ;;
     esac
@@ -337,6 +381,9 @@ echo "discover: current version v${CURRENT}" >&2
 
 KIND="$(prompt_bump_kind)"
 NEW="$(compute_new_version "$CURRENT" "$KIND")"
+if [[ -n "$PRERELEASE" ]]; then
+    NEW="${NEW}-${PRERELEASE}"
+fi
 echo "bump: v${CURRENT} → v${NEW}" >&2
 
 if ! confirm "proceed with bump to v${NEW}?"; then
