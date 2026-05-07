@@ -1,4 +1,5 @@
 bin/
+dist/
 *.audit.jsonl
 drawbridge.audit.jsonl
 *.bak

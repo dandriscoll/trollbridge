@@ -19,9 +19,29 @@ deps.
 - [`packaging/`](packaging/) — systemd unit, Dockerfile, Incus
   cloud-init, firewall snippets.
 
-## Quickstart
+## Install
+
+Pre-built binaries for Linux and macOS (amd64 and arm64) are
+attached to each tagged release on the
+[releases page](https://github.com/dandriscoll/drawbridge/releases).
 
 ```sh
+# Replace v0.1.0 and the os/arch with the current release.
+curl -L -o drawbridge.tar.gz \
+  https://github.com/dandriscoll/drawbridge/releases/download/v0.1.0/drawbridge_v0.1.0_linux_amd64.tar.gz
+# Verify against the release's SHA256SUMS file before extracting.
+tar -xzf drawbridge.tar.gz
+sudo install -m 0755 drawbridge_v0.1.0_linux_amd64/drawbridge /usr/local/bin/drawbridge
+drawbridge version
+```
+
+## Build from source
+
+Requires Go 1.26+.
+
+```sh
+git clone https://github.com/dandriscoll/drawbridge.git
+cd drawbridge
 make build
 ./bin/drawbridge --help
 ./bin/drawbridge init -d ~/.drawbridge
