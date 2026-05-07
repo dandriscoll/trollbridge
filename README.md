@@ -28,10 +28,10 @@ attached to each tagged release on the
 ```sh
 # Replace v0.1.0 and the os/arch with the current release.
 curl -L -o drawbridge.tar.gz \
-  https://github.com/dandriscoll/drawbridge/releases/download/v0.1.0/drawbridge_v0.1.0_linux_amd64.tar.gz
+  https://github.com/dandriscoll/drawbridge/releases/download/v0.1.1/drawbridge_v0.1.1_linux_amd64.tar.gz
 # Verify against the release's SHA256SUMS file before extracting.
 tar -xzf drawbridge.tar.gz
-sudo install -m 0755 drawbridge_v0.1.0_linux_amd64/drawbridge /usr/local/bin/drawbridge
+sudo install -m 0755 drawbridge_v0.1.1_linux_amd64/drawbridge /usr/local/bin/drawbridge
 drawbridge version
 ```
 
