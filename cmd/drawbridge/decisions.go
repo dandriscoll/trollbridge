@@ -9,6 +9,7 @@ import (
 
 	"github.com/dandriscoll/drawbridge/internal/audit"
 	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/drawbridge/internal/controlclient"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +29,7 @@ func newDecisionsCmd() *cobra.Command {
 				return &configErr{err}
 			}
 			if pending {
-				body, err := controlGET(cfg, "/v1/holds")
+				body, err := controlclient.Get(cfg, "/v1/holds")
 				if err != nil {
 					return &runtimeErr{err}
 				}

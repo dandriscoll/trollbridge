@@ -1,14 +1,12 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"time"
 
 	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/drawbridge/internal/controlclient"
 	"github.com/spf13/cobra"
 )
 
@@ -55,7 +53,7 @@ func newSessionsCmd() *cobra.Command {
 			if err != nil {
 				return &configErr{err}
 			}
-			body, err := controlGET(cfg, "/v1/sessions")
+			body, err := controlclient.Get(cfg, "/v1/sessions")
 			if err != nil {
 				return &runtimeErr{err}
 			}
@@ -75,38 +73,13 @@ func holdAction(configPath, id, action, scope, reason string, out io.Writer) err
 	if err != nil {
 		return &configErr{err}
 	}
-	url := fmt.Sprintf("http://%s/v1/holds/%s/%s", cfg.Approvals.ControlListen, id, action)
-	body, _ := json.Marshal(map[string]string{"scope": scope, "reason": reason})
-	httpClient := &http.Client{Timeout: 5 * time.Second}
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := httpClient.Do(req)
+	respBody, err := controlclient.HoldAction(cfg, id, action, scope, reason)
 	if err != nil {
-		return &runtimeErr{fmt.Errorf("control API: %w", err)}
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode == http.StatusNotFound {
-		return &holdNotFoundErr{fmt.Errorf("hold %s not found", id)}
-	}
-	if resp.StatusCode >= 400 {
-		return &runtimeErr{fmt.Errorf("control API: %s: %s", resp.Status, string(respBody))}
+		if errors.Is(err, controlclient.ErrHoldNotFound) {
+			return &holdNotFoundErr{fmt.Errorf("hold %s not found", id)}
+		}
+		return &runtimeErr{err}
 	}
 	fmt.Fprintln(out, string(respBody))
 	return nil
-}
-
-func controlGET(cfg *config.Config, path string) ([]byte, error) {
-	url := fmt.Sprintf("http://%s%s", cfg.Approvals.ControlListen, path)
-	httpClient := &http.Client{Timeout: 5 * time.Second}
-	resp, err := httpClient.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("%s: %s", resp.Status, string(body))
-	}
-	return io.ReadAll(resp.Body)
 }

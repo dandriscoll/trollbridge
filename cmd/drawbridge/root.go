@@ -121,12 +121,14 @@ conditions. See DESIGN.md for the full specification.`,
 		op(newInitCmd(), groupConfigure),
 		op(newValidateCmd(), groupConfigure),
 		op(newRulesCmd(), groupConfigure),
+		op(newEnvCmd(), groupConfigure),
 
 		op(newDecisionsCmd(), groupAudit),
 		op(newLogsCmd(), groupAudit),
 		op(newSessionsCmd(), groupAudit),
 		op(newApproveCmd(), groupAudit),
 		op(newDenyCmd(), groupAudit),
+		op(newTUICmd(), groupAudit),
 
 		op(newCACmd(), groupCA),
 	)

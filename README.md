@@ -62,12 +62,30 @@ DRAWBRIDGE_LOG_LEVEL=debug ./bin/drawbridge run -c ~/.drawbridge/drawbridge.yaml
 Operational lines carry a `request_id=` field that correlates with
 the same field in the audit log.
 
-Then in another shell:
+Then in another shell, wire the client's proxy env:
 
 ```sh
-export HTTPS_PROXY=http://127.0.0.1:8080
+eval "$(drawbridge env -c ~/.drawbridge/drawbridge.yaml)"
 curl https://example.com   # subject to your policy
 ```
+
+`drawbridge env` reads the listen address from your config and emits
+the upper- and lowercase `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`
+exports a client needs.
+
+## Approvals TUI
+
+When the policy holds a request for operator approval, list and
+resolve held requests in real time with:
+
+```sh
+drawbridge tui -c ~/.drawbridge/drawbridge.yaml
+```
+
+Keys: `a` approve · `d` deny · `↑↓` (or `j`/`k`) select · `r` refresh
+now · `q` quit. The list refreshes automatically as the queue
+changes; one-shot `drawbridge approve <id>` / `drawbridge deny <id>`
+remain available for scripted use.
 
 For TLS interception:
 
