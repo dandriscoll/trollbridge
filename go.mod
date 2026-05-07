@@ -2,6 +2,8 @@ module github.com/dandriscoll/drawbridge
 
 go 1.26
 
+toolchain go1.26.2
+
 require (
 	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.10.2
