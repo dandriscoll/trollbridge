@@ -1,8 +1,10 @@
 // Package console implements drawbridge's interactive operator REPL.
 // It runs only when stdin is a tty so that systemd/Docker
-// deployments are unaffected. Commands edit allow.txt / deny.txt
-// (the only mutation paths besides direct file edits); the file
-// watcher picks up the change and reloads.
+// deployments are unaffected. Commands edit `lists.allow` and
+// `lists.deny` inside drawbridge.yaml via internal/configwrite (a
+// yaml-Node-level edit that preserves comments outside the lists
+// subtree); after a successful write the supplied OnReload callback
+// re-parses the file and updates the running matcher.
 package console
 
 import (
@@ -13,14 +15,22 @@ import (
 	"os"
 	"strings"
 
+	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/drawbridge/internal/configwrite"
 	"github.com/dandriscoll/drawbridge/internal/hostlist"
 )
 
 // Config holds the inputs the console needs from the rest of the
 // system.
 type Config struct {
-	AllowPaths []string // file path(s); first is the write target
-	DenyPaths  []string
+	// ConfigPath is the path to drawbridge.yaml. Mutations rewrite
+	// it in place via configwrite.
+	ConfigPath string
+
+	// OnReload is invoked after each successful list mutation so
+	// the running daemon can re-parse the config and refresh its
+	// in-memory matcher.
+	OnReload func()
 
 	// In, Out are the IO streams. Defaults to os.Stdin / os.Stdout
 	// when not set.
@@ -95,15 +105,15 @@ func (c *repl) handle(line string) bool {
 	cmd, arg := splitCmd(line)
 	switch strings.ToLower(cmd) {
 	case "allow":
-		c.addPattern("allow", c.cfg.AllowPaths, arg)
+		c.addPattern("allow", arg)
 	case "deny":
-		c.addPattern("deny", c.cfg.DenyPaths, arg)
+		c.addPattern("deny", arg)
 	case "remove", "rm":
 		c.removePattern(arg)
 	case "list", "ls":
 		c.listEntries(arg)
 	case "reload":
-		c.printf("ok (the file watcher reloads on mtime change automatically; no manual reload needed)\n")
+		c.triggerReload()
 	case "help", "?":
 		c.printHelp()
 	case "quit", "exit":
@@ -114,7 +124,7 @@ func (c *repl) handle(line string) bool {
 	return false
 }
 
-func (c *repl) addPattern(label string, paths []string, pattern string) {
+func (c *repl) addPattern(label, pattern string) {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {
 		c.printf("usage: %s <pattern>\n", label)
@@ -124,26 +134,31 @@ func (c *repl) addPattern(label string, paths []string, pattern string) {
 		c.printf("invalid pattern: %s\n", err)
 		return
 	}
-	if len(paths) == 0 {
-		c.printf("no %s file configured\n", label)
+	if c.cfg.ConfigPath == "" {
+		c.printf("no config path configured (cannot persist mutation)\n")
 		return
 	}
-	target := paths[0]
-	lines, err := hostlist.ReadLines(target)
+	var (
+		changed bool
+		err     error
+	)
+	switch label {
+	case "allow":
+		changed, err = configwrite.AddAllow(c.cfg.ConfigPath, pattern)
+	case "deny":
+		changed, err = configwrite.AddDeny(c.cfg.ConfigPath, pattern)
+	}
 	if err != nil {
-		c.printf("read %s: %s\n", target, err)
+		c.printf("write %s: %s\n", c.cfg.ConfigPath, err)
 		return
 	}
-	updated, added := hostlist.AppendUnique(lines, pattern)
-	if !added {
-		c.printf("%s already in %s\n", pattern, target)
+	if !changed {
+		c.printf("%s already in %s list\n", pattern, label)
 		return
 	}
-	if err := hostlist.WriteLines(target, updated); err != nil {
-		c.printf("write %s: %s\n", target, err)
-		return
-	}
-	c.printf("added %s to %s (%d patterns total)\n", pattern, target, countPatterns(updated))
+	count := c.countList(label)
+	c.printf("added %s to %s (%d patterns total)\n", pattern, label, count)
+	c.triggerReload()
 }
 
 func (c *repl) removePattern(pattern string) {
@@ -152,90 +167,104 @@ func (c *repl) removePattern(pattern string) {
 		c.printf("usage: remove <pattern>\n")
 		return
 	}
-	totalRemoved := 0
-	for _, group := range [][]string{c.cfg.AllowPaths, c.cfg.DenyPaths} {
-		for _, p := range group {
-			lines, err := hostlist.ReadLines(p)
-			if err != nil {
-				c.printf("read %s: %s\n", p, err)
-				continue
-			}
-			updated, removed := hostlist.RemoveMatching(lines, pattern)
-			if removed {
-				totalRemoved++
-				if err := hostlist.WriteLines(p, updated); err != nil {
-					c.printf("write %s: %s\n", p, err)
-					continue
-				}
-				c.printf("removed %s from %s\n", pattern, p)
-			}
-		}
+	if c.cfg.ConfigPath == "" {
+		c.printf("no config path configured\n")
+		return
 	}
-	if totalRemoved == 0 {
-		c.printf("%s not found in any configured list\n", pattern)
+	removedAllow, err := configwrite.RemoveAllow(c.cfg.ConfigPath, pattern)
+	if err != nil {
+		c.printf("write %s: %s\n", c.cfg.ConfigPath, err)
+		return
 	}
+	removedDeny, err := configwrite.RemoveDeny(c.cfg.ConfigPath, pattern)
+	if err != nil {
+		c.printf("write %s: %s\n", c.cfg.ConfigPath, err)
+		return
+	}
+	switch {
+	case removedAllow && removedDeny:
+		c.printf("removed %s from allow and deny\n", pattern)
+	case removedAllow:
+		c.printf("removed %s from allow\n", pattern)
+	case removedDeny:
+		c.printf("removed %s from deny\n", pattern)
+	default:
+		c.printf("%s not found in any list\n", pattern)
+		return
+	}
+	c.triggerReload()
 }
 
 func (c *repl) listEntries(arg string) {
 	arg = strings.ToLower(strings.TrimSpace(arg))
-	groups := []struct {
-		name  string
-		paths []string
-	}{}
-	switch arg {
-	case "", "all":
-		groups = append(groups,
-			struct {
-				name  string
-				paths []string
-			}{"allow", c.cfg.AllowPaths},
-			struct {
-				name  string
-				paths []string
-			}{"deny", c.cfg.DenyPaths})
-	case "allow":
-		groups = append(groups, struct {
-			name  string
-			paths []string
-		}{"allow", c.cfg.AllowPaths})
-	case "deny":
-		groups = append(groups, struct {
-			name  string
-			paths []string
-		}{"deny", c.cfg.DenyPaths})
-	default:
-		c.printf("usage: list [allow|deny|all]\n")
+	cfg, err := config.Load(c.cfg.ConfigPath)
+	if err != nil {
+		c.printf("load %s: %s\n", c.cfg.ConfigPath, err)
 		return
 	}
-	for _, g := range groups {
-		c.printf("%s:\n", g.name)
-		count := 0
-		for _, p := range g.paths {
-			lines, err := hostlist.ReadLines(p)
-			if err != nil {
-				c.printf("  read %s: %s\n", p, err)
-				continue
-			}
-			for _, ln := range lines {
-				t := strings.TrimSpace(ln)
-				if t == "" || strings.HasPrefix(t, "#") {
-					continue
-				}
-				c.printf("  %s\n", ln)
-				count++
-			}
+	switch arg {
+	case "", "all":
+		c.printList("allow", cfg.Lists.Allow)
+		c.printList("deny", cfg.Lists.Deny)
+	case "allow":
+		c.printList("allow", cfg.Lists.Allow)
+	case "deny":
+		c.printList("deny", cfg.Lists.Deny)
+	default:
+		c.printf("usage: list [allow|deny|all]\n")
+	}
+}
+
+func (c *repl) printList(name string, entries []string) {
+	c.printf("%s:\n", name)
+	count := 0
+	for _, e := range entries {
+		t := strings.TrimSpace(e)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
 		}
-		c.printf("(%d patterns)\n", count)
+		c.printf("  %s\n", e)
+		count++
+	}
+	c.printf("(%d patterns)\n", count)
+}
+
+func (c *repl) countList(label string) int {
+	cfg, err := config.Load(c.cfg.ConfigPath)
+	if err != nil {
+		return -1
+	}
+	var entries []string
+	switch label {
+	case "allow":
+		entries = cfg.Lists.Allow
+	case "deny":
+		entries = cfg.Lists.Deny
+	}
+	n := 0
+	for _, e := range entries {
+		t := strings.TrimSpace(e)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
+func (c *repl) triggerReload() {
+	if c.cfg.OnReload != nil {
+		c.cfg.OnReload()
 	}
 }
 
 func (c *repl) printHelp() {
 	c.printf(`commands:
-  allow <pattern>    add to the first configured allow file
-  deny <pattern>     add to the first configured deny file
-  remove <pattern>   remove from any configured list (case-insensitive)
+  allow <pattern>    add to lists.allow in drawbridge.yaml
+  deny <pattern>     add to lists.deny in drawbridge.yaml
+  remove <pattern>   remove from either list
   list [allow|deny]  show current patterns
-  reload             (no-op; the watcher reloads automatically)
+  reload             re-parse drawbridge.yaml into the running matcher
   help               this text
   quit | exit        leave the console (the proxy keeps running)
 `)
@@ -247,18 +276,6 @@ func splitCmd(line string) (string, string) {
 		return line[:i], strings.TrimSpace(line[i:])
 	}
 	return line, ""
-}
-
-func countPatterns(lines []string) int {
-	n := 0
-	for _, ln := range lines {
-		t := strings.TrimSpace(ln)
-		if t == "" || strings.HasPrefix(t, "#") {
-			continue
-		}
-		n++
-	}
-	return n
 }
 
 func (c *repl) printf(format string, args ...any) {

@@ -35,7 +35,7 @@ CA is in the system trust store.`,
 			}
 			out := cmd.OutOrStdout()
 			fmt.Fprintln(out, "drawbridge selftest:")
-			fmt.Fprintln(out, "  proxy:", cfg.Listen.Address+":"+itoa(cfg.Listen.Port))
+			fmt.Fprintln(out, "  proxy:", cfg.BindAddr(cfg.Ports.Proxy))
 
 			if fromVM {
 				return selftestFromVM(cmd.Context(), out, cfg)
@@ -50,7 +50,7 @@ CA is in the system trust store.`,
 
 func selftestLocal(ctx context.Context, out interface{ Write(p []byte) (int, error) }, cfg *config.Config) error {
 	w := func(s string) { fmt.Fprintln(out, s) }
-	addr := cfg.Listen.Address + ":" + itoa(cfg.Listen.Port)
+	addr := cfg.BindAddr(cfg.Ports.Proxy)
 	conn, err := dialWithCtx(ctx, addr, 2*time.Second)
 	if err != nil {
 		w("  proxy reachable:    NO  (" + err.Error() + ")")
@@ -58,13 +58,13 @@ func selftestLocal(ctx context.Context, out interface{ Write(p []byte) (int, err
 		conn.Close()
 		w("  proxy reachable:    yes")
 	}
-	if cfg.Approvals.ControlListen != "" {
-		conn, err = dialWithCtx(ctx, cfg.Approvals.ControlListen, 2*time.Second)
+	if cfg.Ports.Control != 0 {
+		conn, err = dialWithCtx(ctx, cfg.BindAddr(cfg.Ports.Control), 2*time.Second)
 		if err != nil {
 			w("  control reachable:  NO  (" + err.Error() + ")")
 		} else {
 			conn.Close()
-			w("  control reachable:  yes")
+			w("  control reachable:  yes  (TLS-terminated; mTLS required for /v1/* except healthz)")
 		}
 	}
 	return nil
@@ -94,7 +94,7 @@ func selftestFromVM(ctx context.Context, out interface{ Write(p []byte) (int, er
 	}
 
 	// 2. Through the proxy.
-	proxyAddr := cfg.Listen.Address + ":" + itoa(cfg.Listen.Port)
+	proxyAddr := cfg.BindAddr(cfg.Ports.Proxy)
 	pURL, _ := url.Parse("http://" + proxyAddr)
 	viaProxy := &http.Client{
 		Transport: &http.Transport{

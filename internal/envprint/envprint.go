@@ -17,8 +17,8 @@ import (
 // (curl, wget, and a number of other Unix tools read the
 // lowercase variants only).
 func Render(cfg *config.Config) string {
-	host := connectHost(cfg.Listen.Address)
-	proxyURL := fmt.Sprintf("http://%s:%d", host, cfg.Listen.Port)
+	host := connectHost(cfg.BindHost())
+	proxyURL := fmt.Sprintf("http://%s:%d", host, cfg.Ports.Proxy)
 	noProxy := "localhost,127.0.0.1"
 
 	var b strings.Builder

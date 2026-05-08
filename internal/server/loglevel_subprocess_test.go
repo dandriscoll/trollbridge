@@ -90,20 +90,21 @@ func TestSubprocess_DrawbridgeLogLevelEnvHonored(t *testing.T) {
 
 	rules := fmt.Sprintf("- id: a\n  match: {host: %s}\n  effect: allow\n", originHost)
 	os.WriteFile(rulesPath, []byte(rules), 0o600)
-	cfgYAML := fmt.Sprintf(`drawbridge_version: 1
-listen: {address: 127.0.0.1, port: %s}
+	_ = ctrlAddr
+	cfgYAML := fmt.Sprintf(`drawbridge_version: 2
+adapter: lo
+ports: {proxy: %s, control: 0}
 mode: default-deny
 logging:
   audit_path: %s
 approvals:
-  control_listen: %s
   timeout_seconds: 5
 identities:
   - id: test
     match: {source_ip: 127.0.0.1}
 policy:
   include: [%s]
-`, proxyPort, auditPath, ctrlAddr, rulesPath)
+`, proxyPort, auditPath, rulesPath)
 	os.WriteFile(cfgPath, []byte(cfgYAML), 0o600)
 
 	runOnce := func(envExtra ...string) string {

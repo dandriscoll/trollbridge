@@ -30,11 +30,11 @@ func newValidateCmd() *cobra.Command {
 			if err != nil {
 				return &configErr{err}
 			}
-			allow, err := hostlist.LoadFiles("allow", cfg.ResolveAllowFiles(configPath))
+			allow, err := hostlist.LoadInline("allow", "drawbridge.yaml:lists.allow", cfg.Lists.Allow)
 			if err != nil {
 				return &configErr{err}
 			}
-			deny, err := hostlist.LoadFiles("deny", cfg.ResolveDenyFiles(configPath))
+			deny, err := hostlist.LoadInline("deny", "drawbridge.yaml:lists.deny", cfg.Lists.Deny)
 			if err != nil {
 				return &configErr{err}
 			}

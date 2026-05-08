@@ -80,10 +80,11 @@ func newRunCmd() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			// Fast-path lists with file-modification watcher.
-			allowPaths := cfg.ResolveAllowFiles(configPath)
-			denyPaths := cfg.ResolveDenyFiles(configPath)
-			if err := srv.WatchAndReload(ctx, allowPaths, denyPaths); err != nil {
+			// Fast-path lists are inline in drawbridge.yaml's
+			// `lists.allow` / `lists.deny`. The console REPL writes
+			// new patterns back to the file via configwrite and
+			// triggers an in-process re-parse via console.Config.
+			if err := srv.SetLists(cfg.Lists.Allow, cfg.Lists.Deny); err != nil {
 				return &configErr{err}
 			}
 
@@ -100,12 +101,23 @@ func newRunCmd() *cobra.Command {
 				}
 			}()
 
-			// Console REPL when stdin is a tty.
+			// Console REPL when stdin is a tty. REPL mutations write
+			// back to drawbridge.yaml and trigger an in-process
+			// re-parse of the lists.
 			if !noConsole && console.IsInteractive(os.Stdin) {
 				go func() {
 					_ = console.Run(ctx, console.Config{
-						AllowPaths: allowPaths,
-						DenyPaths:  denyPaths,
+						ConfigPath: configPath,
+						OnReload: func() {
+							freshCfg, err := config.Load(configPath)
+							if err != nil {
+								opLog.Error("list-reload re-parse failed",
+									"event", oplog.EventAllowlistReloadFailure,
+									"error", err.Error())
+								return
+							}
+							_ = srv.ReloadListsFromConfig(freshCfg)
+						},
 					})
 				}()
 			}

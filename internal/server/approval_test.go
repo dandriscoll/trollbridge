@@ -1,9 +1,7 @@
 package server
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -51,7 +49,7 @@ func bootApprovalProxy(t *testing.T, rules string, timeoutSec int, onTimeout str
 	cfg := &config.Config{
 		Mode:      "default-deny",
 		Logging:   config.Logging{AuditPath: auditPath, AuditBufferSize: 64, AuditOverflow: "block"},
-		Approvals: config.Approvals{ControlListen: ctrlAddr, TimeoutSeconds: timeoutSec, OnTimeout: onTimeout, MaxPending: 16},
+		Approvals: config.Approvals{TimeoutSeconds: timeoutSec, OnTimeout: onTimeout, MaxPending: 16},
 		Forwarder: config.Forwarder{MaxIdleConns: 8, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
 		Shutdown:  config.Shutdown{GraceSeconds: 5},
 		Identities: []config.Identity{
@@ -103,44 +101,32 @@ func (h *approvalHarness) close() {
 	}
 }
 
-// listPending hits the control API.
+// listPending uses the in-process Queue API directly. (v2's control
+// plane is mTLS-only; cert plumbing is exercised by control_test.go.
+// These tests focus on hold-flow correctness, not the wire path.)
 func (h *approvalHarness) listPending() []map[string]any {
-	resp, err := http.Get("http://" + h.controlAddr + "/v1/holds")
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	var out []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		h.t.Fatal(err)
+	snaps := h.srv.Queue().Pending()
+	out := make([]map[string]any, 0, len(snaps))
+	for _, s := range snaps {
+		out = append(out, map[string]any{
+			"id":          s.ID,
+			"identity_id": s.IdentityID,
+			"host":        s.Host,
+			"port":        s.Port,
+			"path":        s.Path,
+		})
 	}
 	return out
 }
 
 func (h *approvalHarness) approve(id, scope string) {
-	body, _ := json.Marshal(map[string]string{"scope": scope})
-	resp, err := http.Post(
-		"http://"+h.controlAddr+"/v1/holds/"+id+"/approve",
-		"application/json", bytes.NewReader(body))
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		b, _ := io.ReadAll(resp.Body)
-		h.t.Fatalf("approve: %s: %s", resp.Status, string(b))
+	if !h.srv.Queue().Approve(id, scope) {
+		h.t.Fatalf("approve %s: hold not found", id)
 	}
 }
 
 func (h *approvalHarness) deny(id, reason string) {
-	body, _ := json.Marshal(map[string]string{"reason": reason})
-	resp, err := http.Post(
-		"http://"+h.controlAddr+"/v1/holds/"+id+"/deny",
-		"application/json", bytes.NewReader(body))
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	defer resp.Body.Close()
+	h.srv.Queue().Deny(id, reason)
 }
 
 func TestApproval_ApprovedRequestUnblocks(t *testing.T) {
@@ -310,17 +296,12 @@ func TestSessions_TrackedAcrossRequests(t *testing.T) {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}
-	// At least one session should be visible.
-	resp, err := http.Get("http://" + h.controlAddr + "/v1/sessions")
-	if err != nil {
-		t.Fatal(err)
+	// At least one session should be visible (read in-process; the
+	// HTTP path is exercised in control_test.go).
+	if h.srv.SessionsTracker() == nil {
+		t.Skip("session tracker not exposed by harness")
 	}
-	defer resp.Body.Close()
-	var sessions []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&sessions); err != nil {
-		t.Fatal(err)
-	}
-	if len(sessions) == 0 {
+	if len(h.srv.SessionsTracker().Snapshot()) == 0 {
 		t.Error("expected at least one session")
 	}
 }

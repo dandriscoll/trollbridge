@@ -87,11 +87,39 @@ now · `q` quit. The list refreshes automatically as the queue
 changes; one-shot `drawbridge approve <id>` / `drawbridge deny <id>`
 remain available for scripted use.
 
-For TLS interception:
+## Configuration (schema v2)
+
+`drawbridge.yaml` is organised around four operator decisions:
+
+1. **`adapter`** — which network interface the daemon binds to
+   (`lo` / `0.0.0.0` / a literal IP). Proxy, control plane, and
+   metrics all bind on the same adapter; per-surface ports live
+   under `ports:`.
+2. **`lists`** — inline `allow:` / `deny:` patterns. The console
+   REPL writes back to drawbridge.yaml; comments outside `lists:`
+   survive. Each entry is `host[:port][/path]` with an optional
+   `<scheme>://` prefix and `*` wildcards.
+3. **`llm`** — provider / model / endpoint / api-key.
+4. **`llm.directives`** — inline multi-line system prompt for the
+   advisor.
+
+The control plane requires mTLS, signed by the same CA used for
+TLS interception. First-run ritual:
 
 ```sh
-./bin/drawbridge ca init   # writes drawbridge-ca.{crt,key}
-# install drawbridge-ca.crt into your client trust store
+./bin/drawbridge ca init                         # generate the CA
+./bin/drawbridge ca client-cert <op-name>        # mint your client cert
+mv <op-name>.crt ~/.drawbridge/controller-client.crt
+mv <op-name>.key ~/.drawbridge/controller-client.key
+```
+
+The CLI auto-loads the cert/key from `~/.drawbridge/`; override with
+`DRAWBRIDGE_CONTROLLER_CERT` / `DRAWBRIDGE_CONTROLLER_KEY`.
+
+For TLS interception (separate from controller mTLS — same CA):
+
+```sh
+# install drawbridge-ca.crt into your *client* trust store
 # set interception.enabled: true in drawbridge.yaml
 ```
 

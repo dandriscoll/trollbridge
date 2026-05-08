@@ -185,7 +185,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		req.BodySize = int64(len(bodyBuf))
 	}
 
-	decision, fastHit := s.fastPathDecide(host, port, req.Path)
+	decision, fastHit := s.fastPathDecide("https", host, port, req.Path)
 	if !fastHit {
 		decision = s.engine.Decide(req)
 	}

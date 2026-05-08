@@ -39,6 +39,12 @@ type Input struct {
 	RuleSetVersion  string            `json:"rule_set_version"`
 	AllowList       []string          `json:"allow_list,omitempty"`
 	DenyList        []string          `json:"deny_list,omitempty"`
+
+	// Directives is the operator-supplied system-prompt content
+	// (cfg.LLM.Directives). It is verbatim — drawbridge does not
+	// edit it. The advisor endpoint composes it with the rest of
+	// the request payload before sending to the LLM.
+	Directives string `json:"directives,omitempty"`
 }
 
 // RecentDecision is a compact record of a prior decision used as
@@ -74,6 +80,10 @@ type Config struct {
 	CacheTTL        time.Duration
 	Timeout         time.Duration
 	KnownModifiers  map[string]bool
+
+	// Directives is included verbatim in every Input.Directives
+	// field sent to the provider. Pulled from cfg.LLM.Directives.
+	Directives string
 }
 
 // Service is the concrete component the server consults. It owns
@@ -149,6 +159,7 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 		Identity:        req.IdentityID,
 		RecentHistory:   recent,
 		RuleSetVersion:  ruleSetVersion,
+		Directives:      s.cfg.Directives,
 	}
 	if lists != nil {
 		in.AllowList = capList(lists.Allow, 200)

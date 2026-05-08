@@ -40,13 +40,13 @@ func bootHotReloadProxy(t *testing.T, allowSeed, denySeed, rules string) (string
 	}
 
 	ctrlLn, _ := net.Listen("tcp", "127.0.0.1:0")
-	ctrlAddr := ctrlLn.Addr().String()
+	ctrlAddr := ctrlLn.Addr().String(); _ = ctrlAddr
 	ctrlLn.Close()
 
 	cfg := &config.Config{
 		Mode:      "default-deny",
 		Logging:   config.Logging{AuditPath: auditPath, AuditBufferSize: 32, AuditOverflow: "block"},
-		Approvals: config.Approvals{ControlListen: ctrlAddr, TimeoutSeconds: 2, OnTimeout: "deny", MaxPending: 4},
+		Approvals: config.Approvals{TimeoutSeconds: 2, OnTimeout: "deny", MaxPending: 4},
 		Forwarder: config.Forwarder{MaxIdleConns: 4, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
 		Shutdown:  config.Shutdown{GraceSeconds: 5},
 		Identities: []config.Identity{{ID: "test", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
@@ -76,7 +76,7 @@ func bootHotReloadProxy(t *testing.T, allowSeed, denySeed, rules string) (string
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := srv.WatchAndReload(ctx, []string{allowPath}, []string{denyPath}); err != nil {
+	if err := srv.SetLists(linesFrom(allowPath), linesFrom(denyPath)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,10 +89,33 @@ func bootHotReloadProxy(t *testing.T, allowSeed, denySeed, rules string) (string
 	return ln.Addr().String(), allowPath, denyPath, prov, cancel, done
 }
 
-// TestHotReload_FileEditTakesEffectWithoutRestart confirms that an
-// out-of-band edit to allow.txt is picked up by the watcher and
-// the next request through the proxy gets allowed.
+// linesFrom reads a file and returns its non-empty, non-comment
+// lines. Used by hot-reload tests to seed the in-memory lists from
+// fixture files (the on-disk format predates v2; the lists API now
+// takes []string).
+func linesFrom(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(data), "\n") {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// TestHotReload_FileEditTakesEffectWithoutRestart confirmed an
+// out-of-band edit to allow.txt was picked up by the watcher in v1.
+// v2 stores lists inline in drawbridge.yaml and the only mutation
+// path is the REPL (which calls configwrite + SetLists). The
+// file-watcher behaviour is gone; this test is skipped.
 func TestHotReload_FileEditTakesEffectWithoutRestart(t *testing.T) {
+	t.Skip("v2: file-watcher removed; lists mutate via console REPL + configwrite + SetLists")
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "post-reload-ok")
 	}))
@@ -176,13 +199,13 @@ func TestAdvisor_ReceivesListsAsInput(t *testing.T) {
 	}
 
 	ctrlLn, _ := net.Listen("tcp", "127.0.0.1:0")
-	ctrlAddr := ctrlLn.Addr().String()
+	ctrlAddr := ctrlLn.Addr().String(); _ = ctrlAddr
 	ctrlLn.Close()
 
 	cfg := &config.Config{
 		Mode:    "default-deny",
 		Logging: config.Logging{AuditPath: auditPath, AuditBufferSize: 16, AuditOverflow: "block"},
-		Approvals: config.Approvals{ControlListen: ctrlAddr, TimeoutSeconds: 2, OnTimeout: "deny", MaxPending: 4},
+		Approvals: config.Approvals{TimeoutSeconds: 2, OnTimeout: "deny", MaxPending: 4},
 		Forwarder: config.Forwarder{MaxIdleConns: 4, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
 		Shutdown:  config.Shutdown{GraceSeconds: 5},
 		Identities: []config.Identity{{ID: "t", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
@@ -205,7 +228,7 @@ func TestAdvisor_ReceivesListsAsInput(t *testing.T) {
 
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := srv.WatchAndReload(ctx, []string{allowPath}, []string{denyPath}); err != nil {
+	if err := srv.SetLists(linesFrom(allowPath), linesFrom(denyPath)); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
@@ -278,12 +301,12 @@ func TestAdvisor_CannotMutateLists(t *testing.T) {
 	denyMTime, _ := os.Stat(denyPath)
 
 	ctrlLn, _ := net.Listen("tcp", "127.0.0.1:0")
-	ctrlAddr := ctrlLn.Addr().String()
+	ctrlAddr := ctrlLn.Addr().String(); _ = ctrlAddr
 	ctrlLn.Close()
 	cfg := &config.Config{
 		Mode:    "default-deny",
 		Logging: config.Logging{AuditPath: auditPath, AuditBufferSize: 16, AuditOverflow: "block"},
-		Approvals: config.Approvals{ControlListen: ctrlAddr, TimeoutSeconds: 2, OnTimeout: "deny", MaxPending: 4},
+		Approvals: config.Approvals{TimeoutSeconds: 2, OnTimeout: "deny", MaxPending: 4},
 		Forwarder: config.Forwarder{MaxIdleConns: 4, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
 		Shutdown:  config.Shutdown{GraceSeconds: 5},
 		Identities: []config.Identity{{ID: "t", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
@@ -297,7 +320,7 @@ func TestAdvisor_CannotMutateLists(t *testing.T) {
 
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
-	srv.WatchAndReload(ctx, []string{allowPath}, []string{denyPath})
+	srv.SetLists(linesFrom(allowPath), linesFrom(denyPath))
 	done := make(chan struct{})
 	go func() {
 		_ = srv.ServeOnListener(ctx, ln)

@@ -45,13 +45,13 @@ func bootHostlistProxy(t *testing.T, allowContent, denyContent, rulesContent str
 	}
 
 	ctrlLn, _ := net.Listen("tcp", "127.0.0.1:0")
-	ctrlAddr := ctrlLn.Addr().String()
+	ctrlAddr := ctrlLn.Addr().String(); _ = ctrlAddr
 	ctrlLn.Close()
 
 	cfg := &config.Config{
 		Mode:      "default-deny",
 		Logging:   config.Logging{AuditPath: auditPath, AuditBufferSize: 32, AuditOverflow: "block"},
-		Approvals: config.Approvals{ControlListen: ctrlAddr, TimeoutSeconds: 2, OnTimeout: "deny", MaxPending: 4},
+		Approvals: config.Approvals{TimeoutSeconds: 2, OnTimeout: "deny", MaxPending: 4},
 		Forwarder: config.Forwarder{MaxIdleConns: 4, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
 		Shutdown:  config.Shutdown{GraceSeconds: 5},
 		Identities: []config.Identity{{ID: "test", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},

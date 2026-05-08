@@ -51,14 +51,14 @@ func bootHTTPProxyWithOpLog(t *testing.T, level slog.Level) (proxyAddr, originUR
 	}
 	auditPath := filepath.Join(dir, "audit.jsonl")
 	ctrlLn, _ := net.Listen("tcp", "127.0.0.1:0")
-	ctrlAddr := ctrlLn.Addr().String()
+	ctrlAddr := ctrlLn.Addr().String(); _ = ctrlAddr
 	ctrlLn.Close()
 
 	cfg := &config.Config{
-		Listen:     config.Listen{Address: "127.0.0.1", Port: 0},
+		Adapter: "127.0.0.1", Ports: config.Ports{Proxy: 0},
 		Mode:       "default-deny",
 		Logging:    config.Logging{AuditPath: auditPath, AuditBufferSize: 64, AuditOverflow: "block"},
-		Approvals:  config.Approvals{ControlListen: ctrlAddr, TimeoutSeconds: 5, OnTimeout: "deny", MaxPending: 4},
+		Approvals:  config.Approvals{TimeoutSeconds: 5, OnTimeout: "deny", MaxPending: 4},
 		Forwarder:  config.Forwarder{MaxIdleConns: 8, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
 		Shutdown:   config.Shutdown{GraceSeconds: 5},
 		Identities: []config.Identity{{ID: "test-client", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},

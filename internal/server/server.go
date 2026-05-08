@@ -60,10 +60,6 @@ type Server struct {
 	denyList  *hostlist.HostList
 
 	listsMu      sync.Mutex
-	allowPaths   []string
-	denyPaths    []string
-	allowWatcher *hostlist.Watcher
-	denyWatcher  *hostlist.Watcher
 
 	transport *http.Transport
 	opLog     *slog.Logger
@@ -133,8 +129,11 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		queue:    q,
 		sessions: t,
 		control: func() *control.Server {
-			c := control.New(cfg.Approvals.ControlListen, q, t, engine)
-			c.SetAuth(cfg.Approvals.ControlAuthMode, cfg.Approvals.ControlBearerSHA)
+			addr := ""
+			if cfg.Ports.Control != 0 {
+				addr = cfg.BindAddr(cfg.Ports.Control)
+			}
+			c := control.New(addr, q, t, engine)
 			c.SetOpLog(opLog)
 			return c
 		}(),
@@ -161,8 +160,12 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 	}
 	s.redactor = rcfg
 
-	// Load the CA only if interception is enabled.
-	if cfg.Interception.Enabled {
+	// Load the CA. The CA is needed in two places:
+	//   - TLS interception (when cfg.Interception.Enabled)
+	//   - mTLS controller (when cfg.Ports.Control != 0)
+	// If either is in use, the CA must load successfully.
+	caRequired := cfg.Interception.Enabled || cfg.Ports.Control != 0
+	if caRequired {
 		ttl := time.Duration(cfg.Interception.LeafCertTTLHours) * time.Hour
 		caObj, err := ca.Load(
 			cfg.Interception.CA.CertPath,
@@ -171,10 +174,14 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 			ttl,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("interception enabled but CA load failed: %w", err)
+			return nil, fmt.Errorf("CA load failed (required for %s): %w; fix: run `drawbridge ca init`",
+				caRequiredReason(cfg.Interception.Enabled, cfg.Ports.Control != 0), err)
 		}
-		s.ca = caObj
+		if cfg.Interception.Enabled {
+			s.ca = caObj
+		}
 		s.control.SetCA(caObj)
+		s.control.SetTLS(caObj)
 	}
 	roots, err := buildOriginRoots(cfg.Interception.OriginTrust)
 	if err != nil {
@@ -190,6 +197,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		CacheTTL:        time.Duration(cfg.LLM.CacheTTLSeconds) * time.Second,
 		Timeout:         time.Duration(cfg.LLM.TimeoutSeconds) * time.Second,
 		KnownModifiers:  modifierSetForAdvisor(),
+		Directives:      cfg.LLM.Directives,
 	}
 	var prov advisor.Provider
 	if cfg.LLM.Enabled {
@@ -214,7 +222,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		IdleConnTimeout:     90 * time.Second,
 	}
 	s.httpSrv = &http.Server{
-		Addr:              net.JoinHostPort(cfg.Listen.Address, strconv.Itoa(cfg.Listen.Port)),
+		Addr:              cfg.BindAddr(cfg.Ports.Proxy),
 		Handler:           http.HandlerFunc(s.serveHTTP),
 		ReadHeaderTimeout: 30 * time.Second,
 		ConnState: func(c net.Conn, state http.ConnState) {
@@ -258,13 +266,30 @@ func (s *Server) ControlAddr() string {
 	if s.control == nil {
 		return ""
 	}
-	// re-resolved on first call after ListenAndServe; addr is
-	// known to the control.Server.
-	return s.cfg.Approvals.ControlListen
+	if s.cfg.Ports.Control == 0 {
+		return ""
+	}
+	return s.cfg.BindAddr(s.cfg.Ports.Control)
+}
+
+// caRequiredReason returns a short string for error messages
+// explaining why the CA had to load.
+func caRequiredReason(intercept, controller bool) string {
+	switch {
+	case intercept && controller:
+		return "TLS interception + mTLS controller"
+	case intercept:
+		return "TLS interception"
+	default:
+		return "mTLS controller"
+	}
 }
 
 // Queue returns the approvals queue (for tests / introspection).
 func (s *Server) Queue() *approvals.Queue { return s.queue }
+
+// SessionsTracker returns the per-client session tracker.
+func (s *Server) SessionsTracker() *sessions.Tracker { return s.sessions }
 
 // Sessions returns the session tracker.
 func (s *Server) Sessions() *sessions.Tracker { return s.sessions }
@@ -409,7 +434,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Fast path: evaluate flat allow/deny lists BEFORE the rule
 	// engine and BEFORE the advisor. A match here short-circuits.
-	decision, fastHit := s.fastPathDecide(host, port, req.Path)
+	decision, fastHit := s.fastPathDecide("http", host, port, req.Path)
 	if fastHit {
 		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval,
 			"hit", true, "decision", string(decision.Effect),
@@ -645,8 +670,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	// CONNECT only carries host:port, no path. Use "/" as the
 	// path for fast-path matching; only patterns with no path or
-	// path "/" or path-prefix can fire here.
-	decision, fastHit := s.fastPathDecide(host, port, "/")
+	// path "/" or path-prefix can fire here. Scheme is unknown at
+	// CONNECT time; only patterns with no scheme constraint match.
+	decision, fastHit := s.fastPathDecide("", host, port, "/")
 	if !fastHit {
 		decision = s.engine.Decide(req)
 	}
@@ -956,85 +982,48 @@ func (s *Server) DenyList() *hostlist.HostList {
 	return s.denyList
 }
 
-// AllowPaths returns the configured allow.txt paths (for the
-// console writer).
-func (s *Server) AllowPaths() []string { return s.allowPaths }
-
-// DenyPaths returns the configured deny.txt paths.
-func (s *Server) DenyPaths() []string { return s.denyPaths }
-
-// WatchAndReload registers the allow / deny paths, loads them
-// once, and starts mtime watchers that reload on change. Stops
-// when ctx is cancelled.
-func (s *Server) WatchAndReload(ctx context.Context, allowPaths, denyPaths []string) error {
-	s.allowPaths = append([]string(nil), allowPaths...)
-	s.denyPaths = append([]string(nil), denyPaths...)
-
-	if err := s.reloadAllow(); err != nil {
+// SetLists installs the inline allow/deny patterns parsed from
+// drawbridge.yaml's `lists.allow` / `lists.deny`.
+func (s *Server) SetLists(allow, deny []string) error {
+	a, err := hostlist.LoadInline("allow", "drawbridge.yaml:lists.allow", allow)
+	if err != nil {
 		return err
 	}
-	if err := s.reloadDeny(); err != nil {
-		return err
-	}
-
-	if len(allowPaths) > 0 {
-		s.allowWatcher = hostlist.NewWatcher(allowPaths, func() {
-			if err := s.reloadAllow(); err != nil {
-				s.opLog.Error("allowlist reload failed",
-					"event", oplog.EventAllowlistReloadFailure, "error", err.Error())
-			} else {
-				s.opLog.Info("allowlist reloaded",
-					"event", oplog.EventAllowlistReload,
-					"patterns", len(s.AllowList().Patterns))
-			}
-		}, time.Second)
-		s.allowWatcher.Start(ctx)
-	}
-	if len(denyPaths) > 0 {
-		s.denyWatcher = hostlist.NewWatcher(denyPaths, func() {
-			if err := s.reloadDeny(); err != nil {
-				s.opLog.Error("denylist reload failed",
-					"event", oplog.EventDenylistReloadFailure, "error", err.Error())
-			} else {
-				s.opLog.Info("denylist reloaded",
-					"event", oplog.EventDenylistReload,
-					"patterns", len(s.DenyList().Patterns))
-			}
-		}, time.Second)
-		s.denyWatcher.Start(ctx)
-	}
-	return nil
-}
-
-func (s *Server) reloadAllow() error {
-	h, err := hostlist.LoadFiles("allow", s.allowPaths)
+	d, err := hostlist.LoadInline("deny", "drawbridge.yaml:lists.deny", deny)
 	if err != nil {
 		return err
 	}
 	s.listsMu.Lock()
-	s.allowList = h
+	s.allowList = a
+	s.denyList = d
 	s.listsMu.Unlock()
 	return nil
 }
 
-func (s *Server) reloadDeny() error {
-	h, err := hostlist.LoadFiles("deny", s.denyPaths)
-	if err != nil {
+// ReloadListsFromConfig re-parses the cfg's inline lists into the
+// in-memory matcher. Called by the console REPL after it writes a
+// new entry into the yaml file.
+func (s *Server) ReloadListsFromConfig(cfg *config.Config) error {
+	if err := s.SetLists(cfg.Lists.Allow, cfg.Lists.Deny); err != nil {
+		s.opLog.Error("list reload failed",
+			"event", oplog.EventAllowlistReloadFailure, "error", err.Error())
 		return err
 	}
-	s.listsMu.Lock()
-	s.denyList = h
-	s.listsMu.Unlock()
+	s.opLog.Info("lists reloaded",
+		"event", oplog.EventAllowlistReload,
+		"allow_patterns", len(s.AllowList().Patterns),
+		"deny_patterns", len(s.DenyList().Patterns))
 	return nil
 }
 
 // fastPathDecide returns a Decision (and true) when the request
 // matches the deny list (deny wins) or the allow list. Returns
 // (zero Decision, false) when no list matches and the engine
-// should run.
-func (s *Server) fastPathDecide(host string, port int, path string) (types.Decision, bool) {
+// should run. Pass scheme="" for CONNECT (pre-intercept), "http"
+// for plaintext, "https" for intercepted HTTPS.
+func (s *Server) fastPathDecide(scheme, host string, port int, path string) (types.Decision, bool) {
 	allow, deny := s.AllowList(), s.DenyList()
-	if pat, ok := deny.Match(host, port, path); ok {
+	if pat, ok := deny.Match(scheme, host, port, path); ok {
 		return types.Decision{
 			Effect: types.EffectDeny,
 			Source: types.SourceDenyList,
@@ -1042,7 +1031,7 @@ func (s *Server) fastPathDecide(host string, port int, path string) (types.Decis
 			Reason: "matched deny list: " + pat.Raw,
 		}, true
 	}
-	if pat, ok := allow.Match(host, port, path); ok {
+	if pat, ok := allow.Match(scheme, host, port, path); ok {
 		return types.Decision{
 			Effect: types.EffectAllow,
 			Source: types.SourceAllowList,

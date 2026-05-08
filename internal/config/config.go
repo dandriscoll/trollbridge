@@ -1,24 +1,51 @@
-// Package config loads and validates drawbridge.yaml plus referenced
-// rule files. See DESIGN.md §13.4.
+// Package config loads and validates drawbridge.yaml. v2 schema is
+// organised around the four operator decisions: which adapter the
+// daemon is open on, what is allowed/denied, what LLM is used as the
+// advisor, and what directives the advisor follows.
 package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the top-level shape of drawbridge.yaml.
+// SchemaVersion is the current drawbridge.yaml schema version.
+const SchemaVersion = 2
+
+// Config is the top-level shape of drawbridge.yaml (v2).
 type Config struct {
 	DrawbridgeVersion int `yaml:"drawbridge_version"`
 
-	Listen Listen `yaml:"listen"`
-	Mode   string `yaml:"mode"` // default-deny | default-allow | default-ask
+	// The four decisions: foregrounded.
+
+	// Adapter is one of: `lo` (loopback), `0.0.0.0` (all interfaces),
+	// or a literal IP address / hostname. Used to bind the proxy,
+	// control plane, and (optionally) the metrics endpoint.
+	Adapter string `yaml:"adapter"`
+
+	// Ports for each surface. 0 disables.
+	Ports Ports `yaml:"ports"`
+
+	// Lists are the inline allow / deny patterns. drawbridge reads
+	// them at startup; the console REPL writes them back via a
+	// yaml-Node-level edit (see internal/configwrite).
+	Lists Lists `yaml:"lists"`
+
+	LLM LLM `yaml:"llm"`
+
+	// Controller is the security posture for the operator-facing
+	// control plane. mTLS over the existing CA is the only mode.
+	Controller Controller `yaml:"controller"`
+
+	// Secondary configuration; defaults usually fine.
+
+	Mode string `yaml:"mode"` // default-deny | default-allow | default-ask
 
 	Interception  Interception  `yaml:"interception"`
-	LLM           LLM           `yaml:"llm"`
 	Redaction     Redaction     `yaml:"redaction"`
 	Logging       Logging       `yaml:"logging"`
 	Approvals     Approvals     `yaml:"approvals"`
@@ -30,23 +57,46 @@ type Config struct {
 	DecisionCache DecisionCache `yaml:"decisioncache"`
 }
 
-type Listen struct {
-	Address string `yaml:"address"`
-	Port    int    `yaml:"port"`
+// Ports is the flat per-surface port map. All three surfaces bind to
+// `<adapter>:<port>`. Port 0 disables the surface.
+type Ports struct {
+	Proxy   int `yaml:"proxy"`
+	Control int `yaml:"control"`
+	Metrics int `yaml:"metrics"`
+}
+
+// Lists holds the inline allow / deny patterns. Each entry follows
+// the matcher syntax in internal/hostlist (host[:port][/path] with
+// optional `<scheme>://` prefix; `*` wildcards).
+type Lists struct {
+	Allow []string `yaml:"allow"`
+	Deny  []string `yaml:"deny"`
+}
+
+// Controller carries the control-plane mTLS configuration. mTLS is
+// the only supported mode in v2; the field is present for forward
+// compatibility (e.g., adding `auth: oauth2` later).
+type Controller struct {
+	// Auth must be "mtls" (default and only valid value in v2).
+	Auth string `yaml:"auth"`
+
+	// ClientCAPath optionally overrides the CA used to verify
+	// operator client certs. When empty, drawbridge uses the
+	// interception CA (`interception.ca.cert_path`). Listing this
+	// separately is the escape hatch for an operator who wants the
+	// controller to trust a different CA than the proxy.
+	ClientCAPath string `yaml:"client_ca_path"`
 }
 
 type Interception struct {
 	Enabled          bool        `yaml:"enabled"`
 	CA               CACfg       `yaml:"ca"`
-	LeafKeyType      string      `yaml:"leaf_key_type"` // rsa-4096 | ecdsa-p256
+	LeafKeyType      string      `yaml:"leaf_key_type"`
 	PassthroughHosts []string    `yaml:"passthrough_hosts"`
 	LeafCertTTLHours int         `yaml:"leaf_cert_ttl_hours"`
 	OriginTrust      OriginTrust `yaml:"origin_trust"`
 }
 
-// OriginTrust controls how drawbridge verifies origin TLS certs.
-//   mode: "system" (default), "file", or "mixed"
-//   path: PEM file with extra trust roots (mode=file or mixed)
 type OriginTrust struct {
 	Mode string `yaml:"mode"`
 	Path string `yaml:"path"`
@@ -58,22 +108,26 @@ type CACfg struct {
 }
 
 type LLM struct {
-	Enabled          bool   `yaml:"enabled"`
-	Provider         string `yaml:"provider"`
-	Model            string `yaml:"model"`
-	Endpoint         string `yaml:"endpoint"`
-	APIKeyPath       string `yaml:"api_key_path"`
-	TimeoutSeconds   int    `yaml:"timeout_seconds"`
-	CacheTTLSeconds  int    `yaml:"cache_ttl_seconds"`
-	SendBody         bool   `yaml:"send_body"`
-	OnUnavailable    string `yaml:"on_unavailable"`
-	ConfidenceFloor  string `yaml:"confidence_floor"`
+	Enabled         bool   `yaml:"enabled"`
+	Provider        string `yaml:"provider"`
+	Model           string `yaml:"model"`
+	Endpoint        string `yaml:"endpoint"`
+	APIKeyPath      string `yaml:"api_key_path"`
+	TimeoutSeconds  int    `yaml:"timeout_seconds"`
+	CacheTTLSeconds int    `yaml:"cache_ttl_seconds"`
+	SendBody        bool   `yaml:"send_body"`
+	OnUnavailable   string `yaml:"on_unavailable"`
+	ConfidenceFloor string `yaml:"confidence_floor"`
+
+	// Directives is an inline multi-line system prompt the advisor
+	// composes onto every classification request.
+	Directives string `yaml:"directives"`
 }
 
 type Redaction struct {
-	DefaultModifiers []string         `yaml:"default_modifiers"`
-	BodyRedactors    []BodyRedactor   `yaml:"body_redactors"`
-	QueryRedactors   []QueryRedactor  `yaml:"query_redactors"`
+	DefaultModifiers []string        `yaml:"default_modifiers"`
+	BodyRedactors    []BodyRedactor  `yaml:"body_redactors"`
+	QueryRedactors   []QueryRedactor `yaml:"query_redactors"`
 }
 
 type BodyRedactor struct {
@@ -88,23 +142,21 @@ type QueryRedactor struct {
 type Logging struct {
 	AuditPath       string `yaml:"audit_path"`
 	AuditBufferSize int    `yaml:"audit_buffer_size"`
-	AuditOverflow   string `yaml:"audit_overflow"` // deny | drop | block
+	AuditOverflow   string `yaml:"audit_overflow"`
 	OperationalPath string `yaml:"operational_path"`
-	MetricsListen   string `yaml:"metrics_listen"`
 }
 
+// Approvals controls the held-request queue — separate from the
+// controller's auth posture, which lives under `controller`.
 type Approvals struct {
-	ControlListen     string `yaml:"control_listen"`
-	TimeoutSeconds    int    `yaml:"timeout_seconds"`
-	OnTimeout         string `yaml:"on_timeout"`
-	MaxPending        int    `yaml:"max_pending"`
-	ControlAuthMode   string `yaml:"control_auth_mode"`        // none | bearer
-	ControlBearerSHA  string `yaml:"control_bearer_token_sha256"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
+	OnTimeout      string `yaml:"on_timeout"`
+	MaxPending     int    `yaml:"max_pending"`
 }
 
 type Forwarder struct {
-	MaxIdleConns                  int `yaml:"max_idle_connections"`
-	MaxIdleConnsPerHost           int `yaml:"max_idle_connections_per_host"`
+	MaxIdleConns                    int `yaml:"max_idle_connections"`
+	MaxIdleConnsPerHost             int `yaml:"max_idle_connections_per_host"`
 	ConnectionAcquireTimeoutSeconds int `yaml:"connection_acquire_timeout_seconds"`
 }
 
@@ -113,20 +165,18 @@ type Shutdown struct {
 }
 
 type Identity struct {
-	ID    string         `yaml:"id"`
-	Match IdentityMatch  `yaml:"match"`
+	ID    string        `yaml:"id"`
+	Match IdentityMatch `yaml:"match"`
 }
 
 type IdentityMatch struct {
-	MTLSCN             string `yaml:"mtls_cn"`
-	BearerTokenSHA256  string `yaml:"bearer_token_sha256"`
-	SourceIP           string `yaml:"source_ip"`
+	MTLSCN            string `yaml:"mtls_cn"`
+	BearerTokenSHA256 string `yaml:"bearer_token_sha256"`
+	SourceIP          string `yaml:"source_ip"`
 }
 
 type Policy struct {
-	Include    []string `yaml:"include"`
-	AllowFiles []string `yaml:"allow_files"`
-	DenyFiles  []string `yaml:"deny_files"`
+	Include []string `yaml:"include"`
 }
 
 type Upstream struct {
@@ -139,12 +189,33 @@ type DecisionCache struct {
 }
 
 // Load reads config from path, applies defaults, validates, and
-// returns the resulting Config.
+// returns the resulting Config. Rejects v1 configs with a migration
+// message that names what changed.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
+	var probe struct {
+		Version int `yaml:"drawbridge_version"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if probe.Version == 1 {
+		return nil, fmt.Errorf(`config error in %s: drawbridge_version 1 is no longer supported.
+v2 reorganises the schema around four decisions:
+  - adapter:  one network interface for proxy/control/metrics (replaces listen.address + approvals.control_listen + logging.metrics_listen)
+  - ports:    flat block (proxy / control / metrics) on the chosen adapter
+  - lists:    inline allow/deny (replaces policy.allow_files / deny_files; .txt files no longer used)
+  - llm:      provider/model/key + an inline llm.directives multi-line string
+And replaces bearer-auth on the control plane with mTLS:
+  - controller.auth: mtls (default)
+  - issue an operator client cert with: drawbridge ca client-cert <name>
+Add 'drawbridge_version: 2' to the top of your file and migrate the
+fields above. See config.example.yaml for the canonical v2 shape.`, path)
+	}
+
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
@@ -158,13 +229,21 @@ func Load(path string) (*Config, error) {
 
 func (c *Config) applyDefaults() {
 	if c.DrawbridgeVersion == 0 {
-		c.DrawbridgeVersion = 1
+		c.DrawbridgeVersion = SchemaVersion
 	}
-	if c.Listen.Address == "" {
-		c.Listen.Address = "127.0.0.1"
+	if c.Adapter == "" {
+		c.Adapter = "lo"
 	}
-	if c.Listen.Port == 0 {
-		c.Listen.Port = 8080
+	if c.Ports.Proxy == 0 {
+		c.Ports.Proxy = 8080
+	}
+	// Ports.Control = 0 means the operator-facing control plane is
+	// disabled (CLI clients have nothing to connect to). The example
+	// yaml + `drawbridge init` write 8081 explicitly so the default
+	// install gets a working controller without surprise.
+	// Ports.Metrics = 0 means Prometheus endpoint disabled.
+	if c.Controller.Auth == "" {
+		c.Controller.Auth = "mtls"
 	}
 	if c.Mode == "" {
 		c.Mode = "default-deny"
@@ -217,10 +296,18 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate(path string) error {
+	if c.DrawbridgeVersion != SchemaVersion {
+		return fmt.Errorf("config error in %s: drawbridge_version must be %d; got %d", path, SchemaVersion, c.DrawbridgeVersion)
+	}
 	switch c.Mode {
 	case "default-deny", "default-allow", "default-ask":
 	default:
-		return fmt.Errorf("config error in %s: `mode` must be one of `default-deny`, `default-allow`, `default-ask`. Got: %q. Fix: correct the typo.", path, c.Mode)
+		return fmt.Errorf("config error in %s: `mode` must be one of `default-deny`, `default-allow`, `default-ask`. Got: %q.", path, c.Mode)
+	}
+	switch c.Controller.Auth {
+	case "mtls":
+	default:
+		return fmt.Errorf("config error in %s: `controller.auth` must be `mtls`. Got: %q.", path, c.Controller.Auth)
 	}
 	switch c.Logging.AuditOverflow {
 	case "deny", "drop", "block":
@@ -232,8 +319,17 @@ func (c *Config) validate(path string) error {
 	default:
 		return fmt.Errorf("config error in %s: `interception.leaf_key_type` must be `rsa-4096` or `ecdsa-p256`. Got: %q.", path, c.Interception.LeafKeyType)
 	}
-	if c.Listen.Port < 1 || c.Listen.Port > 65535 {
-		return fmt.Errorf("config error in %s: `listen.port` must be 1..65535. Got: %d.", path, c.Listen.Port)
+	if c.Ports.Proxy < 1 || c.Ports.Proxy > 65535 {
+		return fmt.Errorf("config error in %s: `ports.proxy` must be 1..65535. Got: %d.", path, c.Ports.Proxy)
+	}
+	if c.Ports.Control != 0 && (c.Ports.Control < 1 || c.Ports.Control > 65535) {
+		return fmt.Errorf("config error in %s: `ports.control` must be 0 (disabled) or 1..65535. Got: %d.", path, c.Ports.Control)
+	}
+	if c.Ports.Metrics != 0 && (c.Ports.Metrics < 1 || c.Ports.Metrics > 65535) {
+		return fmt.Errorf("config error in %s: `ports.metrics` must be 0 (disabled) or 1..65535. Got: %d.", path, c.Ports.Metrics)
+	}
+	if c.Ports.Control != 0 && c.Ports.Proxy == c.Ports.Control {
+		return fmt.Errorf("config error in %s: `ports.proxy` and `ports.control` must differ; both are %d.", path, c.Ports.Proxy)
 	}
 	for i, id := range c.Identities {
 		if id.ID == "" {
@@ -243,22 +339,35 @@ func (c *Config) validate(path string) error {
 	return nil
 }
 
+// BindHost returns the literal address the daemon should `net.Listen`
+// on for the configured adapter.
+//
+//	"lo"      -> "127.0.0.1"
+//	"0.0.0.0" -> "0.0.0.0"
+//	"::"      -> "::"
+//	literal IP / hostname -> pass-through
+func (c *Config) BindHost() string {
+	switch c.Adapter {
+	case "lo", "":
+		return "127.0.0.1"
+	}
+	return c.Adapter
+}
+
+// BindAddr returns "<bind-host>:<port>" for the supplied port; for
+// IPv6 literals the host is bracketed.
+func (c *Config) BindAddr(port int) string {
+	host := c.BindHost()
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		host = "[" + host + "]"
+	}
+	return fmt.Sprintf("%s:%d", host, port)
+}
+
 // ResolveIncludePaths returns rule-file paths from c.Policy.Include
 // resolved relative to the config file's directory.
 func (c *Config) ResolveIncludePaths(configPath string) []string {
 	return resolveRelative(configPath, c.Policy.Include)
-}
-
-// ResolveAllowFiles returns flat-list paths resolved against the
-// config file's directory.
-func (c *Config) ResolveAllowFiles(configPath string) []string {
-	return resolveRelative(configPath, c.Policy.AllowFiles)
-}
-
-// ResolveDenyFiles returns flat-list paths resolved against the
-// config file's directory.
-func (c *Config) ResolveDenyFiles(configPath string) []string {
-	return resolveRelative(configPath, c.Policy.DenyFiles)
 }
 
 func resolveRelative(configPath string, items []string) []string {

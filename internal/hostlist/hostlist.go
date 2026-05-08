@@ -21,6 +21,12 @@ type Pattern struct {
 	Source string // "<file>:<line>" for diagnostics
 	Raw    string // original line, trimmed
 
+	// Scheme matching:
+	//   anyScheme: pattern had no `<scheme>://` prefix
+	//   scheme:    "http" or "https" when explicit; matched exactly
+	anyScheme bool
+	scheme    string
+
 	// Host matching:
 	//   wildcardAllHosts: pattern was bare "*"
 	//   wildcardPrefix:   pattern was "*.example.com" — match any
@@ -53,9 +59,38 @@ type HostList struct {
 	Patterns []Pattern
 }
 
+// LoadInline parses pre-extracted entry strings (e.g., from
+// `lists.allow` / `lists.deny` in drawbridge.yaml) and returns a
+// merged HostList. Empty strings and `#`-prefixed comments are
+// skipped, mirroring LoadFiles. Per-entry diagnostic source uses
+// the provided sourceLabel (e.g., "drawbridge.yaml:lists.allow").
+func LoadInline(name, sourceLabel string, entries []string) (*HostList, error) {
+	out := &HostList{Name: name}
+	for i, raw := range entries {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if j := strings.Index(line, " #"); j >= 0 {
+			line = strings.TrimSpace(line[:j])
+		}
+		pat, err := parsePattern(line)
+		if err != nil {
+			return nil, fmt.Errorf("hostlist parse %s[%d]: %s: %w", sourceLabel, i, line, err)
+		}
+		pat.Source = fmt.Sprintf("%s[%d]", sourceLabel, i)
+		out.Patterns = append(out.Patterns, pat)
+	}
+	return out, nil
+}
+
 // LoadFiles reads the supplied files (in order) and returns one
 // merged HostList. Returns an error if any file cannot be read or
 // any line cannot be parsed.
+//
+// Deprecated: v2 schema stores lists inline in drawbridge.yaml; use
+// LoadInline. Kept temporarily for tests that still operate on the
+// legacy .txt format.
 func LoadFiles(name string, paths []string) (*HostList, error) {
 	out := &HostList{Name: name}
 	for _, p := range paths {
@@ -96,12 +131,27 @@ func LoadFiles(name string, paths []string) (*HostList, error) {
 func parsePattern(s string) (Pattern, error) {
 	p := Pattern{Raw: s}
 
+	// Optional <scheme>:// prefix.
+	rest := s
+	if i := strings.Index(rest, "://"); i >= 0 {
+		scheme := strings.ToLower(rest[:i])
+		switch scheme {
+		case "http", "https":
+			p.scheme = scheme
+		default:
+			return p, fmt.Errorf("scheme must be http or https; got %q", scheme)
+		}
+		rest = rest[i+3:]
+	} else {
+		p.anyScheme = true
+	}
+
 	// Split off path first.
-	hostport := s
+	hostport := rest
 	pathPart := ""
-	if i := strings.IndexByte(s, '/'); i >= 0 {
-		hostport = s[:i]
-		pathPart = s[i:]
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		hostport = rest[:i]
+		pathPart = rest[i:]
 	}
 
 	// Split host:port.
@@ -160,16 +210,22 @@ func parsePattern(s string) (Pattern, error) {
 }
 
 // Match returns the matching Pattern (and true) if any pattern
-// fires on the supplied (host, port, path).
-func (h *HostList) Match(host string, port int, path string) (Pattern, bool) {
+// fires on the supplied (scheme, host, port, path). Pass scheme=""
+// when the request is a CONNECT and no scheme is yet known; only
+// patterns with no scheme constraint will match.
+func (h *HostList) Match(scheme, host string, port int, path string) (Pattern, bool) {
 	if h == nil {
 		return Pattern{}, false
 	}
+	scheme = strings.ToLower(strings.TrimSpace(scheme))
 	host = strings.ToLower(strings.TrimSpace(host))
 	if path == "" {
 		path = "/"
 	}
 	for _, p := range h.Patterns {
+		if !matchSchemePattern(p, scheme) {
+			continue
+		}
 		if !matchHostPattern(p, host) {
 			continue
 		}
@@ -182,6 +238,13 @@ func (h *HostList) Match(host string, port int, path string) (Pattern, bool) {
 		return p, true
 	}
 	return Pattern{}, false
+}
+
+func matchSchemePattern(p Pattern, scheme string) bool {
+	if p.anyScheme {
+		return true
+	}
+	return scheme == p.scheme
 }
 
 func matchHostPattern(p Pattern, host string) bool {

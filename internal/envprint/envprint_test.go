@@ -27,7 +27,8 @@ func TestRender(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{
-				Listen: config.Listen{Address: tc.address, Port: tc.port},
+				Adapter: tc.address,
+				Ports:   config.Ports{Proxy: tc.port},
 			}
 			out := Render(cfg)
 			if !strings.Contains(out, "export HTTPS_PROXY="+tc.wantHTTPS+"\n") {
@@ -61,7 +62,7 @@ func TestRenderEvalSafe(t *testing.T) {
 	// emit are well-formed (no spaces, no quotes), so a sanity check
 	// that no line contains a space-after-`export VAR=` (which would
 	// create two arguments) is sufficient.
-	cfg := &config.Config{Listen: config.Listen{Address: "127.0.0.1", Port: 8080}}
+	cfg := &config.Config{Adapter: "127.0.0.1", Ports: config.Ports{Proxy: 8080}}
 	out := Render(cfg)
 	for i, line := range strings.Split(out, "\n") {
 		if line == "" || strings.HasPrefix(line, "#") {

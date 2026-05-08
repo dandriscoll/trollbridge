@@ -2,21 +2,39 @@ package control
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"net"
 	"net/http"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/dandriscoll/drawbridge/internal/approvals"
+	"github.com/dandriscoll/drawbridge/internal/ca"
 	"github.com/dandriscoll/drawbridge/internal/policy"
 	"github.com/dandriscoll/drawbridge/internal/sessions"
 )
 
-func bootControl(t *testing.T, mode, bearerSHA string) (*Server, string, context.CancelFunc) {
+// bootControl starts a control plane backed by a fresh test CA and
+// returns: the server, its bound address, the CA itself (so tests
+// can mint client certs), and a cancel func.
+func bootControl(t *testing.T) (*Server, string, *ca.CA, context.CancelFunc) {
 	t.Helper()
+	dir := t.TempDir()
+	caCert := filepath.Join(dir, "ca.crt")
+	caKey := filepath.Join(dir, "ca.key")
+	caObj, err := ca.Init(caCert, caKey, ca.KeyTypeECDSAP256, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ca.Load(caCert, caKey, ca.KeyTypeECDSAP256, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = caObj
+
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	addr := ln.Addr().String()
 	ln.Close()
@@ -24,58 +42,56 @@ func bootControl(t *testing.T, mode, bearerSHA string) (*Server, string, context
 	tk := sessions.New()
 	eng, _ := policy.NewEngine("default-deny", nil, policy.KnownModifiers())
 	s := New(addr, q, tk, eng)
-	s.SetAuth(mode, bearerSHA)
+	s.SetTLS(loaded)
 	ctx, cancel := context.WithCancel(context.Background())
 	if _, err := s.ListenAndServe(ctx); err != nil {
-		t.Fatal(err)
+		t.Fatalf("control listen: %v", err)
 	}
 	time.Sleep(50 * time.Millisecond)
-	return s, addr, cancel
+	return s, addr, loaded, cancel
 }
 
-func TestControl_AuthNoneAllows(t *testing.T) {
-	_, addr, cancel := bootControl(t, "none", "")
-	defer cancel()
-	resp, err := http.Get("http://" + addr + "/v1/holds")
+func clientWithCert(t *testing.T, caObj *ca.CA, name string) *http.Client {
+	t.Helper()
+	leaf, err := caObj.IssueClientCert(name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Errorf("status: got %d, want 200", resp.StatusCode)
+	pool := x509.NewCertPool()
+	pool.AddCert(caObj.Cert)
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				Certificates: []tls.Certificate{*leaf},
+				RootCAs:      pool,
+				MinVersion:   tls.VersionTLS12,
+			},
+		},
+		Timeout: 5 * time.Second,
 	}
 }
 
-func TestControl_BearerRefusesMissingToken(t *testing.T) {
-	tok := "supersecret"
-	sum := sha256.Sum256([]byte(tok))
-	hash := hex.EncodeToString(sum[:])
-	_, addr, cancel := bootControl(t, "bearer", hash)
-	defer cancel()
-
-	resp, err := http.Get("http://" + addr + "/v1/holds")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("status: got %d, want 401", resp.StatusCode)
-	}
-	if got := resp.Header.Get("WWW-Authenticate"); got == "" {
-		t.Error("missing WWW-Authenticate header on 401")
+func clientNoCert(t *testing.T, caObj *ca.CA) *http.Client {
+	t.Helper()
+	pool := x509.NewCertPool()
+	pool.AddCert(caObj.Cert)
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:    pool,
+				MinVersion: tls.VersionTLS12,
+			},
+		},
+		Timeout: 5 * time.Second,
 	}
 }
 
-func TestControl_BearerAcceptsCorrectToken(t *testing.T) {
-	tok := "secret-token"
-	sum := sha256.Sum256([]byte(tok))
-	hash := hex.EncodeToString(sum[:])
-	_, addr, cancel := bootControl(t, "bearer", hash)
+func TestControl_MTLS_AcceptsClientWithCert(t *testing.T) {
+	_, addr, caObj, cancel := bootControl(t)
 	defer cancel()
 
-	req, _ := http.NewRequest("GET", "http://"+addr+"/v1/holds", nil)
-	req.Header.Set("Authorization", "Bearer "+tok)
-	resp, err := http.DefaultClient.Do(req)
+	c := clientWithCert(t, caObj, "operator-1")
+	resp, err := c.Get("https://" + addr + "/v1/holds")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,14 +102,30 @@ func TestControl_BearerAcceptsCorrectToken(t *testing.T) {
 	}
 }
 
-func TestControl_HealthzAlwaysReachable(t *testing.T) {
-	tok := "secret-token"
-	sum := sha256.Sum256([]byte(tok))
-	hash := hex.EncodeToString(sum[:])
-	_, addr, cancel := bootControl(t, "bearer", hash)
+func TestControl_MTLS_RejectsClientWithoutCert(t *testing.T) {
+	_, addr, caObj, cancel := bootControl(t)
 	defer cancel()
 
-	resp, err := http.Get("http://" + addr + "/v1/healthz")
+	c := clientNoCert(t, caObj)
+	resp, err := c.Get("https://" + addr + "/v1/holds")
+	if err == nil {
+		// Some TLS stacks accept the handshake (with verify-if-given)
+		// then return 401 from middleware. Either is acceptable.
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("expected 401 without client cert; got %d", resp.StatusCode)
+		}
+		return
+	}
+	// A handshake-time rejection (older client behavior) is also OK.
+}
+
+func TestControl_HealthzAlwaysReachable(t *testing.T) {
+	_, addr, caObj, cancel := bootControl(t)
+	defer cancel()
+
+	c := clientNoCert(t, caObj)
+	resp, err := c.Get("https://" + addr + "/v1/healthz")
 	if err != nil {
 		t.Fatal(err)
 	}

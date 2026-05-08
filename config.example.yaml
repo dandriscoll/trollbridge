@@ -1,70 +1,106 @@
-# drawbridge example configuration
+# drawbridge example configuration (schema v2).
 #
-# Annotated example showing every key the design defines. Comments
-# explain the choice and call out the security-relevant defaults.
+# Organized around the four operator decisions:
+#   1. adapter — which network interface the daemon is open on
+#   2. lists   — what to allow / deny (inline; drawbridge mutates this file)
+#   3. llm     — which LLM is the advisor
+#   4. directives — what the advisor is told (inline multi-line prompt)
+#
 # See DESIGN.md for the full specification.
 
-drawbridge_version: 1
+drawbridge_version: 2
 
-# -----------------------------------------------------------------
-# listen — where drawbridge accepts proxy traffic from agents.
-# -----------------------------------------------------------------
-listen:
-  address: 127.0.0.1     # bind to localhost for the local-dev topology;
-                         # set to the host bridge IP for the Incus topology
-  port: 8080
+# 1. Adapter — single network knob the daemon binds to.
+#    Values: lo (loopback only), 0.0.0.0 (all interfaces), or a
+#    literal IP/hostname. The proxy, control plane, and metrics
+#    surfaces all bind on this adapter.
+adapter: lo
 
-# -----------------------------------------------------------------
-# mode — global default policy posture.
-#   default-deny  — only allow rules forward; everything else is denied.
-#   default-allow — only deny rules block; everything else forwards.
-#                   Audit-log review is the primary control here.
-#   default-ask   — unmatched requests are held for LLM/operator review.
-# -----------------------------------------------------------------
+# Ports for the three surfaces. proxy + control are required;
+# metrics: 0 disables the Prometheus endpoint.
+ports:
+  proxy:   8080
+  control: 8081
+  metrics: 0
+
+# 2. Allow / deny lists. Each entry is host[:port][/path] with an
+#    optional <scheme>:// prefix and * wildcards.
+#
+#      api.github.com                    exact host
+#      *.github.com                      strict subdomain wildcard
+#      api.github.com:443                exact port
+#      api.github.com/v3                 exact path
+#      api.github.com/v3/*               path prefix
+#      https://api.github.com/v3/*       scheme + host + path-prefix
+#      *                                 any host (use sparingly)
+#      127.0.0.1                         IP address
+#
+#    Drawbridge writes this list back when the operator types
+#    `allow X` / `deny X` / `remove X` in the REPL — comments
+#    elsewhere in this file survive; entry-level comments inside
+#    `lists` are best-effort.
+lists:
+  allow:
+    - localhost
+    - 127.0.0.1
+  deny:
+    - 169.254.169.254
+    - metadata.google.internal
+    - metadata.azure.com
+
+# 3. LLM — the advisor consulted on ambiguous requests.
+llm:
+  enabled: false
+  provider: anthropic
+  model:    claude-opus-4-7
+  endpoint: https://api.anthropic.com
+  api_key_path: /etc/drawbridge/llm.key
+  timeout_seconds: 8
+  cache_ttl_seconds: 300
+  send_body: false
+  on_unavailable: ask_user
+  confidence_floor: medium
+
+  # 4. Directives — the operator's system-prompt content for the
+  #    advisor. Sent verbatim with every classification request.
+  directives: |
+    You are drawbridge's security advisor. For each HTTP request you
+    receive, decide allow / deny / ask_user. Refuse anything that
+    exfiltrates credentials, contacts cloud metadata services, or
+    looks like data exfiltration to an unfamiliar destination. When
+    uncertain, answer ask_user with a short reason.
+
+# Controller — operator-facing control plane (approve/deny/tui).
+# mTLS is enforced (the only supported mode in v2). Client certs
+# are issued by the same CA used for TLS interception:
+#
+#   drawbridge ca init
+#   drawbridge ca client-cert <op-name>
+#
+# The CLI auto-loads the cert+key from
+# ~/.drawbridge/controller-client.{crt,key} (override via
+# DRAWBRIDGE_CONTROLLER_CERT / _KEY).
+controller:
+  auth: mtls
+  # client_ca_path: /etc/drawbridge/different-ca.crt  # optional override
+
 mode: default-ask
 
-# -----------------------------------------------------------------
-# interception — TLS termination for HTTPS visibility.
-#
-# When disabled, drawbridge sees only host:port for HTTPS (CONNECT
-# tunneling). Path / method / headers / body rules cannot fire on
-# HTTPS without interception. See DESIGN.md §6 / §7.
-# -----------------------------------------------------------------
+# Interception — TLS termination for HTTPS visibility. The CA
+# configured here is also used by the controller's mTLS listener.
 interception:
   enabled: false
   ca:
     cert_path: /etc/drawbridge/drawbridge-ca.crt
     key_path:  /etc/drawbridge/drawbridge-ca.key
-  leaf_key_type: rsa-4096   # rsa-4096 (default) | ecdsa-p256 (faster, less compat)
+  leaf_key_type: rsa-4096
   passthrough_hosts:
-    # Hosts whose certs are pinned (or whose interception you want
-    # to skip for any reason). Wildcards supported.
     - "*.googleapis.com"
-    - "login.microsoftonline.com"
+    - login.microsoftonline.com
   leaf_cert_ttl_hours: 24
 
-# -----------------------------------------------------------------
-# llm — advisor configuration. Disabled by default.
-#
-# The advisor is consulted only when a rule says ask_llm or when the
-# proxy is in default-ask mode and no rule matched. The advisor's
-# decision is validated against a fixed schema and CANNOT elevate.
-# -----------------------------------------------------------------
-llm:
-  enabled: false
-  provider: anthropic
-  model: claude-opus-4-7
-  endpoint: https://api.anthropic.com
-  api_key_path: /etc/drawbridge/llm.key   # file ref, not inline
-  timeout_seconds: 8
-  cache_ttl_seconds: 300
-  send_body: false                        # never send bodies by default
-  on_unavailable: ask_user                # ask_user | deny | allow
-  confidence_floor: medium                # below this, fall back to ask_user
-
-# -----------------------------------------------------------------
-# redaction — applied before forward, before LLM input, before audit.
-# -----------------------------------------------------------------
+# Redaction is applied before forward, before LLM input, before
+# audit. Defaults below are conservative.
 redaction:
   default_modifiers:
     - redact_authorization_header
@@ -74,64 +110,31 @@ redaction:
     - jsonpath: $.api_key
     - jsonpath: $.token
     - regex: "(?i)bearer [A-Za-z0-9._-]+"
-    - regex: "(?i)aws_secret_access_key=[A-Za-z0-9/+=]+"
   query_redactors:
     - regex: "(?i)token|key|secret|password"
 
-# -----------------------------------------------------------------
-# logging — audit, operational, metrics.
-# -----------------------------------------------------------------
 logging:
   audit_path: /var/log/drawbridge/audit.jsonl
   audit_buffer_size: 1024
-  audit_overflow: deny           # deny (safe) | drop | block
-  # operational_path: where the operator-tailable narrative log goes.
-  # The literal "stderr" (default) writes to the process's stderr.
-  # Any other value is a filesystem path; the file is opened
-  # append-only with mode 0640 (parent dir 0750). Drawbridge fails
-  # to start if the path is unwritable. Note: redirecting to a file
-  # SILENCES the systemd journal stream — `journalctl -u drawbridge`
-  # will go quiet. Best practice: keep "stderr" so journald (or
-  # whatever supervisor is running drawbridge) remains the source
-  # of truth, and switch to a file only when you have a specific
-  # need (e.g., shipping the log to a separate aggregator).
+  audit_overflow: deny
   operational_path: stderr
-  metrics_listen: ""             # "127.0.0.1:9090" to expose Prometheus (not yet implemented)
 
-# -----------------------------------------------------------------
-# approvals — held-request control plane.
-# -----------------------------------------------------------------
+# Approvals queue tuning. (Auth posture lives under controller.)
 approvals:
-  control_listen: 127.0.0.1:8081
   timeout_seconds: 300
   on_timeout: deny
   max_pending: 100
 
-# -----------------------------------------------------------------
-# forwarder — bounds on upstream connection pooling. See DESIGN.md
-# §5.5. Pool size is bounded; oldest idle conn is closed under
-# pressure rather than failing requests outright.
-# -----------------------------------------------------------------
 forwarder:
   max_idle_connections: 256
   max_idle_connections_per_host: 32
   connection_acquire_timeout_seconds: 5
 
-# -----------------------------------------------------------------
-# shutdown — SIGTERM behavior. See DESIGN.md §16 row 20.
-#  - drain in-flight requests up to grace_seconds
-#  - resolve all pending approvals as deny (with reason "shutdown")
-# -----------------------------------------------------------------
 shutdown:
   grace_seconds: 30
 
-# -----------------------------------------------------------------
-# identities — how clients are recognized.
-#
-# mTLS > bearer token > source IP > advisory header. See DESIGN.md
-# §8.4. Anonymous identity matches no rule that requires a specific
-# identity.
-# -----------------------------------------------------------------
+# Identities — how clients are recognized at the proxy. Independent
+# of how operators authenticate to the controller (mTLS, above).
 identities:
   - id: coding-agent
     match:
@@ -143,43 +146,19 @@ identities:
     match:
       source_ip: 127.0.0.1
 
-# -----------------------------------------------------------------
-# policy — fast-path flat lists + optional structured YAML rules.
-#
-# The flat lists are the simple authoring surface. Each line is
-# `host[:port][/path]` with `*` wildcards (see DESIGN.md §10.8).
-# A match here is the final decision: the rule engine is NOT
-# consulted and the LLM advisor is NOT invoked. Deny wins.
-#
-# Reach for `include:` only when you need time windows, body
+# Structured rules for advanced cases. Inline lists cover the simple
+# cases; reach for include only when you need time windows, body
 # patterns, identity scoping, or ask_user / ask_llm effects.
-# -----------------------------------------------------------------
 policy:
-  allow_files:
-    - allow.txt
-  deny_files:
-    - deny.txt
   include:
     - rules/base.yaml
-    - rules/dev-overrides.yaml
-  # Optional: drawbridge ships a curated suggested deny set for
-  # commonly-abused destinations. Operators can opt in:
-  # - rules/suggested-denies.yaml
 
-# -----------------------------------------------------------------
-# upstream — drawbridge's own outbound routing for forwarded
-# requests and LLM calls. Useful behind a corporate proxy.
-# -----------------------------------------------------------------
 upstream:
   proxy: ""
   no_proxy:
     - localhost
     - 127.0.0.1
-    - 169.254.169.254     # cloud metadata; usually denied at policy
-                          # but also explicitly excluded from upstream
+    - 169.254.169.254
 
-# -----------------------------------------------------------------
-# decisioncache — short-lived per-request decision memo.
-# -----------------------------------------------------------------
 decisioncache:
-  ttl_seconds: 60         # 0 to disable caching (most defensive)
+  ttl_seconds: 60

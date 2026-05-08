@@ -1,15 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"time"
+	"path/filepath"
 
 	"github.com/dandriscoll/drawbridge/internal/ca"
 	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/drawbridge/internal/controlclient"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +16,80 @@ func newCACmd() *cobra.Command {
 		Use:   "ca",
 		Short: "Manage drawbridge's local CA used for TLS interception.",
 	}
-	cmd.AddCommand(newCAInitCmd(), newCAExportCmd(), newCARotateCmd(), newCAFlushCacheCmd())
+	cmd.AddCommand(newCAInitCmd(), newCAExportCmd(), newCARotateCmd(), newCAFlushCacheCmd(), newCAClientCertCmd())
+	return cmd
+}
+
+func newCAClientCertCmd() *cobra.Command {
+	var configPath, name, certOut, keyOut string
+	cmd := &cobra.Command{
+		Use:   "client-cert <name>",
+		Short: "Issue a client cert+key for an operator to authenticate with the mTLS control plane.",
+		Long: `Issue a client cert (signed by the drawbridge CA) for an operator
+to use when calling the mTLS-locked control plane (drawbridge approve,
+deny, decisions --pending, sessions, tui, ca flush-cache, rules ...).
+
+Defaults: <name>.crt + <name>.key in the current directory. The
+issued cert chains to the same CA used for TLS interception, so the
+controller automatically trusts it.
+
+The CLI auto-loads the operator cert from
+~/.drawbridge/controller-client.{crt,key} when the
+DRAWBRIDGE_CONTROLLER_CERT/_KEY env vars are unset, so naming the
+files that way (or symlinking) is the simplest install.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				name = args[0]
+			}
+			if name == "" {
+				return &configErr{fmt.Errorf("usage: drawbridge ca client-cert <name>")}
+			}
+			cp, kp, _, err := resolveCAArgs(configPath, "", "", "")
+			if err != nil {
+				return &configErr{err}
+			}
+			caObj, err := ca.Load(cp, kp, ca.KeyTypeRSA4096, 0)
+			if err != nil {
+				return &runtimeErr{fmt.Errorf("load CA: %w; fix: drawbridge ca init", err)}
+			}
+			leaf, err := caObj.IssueClientCert(name)
+			if err != nil {
+				return &runtimeErr{err}
+			}
+			certPEM, keyPEM, err := ca.MarshalLeafPEM(leaf)
+			if err != nil {
+				return &runtimeErr{err}
+			}
+			if certOut == "" {
+				certOut = name + ".crt"
+			}
+			if keyOut == "" {
+				keyOut = name + ".key"
+			}
+			if err := os.WriteFile(certOut, certPEM, 0o644); err != nil {
+				return &runtimeErr{err}
+			}
+			if err := os.WriteFile(keyOut, keyPEM, 0o600); err != nil {
+				return &runtimeErr{err}
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "drawbridge ca client-cert: issued cert for %q\n", name)
+			fmt.Fprintf(out, "  cert: %s\n", certOut)
+			fmt.Fprintf(out, "  key:  %s (mode 0600)\n", keyOut)
+			fmt.Fprintln(out, "")
+			fmt.Fprintln(out, "to use as the operator default for this machine, install at:")
+			abs := func(p string) string { a, _ := filepath.Abs(p); return a }
+			fmt.Fprintf(out, "  ~/.drawbridge/controller-client.crt   ← %s\n", abs(certOut))
+			fmt.Fprintf(out, "  ~/.drawbridge/controller-client.key   ← %s\n", abs(keyOut))
+			fmt.Fprintln(out, "or set DRAWBRIDGE_CONTROLLER_CERT / _KEY to absolute paths.")
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "drawbridge.yaml path (used to locate the CA)")
+	cmd.Flags().StringVar(&name, "name", "", "alternate to positional arg")
+	cmd.Flags().StringVar(&certOut, "cert-out", "", "cert output path (default: <name>.crt)")
+	cmd.Flags().StringVar(&keyOut, "key-out", "", "key output path (default: <name>.key)")
 	return cmd
 }
 
@@ -131,16 +202,9 @@ func newCAFlushCacheCmd() *cobra.Command {
 			if err != nil {
 				return &configErr{err}
 			}
-			url := fmt.Sprintf("http://%s/v1/ca/flush-cache", cfg.Approvals.ControlListen)
-			httpClient := &http.Client{Timeout: 5 * time.Second}
-			resp, err := httpClient.Post(url, "application/json", bytes.NewReader(nil))
+			body, err := controlclient.Post(cfg, "/v1/ca/flush-cache", nil)
 			if err != nil {
-				return &runtimeErr{fmt.Errorf("control API: %w", err)}
-			}
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(resp.Body)
-			if resp.StatusCode >= 400 {
-				return &runtimeErr{fmt.Errorf("control API: %s: %s", resp.Status, string(body))}
+				return &runtimeErr{err}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), string(body))
 			return nil

@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"time"
 
 	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/drawbridge/internal/controlclient"
 	"github.com/dandriscoll/drawbridge/internal/policy"
 	"github.com/spf13/cobra"
 )
@@ -93,16 +90,9 @@ func newRulesReloadCmd() *cobra.Command {
 			if err != nil {
 				return &configErr{err}
 			}
-			url := fmt.Sprintf("http://%s/v1/rules/reload", cfg.Approvals.ControlListen)
-			httpClient := &http.Client{Timeout: 5 * time.Second}
-			resp, err := httpClient.Post(url, "application/json", nil)
+			body, err := controlclient.Post(cfg, "/v1/rules/reload", nil)
 			if err != nil {
-				return &runtimeErr{fmt.Errorf("control API: %w; alternatively send SIGHUP to the running drawbridge", err)}
-			}
-			defer resp.Body.Close()
-			body, _ := io.ReadAll(resp.Body)
-			if resp.StatusCode >= 400 {
-				return &runtimeErr{fmt.Errorf("control API: %s: %s", resp.Status, string(body))}
+				return &runtimeErr{fmt.Errorf("%w; alternatively send SIGHUP to the running drawbridge", err)}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), string(body))
 			return nil
@@ -160,10 +150,6 @@ func newRulesAddCmd() *cobra.Command {
 			fmt.Fprintln(out, "  to make this rule file active, copy it next to your config and add it to policy.include:")
 			fmt.Fprintf(out, "    cp %s <your-config-dir>/\n", src)
 			fmt.Fprintf(out, "  then `drawbridge rules reload` to apply.\n")
-			// Sweep test path: if the user passed `--apply`, do
-			// the copy + reload via control API. Out of scope for
-			// Phase 2 first cut; documented as TODO.
-			_ = bytes.NewReader
 			return nil
 		},
 	}

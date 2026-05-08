@@ -1,12 +1,14 @@
-// Package control implements drawbridge's HTTP control plane (the
-// approval API). It lives on a SEPARATE listener from the proxy
-// listener — DESIGN.md §13.4 `approvals.control_listen`.
+// Package control implements drawbridge's HTTPS control plane (the
+// approval API). It listens on the same adapter as the proxy, on
+// `ports.control`, with mTLS enforced for every endpoint except
+// `/v1/healthz`. Operator client certs are issued by the same CA
+// that issues TLS-interception leaves (see `internal/ca`).
 package control
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,20 +30,23 @@ type CAOps interface {
 	SHA256Fingerprint() string
 }
 
-// Server is the control-plane HTTP listener.
+// TLSProvider is what control needs from the CA to bring up an
+// mTLS listener: a server cert and the trust roots for verifying
+// operator client certs.
+type TLSProvider interface {
+	IssueServerCertFor(cn string, sans []string) (*tls.Certificate, error)
+	ClientCAPool() *x509.CertPool
+}
+
+// Server is the control-plane HTTPS listener.
 type Server struct {
 	addr     string
 	queue    *approvals.Queue
 	sessions *sessions.Tracker
 	engine   *policy.Engine
 	ca       CAOps
+	tlsProv  TLSProvider
 	srv      *http.Server
-
-	// Auth: when authMode == "bearer", every request MUST present
-	// `Authorization: Bearer <token>` whose sha256 hex matches
-	// authBearerSHA. authMode "none" disables auth.
-	authMode      string
-	authBearerSHA string
 
 	opLog *slog.Logger
 }
@@ -61,18 +66,14 @@ func New(addr string, q *approvals.Queue, t *sessions.Tracker, e *policy.Engine)
 	}
 }
 
-// SetAuth configures bearer-token auth on the control plane.
-// mode is "none" or "bearer"; bearerSHA is the hex sha256 of the
-// expected token when mode=="bearer".
-func (s *Server) SetAuth(mode, bearerSHA string) {
-	s.authMode = mode
-	s.authBearerSHA = bearerSHA
-}
-
 // SetCA wires a CA into the control plane (post-construction so
 // that interception-disabled deployments can still expose the
 // other endpoints).
 func (s *Server) SetCA(c CAOps) { s.ca = c }
+
+// SetTLS wires the TLS-issuing provider used to bring up the mTLS
+// listener.
+func (s *Server) SetTLS(p TLSProvider) { s.tlsProv = p }
 
 // ListenAndServe starts the control plane on addr; returns the
 // concrete bound address (helpful when addr=":0").
@@ -80,32 +81,61 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	if s.addr == "" {
 		return "", nil
 	}
-	ln, err := net.Listen("tcp", s.addr)
+	if s.tlsProv == nil {
+		return "", fmt.Errorf("control plane: TLS provider not configured (call SetTLS)")
+	}
+
+	host, _, err := net.SplitHostPort(s.addr)
+	if err != nil {
+		return "", fmt.Errorf("control plane: invalid addr %q: %w", s.addr, err)
+	}
+	sans := []string{"localhost", "127.0.0.1"}
+	if host != "" && host != "0.0.0.0" && host != "127.0.0.1" && host != "localhost" {
+		sans = append(sans, host)
+	}
+	serverCert, err := s.tlsProv.IssueServerCertFor("drawbridge-controller", sans)
+	if err != nil {
+		return "", fmt.Errorf("control plane: issue server cert: %w", err)
+	}
+	pool := s.tlsProv.ClientCAPool()
+	if pool == nil {
+		return "", fmt.Errorf("control plane: client CA pool is empty")
+	}
+
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{*serverCert},
+		// VerifyClientCertIfGiven lets /v1/healthz be reachable
+		// without a client cert; per-endpoint requireClientCert
+		// middleware enforces presence on every other endpoint.
+		ClientCAs:  pool,
+		ClientAuth: tls.VerifyClientCertIfGiven,
+		MinVersion: tls.VersionTLS12,
+	}
+
+	ln, err := tls.Listen("tcp", s.addr, tlsCfg)
 	if err != nil {
 		return "", err
 	}
 	mux := http.NewServeMux()
-	auth := func(h http.HandlerFunc) http.HandlerFunc {
+	authd := func(h http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if !s.authorize(r) {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="drawbridge"`)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if !verified(r) {
+				http.Error(w, "client certificate required", http.StatusUnauthorized)
 				return
 			}
 			h(w, r)
 		}
 	}
-	_ = auth
-	mux.HandleFunc("/v1/holds", auth(s.listHolds))
-	mux.HandleFunc("/v1/holds/", auth(s.holdAction)) // /v1/holds/<id>/approve|deny
-	mux.HandleFunc("/v1/sessions", auth(s.listSessions))
-	mux.HandleFunc("/v1/rules", auth(s.rulesInfo))
-	mux.HandleFunc("/v1/rules/reload", auth(s.rulesReload))
+	mux.HandleFunc("/v1/holds", authd(s.listHolds))
+	mux.HandleFunc("/v1/holds/", authd(s.holdAction)) // /v1/holds/<id>/approve|deny
+	mux.HandleFunc("/v1/sessions", authd(s.listSessions))
+	mux.HandleFunc("/v1/rules", authd(s.rulesInfo))
+	mux.HandleFunc("/v1/rules/reload", authd(s.rulesReload))
 	// /v1/healthz is intentionally unauthenticated for monitoring.
 	mux.HandleFunc("/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
-	mux.HandleFunc("/v1/ca/flush-cache", auth(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/v1/ca/flush-cache", authd(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -136,6 +166,15 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 		}
 	}()
 	return ln.Addr().String(), nil
+}
+
+// verified is true when the connection presented a client cert that
+// chains to a CA in the configured pool.
+func verified(r *http.Request) bool {
+	if r.TLS == nil {
+		return false
+	}
+	return len(r.TLS.PeerCertificates) > 0 && len(r.TLS.VerifiedChains) > 0
 }
 
 func (s *Server) listHolds(w http.ResponseWriter, r *http.Request) {
@@ -202,25 +241,6 @@ func (s *Server) rulesReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "reloaded", "rule_set_version": s.engine.RuleSetVersion()})
-}
-
-// authorize returns true if the request satisfies the configured
-// auth policy.
-func (s *Server) authorize(r *http.Request) bool {
-	if s.authMode == "" || s.authMode == "none" {
-		return true
-	}
-	if s.authMode != "bearer" {
-		return false
-	}
-	v := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if len(v) <= len(prefix) || !strings.EqualFold(v[:len(prefix)], prefix) {
-		return false
-	}
-	tok := strings.TrimSpace(v[len(prefix):])
-	sum := sha256.Sum256([]byte(tok))
-	return hex.EncodeToString(sum[:]) == s.authBearerSHA
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

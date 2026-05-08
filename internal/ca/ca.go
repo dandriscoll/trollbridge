@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -226,6 +227,115 @@ func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
 	}
 	c.leafCache[host] = out
 	return out, nil
+}
+
+// IssueClientCert mints a client-auth leaf signed by this CA. The
+// returned tls.Certificate carries Leaf populated. Used to give an
+// operator (`drawbridge ca client-cert <name>`) credentials for the
+// mTLS-locked control plane. CN=name; no SAN; ExtKeyUsage=ClientAuth;
+// validity = 1 year.
+func (c *CA) IssueClientCert(name string) (*tls.Certificate, error) {
+	if name == "" {
+		return nil, fmt.Errorf("client-cert name must not be empty")
+	}
+	leafKey, err := generateKey(c.leafKeyType)
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: newSerial(),
+		Subject:      pkix.Name{CommonName: name},
+		NotBefore:    time.Now().Add(-1 * time.Hour),
+		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.Cert, public(leafKey), c.Key)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Certificate{
+		Certificate: [][]byte{der, c.Cert.Raw},
+		PrivateKey:  leafKey,
+		Leaf:        parsed,
+	}, nil
+}
+
+// IssueServerCertFor mints a server-auth leaf for a list of SAN
+// hosts (DNS names or IPs). Used for the controller's TLS listener.
+// Like IssueClientCert this is one-shot — no caching layer; callers
+// hold the certificate for the listener's lifetime.
+func (c *CA) IssueServerCertFor(cn string, sans []string) (*tls.Certificate, error) {
+	leafKey, err := generateKey(c.leafKeyType)
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: newSerial(),
+		Subject:      pkix.Name{CommonName: cn},
+		NotBefore:    time.Now().Add(-1 * time.Hour),
+		NotAfter:     time.Now().Add(c.leafTTL),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	for _, s := range sans {
+		if ip := net.ParseIP(s); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+		} else {
+			tmpl.DNSNames = append(tmpl.DNSNames, s)
+		}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, c.Cert, public(leafKey), c.Key)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Certificate{
+		Certificate: [][]byte{der, c.Cert.Raw},
+		PrivateKey:  leafKey,
+		Leaf:        parsed,
+	}, nil
+}
+
+// MarshalLeafPEM encodes a leaf cert returned by IssueClientCert /
+// IssueServerCertFor as two PEM-encoded byte slices: (cert, key).
+// The cert PEM includes the CA cert appended, so callers can serve
+// or verify a chain without further work.
+func MarshalLeafPEM(leaf *tls.Certificate) (certPEM, keyPEM []byte, err error) {
+	var certBuf, keyBuf strings.Builder
+	for _, der := range leaf.Certificate {
+		if err := pem.Encode(stringWriter{&certBuf}, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+			return nil, nil, err
+		}
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(leaf.PrivateKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := pem.Encode(stringWriter{&keyBuf}, &pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}); err != nil {
+		return nil, nil, err
+	}
+	return []byte(certBuf.String()), []byte(keyBuf.String()), nil
+}
+
+type stringWriter struct{ b *strings.Builder }
+
+func (w stringWriter) Write(p []byte) (int, error) { return w.b.Write(p) }
+
+// ClientCAPool returns a *x509.CertPool containing this CA's root.
+// Used by the control plane to verify operator client certs (which
+// are issued by IssueClientCert, signed by this same root).
+func (c *CA) ClientCAPool() *x509.CertPool {
+	pool := x509.NewCertPool()
+	pool.AddCert(c.Cert)
+	return pool
 }
 
 // FlushCache empties the leaf-cert cache.

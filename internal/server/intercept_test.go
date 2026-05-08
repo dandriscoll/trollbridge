@@ -75,14 +75,14 @@ func bootInterceptProxy(t *testing.T, rules string, redactionYAML string) *inter
 
 	// Pick free port for the control plane.
 	ctrlLn, _ := net.Listen("tcp", "127.0.0.1:0")
-	ctrlAddr := ctrlLn.Addr().String()
+	ctrlAddr := ctrlLn.Addr().String(); _ = ctrlAddr
 	ctrlLn.Close()
 
 	cfg := &config.Config{
-		Listen:    config.Listen{Address: "127.0.0.1", Port: 0},
+		Adapter: "127.0.0.1", Ports: config.Ports{Proxy: 0},
 		Mode:      "default-deny",
 		Logging:   config.Logging{AuditPath: auditPath, AuditBufferSize: 64, AuditOverflow: "block"},
-		Approvals: config.Approvals{ControlListen: ctrlAddr, TimeoutSeconds: 5, OnTimeout: "deny", MaxPending: 4},
+		Approvals: config.Approvals{TimeoutSeconds: 5, OnTimeout: "deny", MaxPending: 4},
 		Forwarder: config.Forwarder{MaxIdleConns: 8, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
 		Shutdown:  config.Shutdown{GraceSeconds: 5},
 		Identities: []config.Identity{
@@ -104,8 +104,10 @@ func bootInterceptProxy(t *testing.T, rules string, redactionYAML string) *inter
 		// trivial: load from a temp file via config.Load to reuse
 		// the parser. Build a minimal config file.
 		mainCfgPath := filepath.Join(dir, "drawbridge.yaml")
-		if err := os.WriteFile(mainCfgPath, []byte(`drawbridge_version: 1
-listen: {address: 127.0.0.1, port: 0}
+		_ = ctrlAddr
+		if err := os.WriteFile(mainCfgPath, []byte(`drawbridge_version: 2
+adapter: lo
+ports: {proxy: 0, control: 0}
 mode: default-deny
 interception:
   enabled: true
@@ -115,8 +117,6 @@ interception:
   leaf_key_type: ecdsa-p256
 logging:
   audit_path: `+auditPath+`
-approvals:
-  control_listen: `+ctrlAddr+`
 identities:
   - id: test-client
     match: {source_ip: 127.0.0.1}

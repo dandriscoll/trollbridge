@@ -66,20 +66,21 @@ func TestSubprocess_DrawbridgeBinaryServesAndAuditsAndExitsCleanly(t *testing.T)
 	if err := os.WriteFile(rulesPath, []byte(rules), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfgYAML := fmt.Sprintf(`drawbridge_version: 1
-listen: {address: 127.0.0.1, port: %s}
+	_ = ctrlAddr
+	cfgYAML := fmt.Sprintf(`drawbridge_version: 2
+adapter: lo
+ports: {proxy: %s, control: 0}
 mode: default-deny
 logging:
   audit_path: %s
 approvals:
-  control_listen: %s
   timeout_seconds: 5
 identities:
   - id: test
     match: {source_ip: 127.0.0.1}
 policy:
   include: [%s]
-`, proxyPort, auditPath, ctrlAddr, rulesPath)
+`, proxyPort, auditPath, rulesPath)
 	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
