@@ -25,7 +25,6 @@ attached to each tagged release on the
 [releases page](https://github.com/dandriscoll/drawbridge/releases).
 
 ```sh
-# Replace v0.1.0 and the os/arch with the current release.
 curl -L -o drawbridge.tar.gz \
   https://github.com/dandriscoll/drawbridge/releases/download/v0.3.0/drawbridge_v0.3.0_linux_amd64.tar.gz
 # Verify against the release's SHA256SUMS file before extracting.
