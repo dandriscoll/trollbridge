@@ -16,7 +16,7 @@ import (
 // Entry is one audit-log record. Fields per DESIGN.md §15.2.
 type Entry struct {
 	Timestamp           string `json:"timestamp"`
-	DrawbridgeVersion   string `json:"drawbridge_version"`
+	TrollbridgeVersion   string `json:"trollbridge_version"`
 	AuditSchemaVersion  int    `json:"audit_schema_version"`
 
 	RequestID  string `json:"request_id"`

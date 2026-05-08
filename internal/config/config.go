@@ -1,4 +1,4 @@
-// Package config loads and validates drawbridge.yaml. v3 schema is
+// Package config loads and validates trollbridge.yaml. v3 schema is
 // organised around per-surface bind values: each of `proxy`,
 // `control`, `metrics` is a single `<host>:<port>` string. The host
 // supports two aliases: `all` (= 0.0.0.0) and `lo` (= 127.0.0.1).
@@ -15,12 +15,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// SchemaVersion is the current drawbridge.yaml schema version.
+// SchemaVersion is the current trollbridge.yaml schema version.
 const SchemaVersion = 3
 
-// Config is the top-level shape of drawbridge.yaml (v3).
+// Config is the top-level shape of trollbridge.yaml (v3).
 type Config struct {
-	DrawbridgeVersion int `yaml:"drawbridge_version"`
+	TrollbridgeVersion int `yaml:"trollbridge_version"`
 
 	// Per-surface binds. Each value combines host and port:
 	//   proxy:   lo:8080         # 127.0.0.1
@@ -33,7 +33,7 @@ type Config struct {
 	Control Bind `yaml:"control"`
 	Metrics Bind `yaml:"metrics"`
 
-	// Lists are the inline allow / deny patterns. drawbridge reads
+	// Lists are the inline allow / deny patterns. trollbridge reads
 	// them at startup; the console REPL writes them back via a
 	// yaml-Node-level edit (see internal/configwrite).
 	Lists Lists `yaml:"lists"`
@@ -315,13 +315,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var probe struct {
-		Version int `yaml:"drawbridge_version"`
+		Version int `yaml:"trollbridge_version"`
 	}
 	if err := yaml.Unmarshal(data, &probe); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if probe.Version == 1 {
-		return nil, fmt.Errorf(`config error in %s: drawbridge_version 1 is no longer supported.
+		return nil, fmt.Errorf(`config error in %s: trollbridge_version 1 is no longer supported.
 v2 reorganised the schema around four decisions; v3 then split the
 single `+"`adapter`"+` knob into per-surface binds. Migrate directly to
 v3:
@@ -331,18 +331,18 @@ v3:
   - lists:   inline allow/deny
   - llm:     provider/model/key + inline llm.directives
   - controller.auth: mtls
-Set drawbridge_version: 3 and see config.example.yaml for the
+Set trollbridge_version: 3 and see config.example.yaml for the
 canonical shape.`, path)
 	}
 	if probe.Version == 2 {
-		return nil, fmt.Errorf(`config error in %s: drawbridge_version 2 is no longer supported.
+		return nil, fmt.Errorf(`config error in %s: trollbridge_version 2 is no longer supported.
 v3 combines the bind host and port per surface (replacing the single
 `+"`adapter`"+` knob and the `+"`ports`"+` block):
   - proxy:   <host>:<port>     (replaces adapter + ports.proxy)
   - control: <host>:<port>     (replaces adapter + ports.control; 0 disables)
   - metrics: <host>:<port> | 0 (replaces adapter + ports.metrics)
 "all" is a new alias for 0.0.0.0; "lo" continues to mean 127.0.0.1.
-Set drawbridge_version: 3 and migrate the fields above.`, path)
+Set trollbridge_version: 3 and migrate the fields above.`, path)
 	}
 
 	var cfg Config
@@ -357,8 +357,8 @@ Set drawbridge_version: 3 and migrate the fields above.`, path)
 }
 
 func (c *Config) applyDefaults() {
-	if c.DrawbridgeVersion == 0 {
-		c.DrawbridgeVersion = SchemaVersion
+	if c.TrollbridgeVersion == 0 {
+		c.TrollbridgeVersion = SchemaVersion
 	}
 	// Distinguish "field absent" (Raw == "") from "explicit disable"
 	// (Raw == "0"). Absent → apply default; explicit-0 → keep
@@ -366,7 +366,7 @@ func (c *Config) applyDefaults() {
 	if c.Proxy.Raw == "" && c.Proxy.Port == 0 {
 		c.Proxy = Bind{Host: "127.0.0.1", Port: 8080, Raw: "lo:8080"}
 	}
-	// Control / Metrics default to disabled. `drawbridge init`
+	// Control / Metrics default to disabled. `trollbridge init`
 	// writes an explicit `control: lo:8081` so a fresh install gets
 	// a working controller without surprise.
 	if c.Controller.Auth == "" {
@@ -423,8 +423,8 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate(path string) error {
-	if c.DrawbridgeVersion != SchemaVersion {
-		return fmt.Errorf("config error in %s: drawbridge_version must be %d; got %d", path, SchemaVersion, c.DrawbridgeVersion)
+	if c.TrollbridgeVersion != SchemaVersion {
+		return fmt.Errorf("config error in %s: trollbridge_version must be %d; got %d", path, SchemaVersion, c.TrollbridgeVersion)
 	}
 	switch c.Mode {
 	case "default-deny", "default-allow", "default-ask":

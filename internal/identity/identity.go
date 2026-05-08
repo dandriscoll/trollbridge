@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/config"
 )
 
 // Resolver converts a client connection + request to a canonical

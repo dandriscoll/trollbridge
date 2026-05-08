@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/policy"
 )
 
 // BenchmarkPlainHTTP_ProxyOverhead measures the per-request latency
-// added by drawbridge for an allow-by-rule plain HTTP request to a
+// added by trollbridge for an allow-by-rule plain HTTP request to a
 // localhost stub origin. The DESIGN.md §11 / §19.5 claim is < 5ms
 // p95 on localhost. We don't compute p95 here; we report ns/op and
 // let the operator interpret.

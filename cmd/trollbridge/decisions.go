@@ -7,9 +7,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/controlclient"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/controlclient"
 	"github.com/spf13/cobra"
 )
 
@@ -64,7 +64,7 @@ func newDecisionsCmd() *cobra.Command {
 			return scanner.Err()
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	cmd.Flags().DurationVar(&since, "since", 0, "only show entries newer than this duration (e.g. 1h)")
 	cmd.Flags().BoolVar(&pending, "pending", false, "show pending approval-queue entries (Phase 2)")
 	return cmd

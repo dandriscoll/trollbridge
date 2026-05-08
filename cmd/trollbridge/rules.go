@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/controlclient"
-	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/controlclient"
+	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/spf13/cobra"
 )
 
@@ -49,7 +49,7 @@ func newRulesListCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	return cmd
 }
 
@@ -92,13 +92,13 @@ func newRulesReloadCmd() *cobra.Command {
 			}
 			body, err := controlclient.Post(cfg, "/v1/rules/reload", nil)
 			if err != nil {
-				return &runtimeErr{fmt.Errorf("%w; alternatively send SIGHUP to the running drawbridge", err)}
+				return &runtimeErr{fmt.Errorf("%w; alternatively send SIGHUP to the running trollbridge", err)}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), string(body))
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	return cmd
 }
 
@@ -129,7 +129,7 @@ func newRulesAddCmd() *cobra.Command {
 			}
 			// Validate by attempting to load it alongside the
 			// existing rule set.
-			tmpDir, err := os.MkdirTemp("", "drawbridge-rules-*")
+			tmpDir, err := os.MkdirTemp("", "trollbridge-rules-*")
 			if err != nil {
 				return &runtimeErr{err}
 			}
@@ -146,13 +146,13 @@ func newRulesAddCmd() *cobra.Command {
 			// Place the file into the config directory under a
 			// stable name and append to the include list.
 			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "drawbridge rules add: validation OK")
+			fmt.Fprintln(out, "trollbridge rules add: validation OK")
 			fmt.Fprintln(out, "  to make this rule file active, copy it next to your config and add it to policy.include:")
 			fmt.Fprintf(out, "    cp %s <your-config-dir>/\n", src)
-			fmt.Fprintf(out, "  then `drawbridge rules reload` to apply.\n")
+			fmt.Fprintf(out, "  then `trollbridge rules reload` to apply.\n")
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	return cmd
 }

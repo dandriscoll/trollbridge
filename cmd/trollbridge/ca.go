@@ -5,16 +5,16 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/dandriscoll/drawbridge/internal/ca"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/controlclient"
+	"github.com/dandriscoll/trollbridge/internal/ca"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/controlclient"
 	"github.com/spf13/cobra"
 )
 
 func newCACmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ca",
-		Short: "Manage drawbridge's local CA used for TLS interception.",
+		Short: "Manage trollbridge's local CA used for TLS interception.",
 	}
 	cmd.AddCommand(newCAInitCmd(), newCAExportCmd(), newCARotateCmd(), newCAFlushCacheCmd(), newCAClientCertCmd())
 	return cmd
@@ -25,8 +25,8 @@ func newCAClientCertCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "client-cert <name>",
 		Short: "Issue a client cert+key for an operator to authenticate with the mTLS control plane.",
-		Long: `Issue a client cert (signed by the drawbridge CA) for an operator
-to use when calling the mTLS-locked control plane (drawbridge approve,
+		Long: `Issue a client cert (signed by the trollbridge CA) for an operator
+to use when calling the mTLS-locked control plane (trollbridge approve,
 deny, decisions --pending, sessions, tui, ca flush-cache, rules ...).
 
 Defaults: <name>.crt + <name>.key in the current directory. The
@@ -34,8 +34,8 @@ issued cert chains to the same CA used for TLS interception, so the
 controller automatically trusts it.
 
 The CLI auto-loads the operator cert from
-~/.drawbridge/controller-client.{crt,key} when the
-DRAWBRIDGE_CONTROLLER_CERT/_KEY env vars are unset, so naming the
+~/.trollbridge/controller-client.{crt,key} when the
+TROLLBRIDGE_CONTROLLER_CERT/_KEY env vars are unset, so naming the
 files that way (or symlinking) is the simplest install.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -43,7 +43,7 @@ files that way (or symlinking) is the simplest install.`,
 				name = args[0]
 			}
 			if name == "" {
-				return &configErr{fmt.Errorf("usage: drawbridge ca client-cert <name>")}
+				return &configErr{fmt.Errorf("usage: trollbridge ca client-cert <name>")}
 			}
 			cp, kp, _, err := resolveCAArgs(configPath, "", "", "")
 			if err != nil {
@@ -51,7 +51,7 @@ files that way (or symlinking) is the simplest install.`,
 			}
 			caObj, err := ca.Load(cp, kp, ca.KeyTypeRSA4096, 0)
 			if err != nil {
-				return &runtimeErr{fmt.Errorf("load CA: %w; fix: drawbridge ca init", err)}
+				return &runtimeErr{fmt.Errorf("load CA: %w; fix: trollbridge ca init", err)}
 			}
 			leaf, err := caObj.IssueClientCert(name)
 			if err != nil {
@@ -74,19 +74,19 @@ files that way (or symlinking) is the simplest install.`,
 				return &runtimeErr{err}
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "drawbridge ca client-cert: issued cert for %q\n", name)
+			fmt.Fprintf(out, "trollbridge ca client-cert: issued cert for %q\n", name)
 			fmt.Fprintf(out, "  cert: %s\n", certOut)
 			fmt.Fprintf(out, "  key:  %s (mode 0600)\n", keyOut)
 			fmt.Fprintln(out, "")
 			fmt.Fprintln(out, "to use as the operator default for this machine, install at:")
 			abs := func(p string) string { a, _ := filepath.Abs(p); return a }
-			fmt.Fprintf(out, "  ~/.drawbridge/controller-client.crt   ← %s\n", abs(certOut))
-			fmt.Fprintf(out, "  ~/.drawbridge/controller-client.key   ← %s\n", abs(keyOut))
-			fmt.Fprintln(out, "or set DRAWBRIDGE_CONTROLLER_CERT / _KEY to absolute paths.")
+			fmt.Fprintf(out, "  ~/.trollbridge/controller-client.crt   ← %s\n", abs(certOut))
+			fmt.Fprintf(out, "  ~/.trollbridge/controller-client.key   ← %s\n", abs(keyOut))
+			fmt.Fprintln(out, "or set TROLLBRIDGE_CONTROLLER_CERT / _KEY to absolute paths.")
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "drawbridge.yaml path (used to locate the CA)")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path (used to locate the CA)")
 	cmd.Flags().StringVar(&name, "name", "", "alternate to positional arg")
 	cmd.Flags().StringVar(&certOut, "cert-out", "", "cert output path (default: <name>.crt)")
 	cmd.Flags().StringVar(&keyOut, "key-out", "", "key output path (default: <name>.key)")
@@ -109,19 +109,19 @@ func newCAInitCmd() *cobra.Command {
 				return &runtimeErr{err}
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "drawbridge ca init: created files:")
+			fmt.Fprintln(out, "trollbridge ca init: created files:")
 			fmt.Fprintln(out, "  cert:", cp)
 			fmt.Fprintln(out, "  key: ", kp, "(mode 0600)")
 			fmt.Fprintln(out, "  fingerprint (sha-256):", c.SHA256Fingerprint())
 			fmt.Fprintln(out, "")
 			fmt.Fprintln(out, "next steps:")
 			fmt.Fprintln(out, "  install the cert into your client trust store; see DESIGN.md §7.5 for OS commands")
-			fmt.Fprintln(out, "  set `interception.enabled: true` in your drawbridge.yaml")
-			fmt.Fprintln(out, "  drawbridge run -c <config>")
+			fmt.Fprintln(out, "  set `interception.enabled: true` in your trollbridge.yaml")
+			fmt.Fprintln(out, "  trollbridge run -c <config>")
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "drawbridge.yaml path (used to locate ca.cert_path / ca.key_path)")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path (used to locate ca.cert_path / ca.key_path)")
 	cmd.Flags().StringVar(&certPath, "cert-out", "", "override cert output path")
 	cmd.Flags().StringVar(&keyPath, "key-out", "", "override key output path")
 	cmd.Flags().StringVar(&kt, "key-type", "rsa-4096", "rsa-4096 | ecdsa-p256")
@@ -150,7 +150,7 @@ func newCAExportCmd() *cobra.Command {
 			return os.WriteFile(outPath, data, 0o644)
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "drawbridge.yaml path")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")
 	cmd.Flags().StringVar(&certPath, "cert", "", "explicit cert path")
 	cmd.Flags().StringVar(&outPath, "out", "", "write to file instead of stdout")
 	return cmd
@@ -175,13 +175,13 @@ func newCARotateCmd() *cobra.Command {
 				return &runtimeErr{err}
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "drawbridge ca rotate: prior CA archived; new CA in place.")
+			fmt.Fprintln(out, "trollbridge ca rotate: prior CA archived; new CA in place.")
 			fmt.Fprintln(out, "  fingerprint (sha-256):", c.SHA256Fingerprint())
 			fmt.Fprintln(out, "  install the new CA in client trust stores BEFORE existing leaf certs expire")
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "drawbridge.yaml path")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")
 	cmd.Flags().StringVar(&certPath, "cert-out", "", "override cert output path")
 	cmd.Flags().StringVar(&keyPath, "key-out", "", "override key output path")
 	cmd.Flags().StringVar(&kt, "key-type", "", "rsa-4096 | ecdsa-p256 (defaults to existing or rsa-4096)")
@@ -193,7 +193,7 @@ func newCAFlushCacheCmd() *cobra.Command {
 	var configPath string
 	cmd := &cobra.Command{
 		Use:   "flush-cache",
-		Short: "Drop cached leaf certs in a running drawbridge.",
+		Short: "Drop cached leaf certs in a running trollbridge.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if configPath == "" {
 				configPath = defaultConfigPath()
@@ -210,11 +210,11 @@ func newCAFlushCacheCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "drawbridge.yaml path")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")
 	return cmd
 }
 
-// resolveCAArgs picks the CA paths from flags or from drawbridge.yaml,
+// resolveCAArgs picks the CA paths from flags or from trollbridge.yaml,
 // applying defaults if neither is set.
 func resolveCAArgs(configPath, certPath, keyPath, kt string) (string, string, ca.KeyType, error) {
 	if certPath == "" || keyPath == "" {
@@ -235,10 +235,10 @@ func resolveCAArgs(configPath, certPath, keyPath, kt string) (string, string, ca
 		}
 	}
 	if certPath == "" {
-		certPath = "drawbridge-ca.crt"
+		certPath = "trollbridge-ca.crt"
 	}
 	if keyPath == "" {
-		keyPath = "drawbridge-ca.key"
+		keyPath = "trollbridge-ca.key"
 	}
 	if kt == "" {
 		kt = "rsa-4096"

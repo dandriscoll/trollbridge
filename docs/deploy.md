@@ -1,6 +1,6 @@
-# Deploying drawbridge
+# Deploying trollbridge
 
-Pre-implementation note: drawbridge is implemented through Phase 5
+Pre-implementation note: trollbridge is implemented through Phase 5
 of the design plan. The recipes below have been authored but a
 load-bearing live-build observation in a real Incus environment
 is the operator's deliverable. Treat the recipes as starting
@@ -19,15 +19,15 @@ Per `DESIGN.md` §14 the four supported topologies are:
 
 **The proxy is theatrical without a binding firewall.** The
 agent's environment MUST be configured so direct network egress
-goes nowhere except drawbridge.
+goes nowhere except trollbridge.
 
 ## Quickstart: local laptop
 
 ```sh
-make build                                # build bin/drawbridge
-./bin/drawbridge init -d ~/.drawbridge    # creates yaml + rules
-./bin/drawbridge validate -c ~/.drawbridge/drawbridge.yaml
-./bin/drawbridge run -c ~/.drawbridge/drawbridge.yaml
+make build                                # build bin/trollbridge
+./bin/trollbridge init -d ~/.trollbridge    # creates yaml + rules
+./bin/trollbridge validate -c ~/.trollbridge/trollbridge.yaml
+./bin/trollbridge run -c ~/.trollbridge/trollbridge.yaml
 ```
 
 In another shell:
@@ -43,12 +43,12 @@ curl http://example.com    # if denied by default-deny, expect 403
 1. On the host:
 
    ```sh
-   sudo install -d -o drawbridge -g drawbridge -m 0755 /etc/drawbridge
-   ./bin/drawbridge ca init \
-     --cert-out /etc/drawbridge/drawbridge-ca.crt \
-     --key-out  /etc/drawbridge/drawbridge-ca.key
-   sudo cp packaging/systemd/drawbridge.service /etc/systemd/system/
-   sudo systemctl enable --now drawbridge
+   sudo install -d -o trollbridge -g trollbridge -m 0755 /etc/trollbridge
+   ./bin/trollbridge ca init \
+     --cert-out /etc/trollbridge/trollbridge-ca.crt \
+     --key-out  /etc/trollbridge/trollbridge-ca.key
+   sudo cp packaging/systemd/trollbridge.service /etc/systemd/system/
+   sudo systemctl enable --now trollbridge
    ```
 
 2. Apply the firewall snippet:
@@ -64,14 +64,14 @@ curl http://example.com    # if denied by default-deny, expect 403
 
    ```sh
    HOST_IP=10.10.10.1 \
-   CA_PATH=/etc/drawbridge/drawbridge-ca.crt \
+   CA_PATH=/etc/trollbridge/trollbridge-ca.crt \
    ./packaging/incus/launch.sh agent-vm
    ```
 
 4. Inside the VM:
 
    ```sh
-   drawbridge selftest --from-vm
+   trollbridge selftest --from-vm
    # expect: direct outbound BLOCKED, via-proxy ok, CA trusted
    ```
 
@@ -81,7 +81,7 @@ See `packaging/docker/README.md`. Key points:
 
 - Use a network with `internal: true` so the agent container
   can only reach the sidecar.
-- Mount `drawbridge-ca.crt` into the agent's trust store.
+- Mount `trollbridge-ca.crt` into the agent's trust store.
 - Set `HTTP_PROXY` / `HTTPS_PROXY` in the agent's env.
 - `127.0.0.1:8080` for proxy; control plane port (default
   `:8081`) is **only** safe to expose if you have configured
@@ -125,7 +125,7 @@ interception:
   enabled: true
   origin_trust:
     mode: mixed         # system | file | mixed
-    path: /etc/drawbridge/corporate-ca.pem
+    path: /etc/trollbridge/corporate-ca.pem
 ```
 
 `mode: file` uses **only** the supplied PEM, not the system
@@ -142,13 +142,13 @@ roots. `mode: mixed` uses both.
   journal stream goes silent — operators who want both should run
   the binary under `tee` or accept the file as their canonical
   source.
-- Raise verbosity for diagnosis: `drawbridge run --verbose`,
-  `drawbridge --log-level=debug run …`, or
-  `DRAWBRIDGE_LOG_LEVEL=debug` in the environment. At debug level
+- Raise verbosity for diagnosis: `trollbridge run --verbose`,
+  `trollbridge --log-level=debug run …`, or
+  `TROLLBRIDGE_LOG_LEVEL=debug` in the environment. At debug level
   every request emits per-phase records keyed by `request_id=`,
   which correlates against the same field in the audit log.
-- Tail compactly: `drawbridge logs tail`.
-- Replay: `drawbridge logs replay --rules /path/to/strict.yaml -v`
+- Tail compactly: `trollbridge logs tail`.
+- Replay: `trollbridge logs replay --rules /path/to/strict.yaml -v`
   re-runs decisions over the audit log against a new rule set
   and reports flips. (`-v` here is replay-local — it shows each
   flipped decision; it does not raise the operational log level.)

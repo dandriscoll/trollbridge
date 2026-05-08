@@ -2,15 +2,15 @@
 
 GO      ?= go
 PKG     := ./...
-BIN     := drawbridge
+BIN     := trollbridge
 LDFLAGS := -s -w
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .PHONY: build
-build:           ## Build the static binary into ./bin/drawbridge
+build:           ## Build the static binary into ./bin/trollbridge
 	CGO_ENABLED=0 $(GO) build -trimpath \
-	  -ldflags='$(LDFLAGS) -X github.com/dandriscoll/drawbridge/internal/server.Version=$(VERSION)' \
-	  -o bin/$(BIN) ./cmd/drawbridge
+	  -ldflags='$(LDFLAGS) -X github.com/dandriscoll/trollbridge/internal/server.Version=$(VERSION)' \
+	  -o bin/$(BIN) ./cmd/trollbridge
 
 .PHONY: test
 test:            ## Run all tests

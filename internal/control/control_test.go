@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/approvals"
-	"github.com/dandriscoll/drawbridge/internal/ca"
-	"github.com/dandriscoll/drawbridge/internal/policy"
-	"github.com/dandriscoll/drawbridge/internal/sessions"
+	"github.com/dandriscoll/trollbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/ca"
+	"github.com/dandriscoll/trollbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/sessions"
 )
 
 // bootControl starts a control plane backed by a fresh test CA and

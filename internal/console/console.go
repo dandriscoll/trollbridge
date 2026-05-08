@@ -1,7 +1,7 @@
-// Package console implements drawbridge's interactive operator REPL.
+// Package console implements trollbridge's interactive operator REPL.
 // It runs only when stdin is a tty so that systemd/Docker
 // deployments are unaffected. Commands edit `lists.allow` and
-// `lists.deny` inside drawbridge.yaml via internal/configwrite (a
+// `lists.deny` inside trollbridge.yaml via internal/configwrite (a
 // yaml-Node-level edit that preserves comments outside the lists
 // subtree); after a successful write the supplied OnReload callback
 // re-parses the file and updates the running matcher.
@@ -15,15 +15,15 @@ import (
 	"os"
 	"strings"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/configwrite"
-	"github.com/dandriscoll/drawbridge/internal/hostlist"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/configwrite"
+	"github.com/dandriscoll/trollbridge/internal/hostlist"
 )
 
 // Config holds the inputs the console needs from the rest of the
 // system.
 type Config struct {
-	// ConfigPath is the path to drawbridge.yaml. Mutations rewrite
+	// ConfigPath is the path to trollbridge.yaml. Mutations rewrite
 	// it in place via configwrite.
 	ConfigPath string
 
@@ -51,7 +51,7 @@ func Run(ctx context.Context, cfg Config) error {
 		cfg.Out = os.Stdout
 	}
 	if cfg.Prompt == "" {
-		cfg.Prompt = "drawbridge> "
+		cfg.Prompt = "trollbridge> "
 	}
 
 	c := &repl{cfg: cfg}
@@ -76,7 +76,7 @@ type repl struct {
 }
 
 func (c *repl) loop(ctx context.Context) error {
-	c.printf("drawbridge console — type `help` for commands, Ctrl-D to exit.\n")
+	c.printf("trollbridge console — type `help` for commands, Ctrl-D to exit.\n")
 	c.printPrompt()
 
 	scanner := bufio.NewScanner(c.cfg.In)
@@ -260,11 +260,11 @@ func (c *repl) triggerReload() {
 
 func (c *repl) printHelp() {
 	c.printf(`commands:
-  allow <pattern>    add to lists.allow in drawbridge.yaml
-  deny <pattern>     add to lists.deny in drawbridge.yaml
+  allow <pattern>    add to lists.allow in trollbridge.yaml
+  deny <pattern>     add to lists.deny in trollbridge.yaml
   remove <pattern>   remove from either list
   list [allow|deny]  show current patterns
-  reload             re-parse drawbridge.yaml into the running matcher
+  reload             re-parse trollbridge.yaml into the running matcher
   help               this text
   quit | exit        leave the console (the proxy keeps running)
 `)

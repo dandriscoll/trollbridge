@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
 // rules helper writes a YAML rule file into a temp dir and returns

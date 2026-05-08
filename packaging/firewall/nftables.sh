@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sample nftables snippet that pins the agent VM's egress to the
-# host-side drawbridge address. Run this on the Incus HOST.
+# host-side trollbridge address. Run this on the Incus HOST.
 set -euo pipefail
 
 : "${AGENT_VM_IP:?set AGENT_VM_IP}"
@@ -13,11 +13,11 @@ DNS_HOST="${DNS_RESOLVER%:*}"
 DNS_PORT="${DNS_RESOLVER##*:}"
 
 nft -f - <<EOF
-table inet drawbridge_egress {
+table inet trollbridge_egress {
     chain forward {
         type filter hook forward priority 0; policy accept;
 
-        # Allow agent → drawbridge over TCP.
+        # Allow agent → trollbridge over TCP.
         ip saddr ${AGENT_VM_IP} ip daddr ${PROXY_HOST} tcp dport ${PROXY_PORT} accept
 
         # Allow agent → controlled DNS.
@@ -34,4 +34,4 @@ table inet drawbridge_egress {
 EOF
 
 echo "nftables rules in place. Verify:"
-echo "  nft list table inet drawbridge_egress"
+echo "  nft list table inet trollbridge_egress"

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dandriscoll/drawbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/approvals"
 )
 
 func snap(id, host string) approvals.Snapshot {

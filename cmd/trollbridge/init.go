@@ -8,19 +8,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const defaultConfigYAML = `drawbridge_version: 3
+const defaultConfigYAML = `trollbridge_version: 3
 
 # 1. Per-surface bind. Each value is "<host>:<port>". Use:
 #      lo   = 127.0.0.1
 #      all  = 0.0.0.0
-#      a literal IP or hostname (e.g. 10.1.2.3, drawbridge.internal)
+#      a literal IP or hostname (e.g. 10.1.2.3, trollbridge.internal)
 #      [fd00::1]:8081  for IPv6 literals.
 #    'metrics: 0' disables the (unimplemented) Prometheus endpoint.
 proxy:   lo:8080
 control: lo:8081
 metrics: 0
 
-# 2. Allow / deny lists — drawbridge writes them back from the REPL.
+# 2. Allow / deny lists — trollbridge writes them back from the REPL.
 #    Each entry is host[:port][/path] with an optional <scheme>:// prefix
 #    and * wildcards (*.example.com, trailing /* for path prefix, bare *
 #    for any host). Examples:
@@ -45,21 +45,21 @@ llm:
   provider: anthropic
   model:    claude-opus-4-7
   endpoint: https://api.anthropic.com
-  api_key_path: /etc/drawbridge/llm.key
+  api_key_path: /etc/trollbridge/llm.key
   send_body: false
   on_unavailable: ask_user
   confidence_floor: medium
 
   # 4. Directives — the system prompt the advisor follows.
   directives: |
-    You are drawbridge's security advisor. Decide allow / deny / ask_user
+    You are trollbridge's security advisor. Decide allow / deny / ask_user
     for each HTTP request you receive. Refuse anything that exfiltrates
     credentials or contacts cloud metadata services. When uncertain,
     answer ask_user.
 
 # Controller — operator-facing control plane (approve/deny/tui).
 # mTLS is enforced; client certs are issued by the same CA used for
-# TLS interception (drawbridge ca client-cert <name>).
+# TLS interception (trollbridge ca client-cert <name>).
 controller:
   auth: mtls
 
@@ -70,13 +70,13 @@ mode: default-ask
 interception:
   enabled: false
   ca:
-    cert_path: ./drawbridge-ca.crt
-    key_path:  ./drawbridge-ca.key
+    cert_path: ./trollbridge-ca.crt
+    key_path:  ./trollbridge-ca.key
   leaf_key_type: rsa-4096
 
 # Logging.
 logging:
-  audit_path:        ./drawbridge.audit.jsonl
+  audit_path:        ./trollbridge.audit.jsonl
   audit_overflow:    deny
   operational_path:  stderr
 
@@ -102,7 +102,7 @@ policy:
 `
 
 const defaultRulesYAML = `# Optional structured rules. The simple cases live inline in
-# drawbridge.yaml under lists.allow / lists.deny. Reach for this
+# trollbridge.yaml under lists.allow / lists.deny. Reach for this
 # file only when you need time windows, body patterns, identity
 # scoping, or ask_user / ask_llm effects.
 #
@@ -122,7 +122,7 @@ func newInitCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create a default drawbridge.yaml + rules.yaml.",
+		Short: "Create a default trollbridge.yaml + rules.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				dir = "."
@@ -131,7 +131,7 @@ func newInitCmd() *cobra.Command {
 				return &runtimeErr{err}
 			}
 			files := map[string]string{
-				filepath.Join(dir, "drawbridge.yaml"): defaultConfigYAML,
+				filepath.Join(dir, "trollbridge.yaml"): defaultConfigYAML,
 				filepath.Join(dir, "rules.yaml"):      defaultRulesYAML,
 			}
 			created := []string{}
@@ -151,18 +151,18 @@ func newInitCmd() *cobra.Command {
 				created = append(created, path)
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "drawbridge init: created files:")
+			fmt.Fprintln(out, "trollbridge init: created files:")
 			for _, p := range created {
 				fmt.Fprintln(out, "  ", p)
 			}
 			fmt.Fprintln(out, "\nnext steps:")
-			fmt.Fprintln(out, "  drawbridge ca init                              # generate the CA")
-			fmt.Fprintln(out, "  drawbridge ca client-cert <op>                  # issue your operator client cert")
-			fmt.Fprintln(out, "  install <op>.{crt,key} at ~/.drawbridge/controller-client.{crt,key}")
-			fmt.Fprintln(out, "  drawbridge validate -c", filepath.Join(dir, "drawbridge.yaml"))
-			fmt.Fprintln(out, "  drawbridge doctor   -c", filepath.Join(dir, "drawbridge.yaml"), "  # check yaml + LLM connection")
-			fmt.Fprintln(out, "  drawbridge run      -c", filepath.Join(dir, "drawbridge.yaml"))
-			fmt.Fprintln(out, "  eval \"$(drawbridge env -c "+filepath.Join(dir, "drawbridge.yaml")+")\"   # wire client env")
+			fmt.Fprintln(out, "  trollbridge ca init                              # generate the CA")
+			fmt.Fprintln(out, "  trollbridge ca client-cert <op>                  # issue your operator client cert")
+			fmt.Fprintln(out, "  install <op>.{crt,key} at ~/.trollbridge/controller-client.{crt,key}")
+			fmt.Fprintln(out, "  trollbridge validate -c", filepath.Join(dir, "trollbridge.yaml"))
+			fmt.Fprintln(out, "  trollbridge doctor   -c", filepath.Join(dir, "trollbridge.yaml"), "  # check yaml + LLM connection")
+			fmt.Fprintln(out, "  trollbridge run      -c", filepath.Join(dir, "trollbridge.yaml"))
+			fmt.Fprintln(out, "  eval \"$(trollbridge env -c "+filepath.Join(dir, "trollbridge.yaml")+")\"   # wire client env")
 			return nil
 		},
 	}

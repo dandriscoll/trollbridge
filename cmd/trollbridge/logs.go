@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -44,7 +44,7 @@ func newLogsTailCmd() *cobra.Command {
 			return tailJSONL(f, follow, cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "keep reading as the file grows")
 	return cmd
 }
@@ -56,7 +56,7 @@ func tailJSONL(r io.Reader, follow bool, out io.Writer) error {
 		for scanner.Scan() {
 			var e audit.Entry
 			if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
-				fmt.Fprintln(out, "drawbridge: unparseable audit line:", scanner.Text())
+				fmt.Fprintln(out, "trollbridge: unparseable audit line:", scanner.Text())
 				continue
 			}
 			path := e.Path

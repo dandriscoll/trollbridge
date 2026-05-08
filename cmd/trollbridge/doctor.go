@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/advisor"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/hostlist"
-	"github.com/dandriscoll/drawbridge/internal/policy"
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/advisor"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/hostlist"
+	"github.com/dandriscoll/trollbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -25,7 +25,7 @@ func newDoctorCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check the YAML and test the LLM connection.",
-		Long: `Doctor is a pre-flight check: it loads drawbridge.yaml, parses the
+		Long: `Doctor is a pre-flight check: it loads trollbridge.yaml, parses the
 rule files and lists, and — when llm.enabled — performs a real
 classification call against the configured provider with a synthetic
 input. Each check prints a status line; non-zero exit on any FAIL.`,
@@ -34,7 +34,7 @@ input. Each check prints a status line; non-zero exit on any FAIL.`,
 				configPath = defaultConfigPath()
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "drawbridge doctor:")
+			fmt.Fprintln(out, "trollbridge doctor:")
 
 			cfg, err := config.Load(configPath)
 			if err != nil {
@@ -55,12 +55,12 @@ input. Each check prints a status line; non-zero exit on any FAIL.`,
 			printDoctorLine(out, "rules",
 				fmt.Sprintf("OK (%d rules, version %s)", len(engine.Rules()), engine.RuleSetVersion()))
 
-			allow, err := hostlist.LoadInline("allow", "drawbridge.yaml:lists.allow", cfg.Lists.Allow)
+			allow, err := hostlist.LoadInline("allow", "trollbridge.yaml:lists.allow", cfg.Lists.Allow)
 			if err != nil {
 				printDoctorLine(out, "lists", "FAIL: "+err.Error())
 				return &configErr{err}
 			}
-			deny, err := hostlist.LoadInline("deny", "drawbridge.yaml:lists.deny", cfg.Lists.Deny)
+			deny, err := hostlist.LoadInline("deny", "trollbridge.yaml:lists.deny", cfg.Lists.Deny)
 			if err != nil {
 				printDoctorLine(out, "lists", "FAIL: "+err.Error())
 				return &configErr{err}
@@ -114,7 +114,7 @@ input. Each check prints a status line; non-zero exit on any FAIL.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	return cmd
 }
 

@@ -115,7 +115,7 @@ func TestHandler_FormatGoldenLine(t *testing.T) {
 	got := buf.String()
 	for _, sub := range []string{
 		"INFO",
-		"drawbridge: rules reloaded",
+		"trollbridge: rules reloaded",
 		"version=abc123",
 		"count=5",
 	} {
@@ -155,7 +155,7 @@ func TestHandler_LevelFilter(t *testing.T) {
 	buf.Reset()
 	lv.Set(slog.LevelDebug)
 	lg.Debug("d2")
-	if !strings.Contains(buf.String(), "drawbridge: d2") {
+	if !strings.Contains(buf.String(), "trollbridge: d2") {
 		t.Errorf("level mutation did not take effect: %q", buf.String())
 	}
 }

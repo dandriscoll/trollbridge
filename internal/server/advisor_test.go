@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/advisor"
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/advisor"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/policy"
 )
 
 // bootAdvisorProxy boots a Phase 1-style plain-HTTP proxy with the

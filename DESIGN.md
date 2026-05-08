@@ -1,10 +1,10 @@
-# drawbridge — Design Document
+# trollbridge — Design Document
 
 **Version:** 1 (draft, pre-implementation)
 **Status:** Specification only. No code has been written yet. The
 implementation plan in §18 stages the work.
 
-drawbridge is an HTTP/HTTPS proxy that LLM agents route their network
+trollbridge is an HTTP/HTTPS proxy that LLM agents route their network
 traffic through, so that the agent's network access is **policy-
 governed**, **inspectable**, and **auditable**. A deterministic policy
 engine is the authoritative decision boundary; an optional LLM advisor
@@ -43,13 +43,13 @@ NOT, MAY).
 
 ## 1. Purpose and scope
 
-drawbridge exists to make LLM-agent network access **safe by
+trollbridge exists to make LLM-agent network access **safe by
 construction**. Existing safety mechanisms — sandboxing, MCP tool
 allow-lists, container egress firewalls — are necessary but not
 sufficient: they either over-constrain (no network at all) or under-
 constrain (blanket allow to a domain) the agent's actual needs.
 
-drawbridge solves this by intermediating *every* HTTP and HTTPS request
+trollbridge solves this by intermediating *every* HTTP and HTTPS request
 the agent makes, so each request can be classified, allowed, denied,
 modified, or held for human approval, with a record sufficient for
 later review.
@@ -68,11 +68,11 @@ later review.
 
 ### 1.2 Out of scope
 
-- DNS proxying. drawbridge MAY observe `Host:` headers and `CONNECT`
+- DNS proxying. trollbridge MAY observe `Host:` headers and `CONNECT`
   hostnames, but it does not act as a DNS resolver for clients.
 - Raw-TCP / non-HTTP proxying. SOCKS support MAY be added later but is
   not in scope here.
-- A multi-tenant shared service. drawbridge is designed to run **per
+- A multi-tenant shared service. trollbridge is designed to run **per
   agent VM** or **per agent fleet under one operator**, not as a SaaS.
 - Any form of agent autonomy that lets the agent itself author or
   approve rules. Rule authorship is an operator-only operation.
@@ -82,10 +82,10 @@ later review.
 
 ### 1.3 Non-goals
 
-- drawbridge is **not** an enforcement boundary by itself. Network
+- trollbridge is **not** an enforcement boundary by itself. Network
   isolation (firewall, Incus profile) MUST also exist, or the agent
   can simply bypass the proxy. §17 names this explicitly.
-- drawbridge does **not** prevent malicious behavior conducted via
+- trollbridge does **not** prevent malicious behavior conducted via
   *allowed* destinations and *allowed* request shapes. An agent that
   is allowed to reach `api.github.com` and make `GET` requests can
   exfiltrate via crafted query strings. Operators MUST scope rules
@@ -97,19 +97,19 @@ later review.
 
 ### 2.1 Actors
 
-- **Operator.** Trusted. Configures drawbridge, writes rules, reviews
+- **Operator.** Trusted. Configures trollbridge, writes rules, reviews
   audit logs, approves held requests.
 - **Agent.** Semi-trusted at best. May be a benign coding agent, may
   be a coding agent under prompt injection, may be a deliberately
-  hostile agent under adversarial control. drawbridge MUST treat the
+  hostile agent under adversarial control. trollbridge MUST treat the
   agent as if it could attempt exfiltration or unauthorized access.
 - **Origin server.** Untrusted. May serve malicious content, may
   attempt to fingerprint, may attempt to probe the proxy.
 - **LLM provider.** Trusted for *decisioning* but not for *secrets*.
-  drawbridge MUST NOT forward credentials, tokens, or full request
+  trollbridge MUST NOT forward credentials, tokens, or full request
   bodies to the LLM unless the operator explicitly opts in per-rule.
 
-### 2.2 What drawbridge is designed to defend against
+### 2.2 What trollbridge is designed to defend against
 
 - An agent attempting to reach a destination the operator has not
   allowed (host, port, URL, method).
@@ -123,43 +123,43 @@ later review.
 - Long-running silent abuse: every request is audit-logged, so
   operator review can detect drift.
 
-### 2.3 What drawbridge is NOT designed to defend against
+### 2.3 What trollbridge is NOT designed to defend against
 
 These limitations MUST be documented to operators; the proxy alone is
 not sufficient.
 
 - **Direct network access that does not route through the proxy.**
   The agent VM MUST be firewalled so that egress to anywhere except
-  drawbridge is dropped. Without this, the proxy is decorative.
+  trollbridge is dropped. Without this, the proxy is decorative.
 - **DNS exfiltration.** If the agent can resolve arbitrary hostnames,
   it can encode data in DNS queries. The agent VM SHOULD use a
   controlled resolver.
-- **Raw socket traffic** (non-HTTP TCP/UDP). drawbridge is HTTP-only.
+- **Raw socket traffic** (non-HTTP TCP/UDP). trollbridge is HTTP-only.
   Other protocols MUST be blocked at the firewall.
 - **Alternate proxies.** If the agent can choose its own proxy or
-  bypass `HTTP_PROXY`, drawbridge does not see the request. The
+  bypass `HTTP_PROXY`, trollbridge does not see the request. The
   firewall must be the binding constraint, not the env var.
 - **Encrypted payloads inside allowed HTTPS requests.** Even with TLS
   interception, an agent can base64 a payload inside an allowed JSON
-  field. drawbridge MAY apply body-shape rules, but cannot
+  field. trollbridge MAY apply body-shape rules, but cannot
   semantically detect arbitrary encodings.
 - **Malicious use of allowed destinations.** An agent allowed to write
-  to `api.example.com` can write the wrong thing. drawbridge enforces
+  to `api.example.com` can write the wrong thing. trollbridge enforces
   *who* and *where*, not *what should be true* about the call.
 - **Side channels via response timing or proxy errors.** A
   determined attacker can encode data into the *fact* of a request
   being made, regardless of body content. Operators concerned about
   this class need additional controls.
-- **HTTP/3 / QUIC.** drawbridge is HTTP/1.1- and HTTP/2-aware over
+- **HTTP/3 / QUIC.** trollbridge is HTTP/1.1- and HTTP/2-aware over
   TCP. HTTP/3 runs over UDP; if egress UDP is permitted, an origin
   serving `Alt-Svc: h3=...` can negotiate the client off TCP and
-  drawbridge sees no further traffic. Mitigation: the agent's
+  trollbridge sees no further traffic. Mitigation: the agent's
   firewall MUST drop egress UDP except for whatever resolver path
-  the operator allows. drawbridge cannot help if the network does
+  the operator allows. trollbridge cannot help if the network does
   not constrain UDP.
-- **Compromise of the operator's machine.** drawbridge runs on the
+- **Compromise of the operator's machine.** trollbridge runs on the
   operator's host or trusted machine. If that host is compromised, so
-  is drawbridge. The CA private key in particular MUST be protected
+  is trollbridge. The CA private key in particular MUST be protected
   by host-level controls.
 
 ---
@@ -169,32 +169,32 @@ not sufficient.
 ### 3.1 Coding agent in an Incus VM
 
 A developer runs Claude Code inside an Incus VM. The VM is firewalled:
-the only outbound destination it can reach is the host-side drawbridge
-on `192.168.x.y:8080`. The VM has the drawbridge CA installed in its
+the only outbound destination it can reach is the host-side trollbridge
+on `192.168.x.y:8080`. The VM has the trollbridge CA installed in its
 trust store. Inside the VM, the agent's environment exposes
 `HTTPS_PROXY=http://192.168.x.y:8080`.
 
-The agent runs `npm install`. drawbridge sees the CONNECT to
+The agent runs `npm install`. trollbridge sees the CONNECT to
 `registry.npmjs.org:443`, matches an `allow` rule for that host, and
 forwards. The agent then attempts to fetch a URL it discovered from a
-README: `https://attacker.example/payload.sh`. drawbridge has no rule
+README: `https://attacker.example/payload.sh`. trollbridge has no rule
 for `attacker.example`, the default mode is `ask`, the LLM advisor
 classifies the request as a probable malicious payload fetch, and
-drawbridge holds it pending operator approval. The operator sees the
-held request via `drawbridge decisions --pending` and denies it.
+trollbridge holds it pending operator approval. The operator sees the
+held request via `trollbridge decisions --pending` and denies it.
 
 ### 3.2 Local development on a single host
 
-A developer runs Codex CLI on their laptop. They run drawbridge as a
+A developer runs Codex CLI on their laptop. They run trollbridge as a
 user-level daemon on `127.0.0.1:8080`, set `HTTPS_PROXY` in their
-shell, and install the CA into their user trust store. drawbridge is
+shell, and install the CA into their user trust store. trollbridge is
 configured in `default-allow-with-audit` mode for trusted dev hosts
 (e.g., `*.github.com`, `pypi.org`) and `default-ask` for everything
 else. The audit log accumulates a record of every fetch.
 
 ### 3.3 Automation agent in a CI runner
 
-A CI job runs a deployment agent. drawbridge runs as a sidecar
+A CI job runs a deployment agent. trollbridge runs as a sidecar
 container alongside the agent, configured `default-deny` with an
 explicit allowlist for the deployment targets (`api.cloudprovider.com/v1/...`,
 specific paths only). The agent cannot make any other network call.
@@ -203,8 +203,8 @@ Audit log artifacts are uploaded with the build for later review.
 ### 3.4 Auditor reviewing past behavior
 
 A reviewer wants to know whether an agent ever sent customer data
-outside the organization. They run `drawbridge logs replay --rules
-new-strict-rules.yaml` against last week's audit log; drawbridge
+outside the organization. They run `trollbridge logs replay --rules
+new-strict-rules.yaml` against last week's audit log; trollbridge
 replays each decision against the new rules and reports which past
 requests *would have been denied* under the stricter policy.
 
@@ -212,12 +212,12 @@ requests *would have been denied* under the stricter policy.
 
 ## 4. System architecture
 
-drawbridge is a single Go binary. It is composed of seven internal
+trollbridge is a single Go binary. It is composed of seven internal
 components, each with one responsibility.
 
 ```
                     ┌────────────────────────────────────────────────────┐
-                    │                    drawbridge                      │
+                    │                    trollbridge                      │
                     │                                                    │
    ┌──────┐         │  ┌──────────┐    ┌────────────────────────────┐    │   ┌────────┐
    │client│ ──TCP──▶│  │ Listener │───▶│ Dispatcher (CONNECT/HTTP)  │───▶│   │ origin │
@@ -331,7 +331,7 @@ type Decision struct {
 ### 5.1 Plain HTTP requests
 
 For a plain HTTP request (`GET http://example.com/path HTTP/1.1`),
-drawbridge:
+trollbridge:
 
 1. MUST parse the request line and absolute-form URI as defined in
    RFC 7230 §5.3.2.
@@ -342,43 +342,43 @@ drawbridge:
    response back to the client. Streaming MUST NOT buffer the entire
    response body before forwarding (this would break SSE and large
    downloads).
-6. If `deny`, MUST return `403 Forbidden` with a `Drawbridge-Reason:
+6. If `deny`, MUST return `403 Forbidden` with a `Trollbridge-Reason:
    <reason>` header and a body that explains the denial in plain
    text.
 7. If `ask_user`, MUST hold the request as defined in §8.5.
 
 ### 5.2 Headers added or modified
 
-drawbridge MUST add `Via: 1.1 drawbridge` per RFC 7230 §5.7.1 to
+trollbridge MUST add `Via: 1.1 trollbridge` per RFC 7230 §5.7.1 to
 forwarded requests and responses.
 
-drawbridge MUST strip `Proxy-Authorization` and `Proxy-Connection`
+trollbridge MUST strip `Proxy-Authorization` and `Proxy-Connection`
 headers before forwarding.
 
-drawbridge MAY add a `Drawbridge-Decision-Id: <uuid>` header to
+trollbridge MAY add a `Trollbridge-Decision-Id: <uuid>` header to
 forwarded requests so the origin's logs can be correlated with
-drawbridge's audit log.
+trollbridge's audit log.
 
-drawbridge MUST NOT add any header that contains operator-private
+trollbridge MUST NOT add any header that contains operator-private
 information (CA fingerprint, rule names, identity IDs) to outbound
 requests by default.
 
 ### 5.3 Methods
 
-drawbridge MUST support all standard HTTP methods (GET, HEAD, POST,
+trollbridge MUST support all standard HTTP methods (GET, HEAD, POST,
 PUT, PATCH, DELETE, OPTIONS, CONNECT). Custom methods MAY be allowed
 or denied via rules.
 
 ### 5.4 Redirects
 
-drawbridge MUST NOT follow redirects on behalf of the client. A 3xx
+trollbridge MUST NOT follow redirects on behalf of the client. A 3xx
 response MUST be forwarded as-is; the client follows the redirect,
 which produces a new request that is re-evaluated independently.
 
 ### 5.5 Connection management
 
-drawbridge MUST support HTTP/1.1 keep-alive on the client-facing side.
-drawbridge MAY pool connections to upstream origins. Connection pools
+trollbridge MUST support HTTP/1.1 keep-alive on the client-facing side.
+trollbridge MAY pool connections to upstream origins. Connection pools
 MUST be keyed by `(scheme, host, port, identity)` so two identities
 do not share an authenticated upstream connection.
 
@@ -405,25 +405,25 @@ CONNECT example.com:443 HTTP/1.1
 Host: example.com:443
 ```
 
-drawbridge MUST respond with `200 Connection Established` (on allow)
+trollbridge MUST respond with `200 Connection Established` (on allow)
 or `403 Forbidden` (on deny). After 200, the client and origin
 exchange TLS bytes through the tunnel.
 
-### 6.2 What drawbridge can see WITHOUT interception
+### 6.2 What trollbridge can see WITHOUT interception
 
-When CONNECT is granted and TLS is **not** intercepted, drawbridge
+When CONNECT is granted and TLS is **not** intercepted, trollbridge
 sees:
 
 - The destination `host:port` from the CONNECT line.
 - The destination `Host:` header, which MAY differ from the CONNECT
   host on a CDN.
-- The TLS Client Hello SNI (if drawbridge inspects the first bytes of
+- The TLS Client Hello SNI (if trollbridge inspects the first bytes of
   the tunnel — see §6.3). The SNI is in cleartext and MUST match the
   CONNECT host or a deny rule SHOULD fire.
 - Rough byte volumes and timing per direction.
 - TLS version negotiated (visible from ClientHello/ServerHello).
 
-drawbridge does **not** see, without interception:
+trollbridge does **not** see, without interception:
 
 - The HTTP method (GET, POST, ...).
 - The URL path or query string.
@@ -433,7 +433,7 @@ drawbridge does **not** see, without interception:
 
 ### 6.3 SNI inspection without interception
 
-drawbridge SHOULD inspect the ClientHello's SNI extension before
+trollbridge SHOULD inspect the ClientHello's SNI extension before
 completing the CONNECT tunnel, and MUST treat a SNI/host mismatch as
 suspicious. Acting on this is configurable: deny by default, log by
 default, or allow with the mismatch noted in the audit record.
@@ -441,18 +441,18 @@ default, or allow with the mismatch noted in the audit record.
 SNI inspection is read-only and MUST NOT modify the bytes; the client
 MUST see exactly the bytes the origin sent.
 
-### 6.4 What drawbridge sees WITH interception
+### 6.4 What trollbridge sees WITH interception
 
-When TLS interception is enabled (§7), drawbridge sees the same things
+When TLS interception is enabled (§7), trollbridge sees the same things
 it sees for plain HTTP: method, path, headers, body. The client
-believes it is talking to the origin (because drawbridge presents a
+believes it is talking to the origin (because trollbridge presents a
 cert signed by a CA the client trusts). The origin believes it is
-talking to a normal HTTPS client (because drawbridge makes a real
+talking to a normal HTTPS client (because trollbridge makes a real
 TLS connection to it).
 
 ### 6.5 ALPN / HTTP/2
 
-drawbridge MUST support ALPN. In intercept mode it MAY negotiate h1
+trollbridge MUST support ALPN. In intercept mode it MAY negotiate h1
 on both the client side and the origin side, OR negotiate h2 on both
 sides if the implementation includes h2 support. **The Phase 1
 implementation MAY negotiate h1 only and downgrade h2 origins**; this
@@ -461,7 +461,7 @@ operators because some origins refuse h1.
 
 ### 6.6 WebSockets and other Upgrades
 
-`Upgrade: websocket` over HTTP MUST be supported. drawbridge proxies
+`Upgrade: websocket` over HTTP MUST be supported. trollbridge proxies
 the upgrade, then forwards bytes in both directions until either side
 closes. WebSocket frames MAY be inspected if interception is on, but
 the inspection pipeline MUST handle long-lived streams without
@@ -473,7 +473,7 @@ buffering.
 
 ### 7.1 Why interception
 
-Without interception, drawbridge cannot enforce policy on URL paths,
+Without interception, trollbridge cannot enforce policy on URL paths,
 methods, headers, or bodies for HTTPS requests. For an agent that
 makes mostly HTTPS requests (which is most of them), this collapses
 the policy surface to "host and port only." Interception is what
@@ -481,10 +481,10 @@ makes URL- and method-level rules meaningful for HTTPS.
 
 ### 7.2 The CA
 
-drawbridge MUST be able to generate a local Certificate Authority on
-first run via `drawbridge ca init`. The CA private key MUST be stored
-on disk with `0600` permissions, owned by the drawbridge process
-user. The CA cert (public) MUST be exportable via `drawbridge ca
+trollbridge MUST be able to generate a local Certificate Authority on
+first run via `trollbridge ca init`. The CA private key MUST be stored
+on disk with `0600` permissions, owned by the trollbridge process
+user. The CA cert (public) MUST be exportable via `trollbridge ca
 export` for installation into client trust stores.
 
 The CA cert MUST be marked with `BasicConstraints CA:TRUE` and
@@ -500,53 +500,53 @@ intermediates).
   contacted in a short window (e.g., a fresh `npm install`). Some
   legacy clients do not handle ECDSA; RSA 4096 is the default for
   compatibility, ECDSA is the speed-conscious opt-in.
-- CA validity: 10 years (configurable). drawbridge MUST emit a
+- CA validity: 10 years (configurable). trollbridge MUST emit a
   warning to stderr when the CA is within 30 days of expiry.
 - Leaf cert validity: 1 year. Leaf certs are cached in memory; the
   cache MUST evict on cert expiry.
-- Subject: `CN=drawbridge local CA <hostname> <YYYYMMDD>`.
+- Subject: `CN=trollbridge local CA <hostname> <YYYYMMDD>`.
 
 ### 7.4 Generation, storage, rotation
 
-- **Generation**: `drawbridge ca init` generates a new CA and writes
-  `drawbridge-ca.crt` (public) and `drawbridge-ca.key` (private).
+- **Generation**: `trollbridge ca init` generates a new CA and writes
+  `trollbridge-ca.crt` (public) and `trollbridge-ca.key` (private).
   If files already exist at those paths, `ca init` MUST refuse with
-  a clear error. With `--force`, drawbridge MUST archive each
+  a clear error. With `--force`, trollbridge MUST archive each
   existing file to `<path>.<RFC3339-timestamp>.bak` before writing
-  the new one. drawbridge MUST NEVER silently overwrite an existing
+  the new one. trollbridge MUST NEVER silently overwrite an existing
   CA private key file.
 - **Storage**: paths configurable; default
-  `$XDG_CONFIG_HOME/drawbridge/` for user installs and
-  `/etc/drawbridge/` for system installs. The private key MUST NOT
+  `$XDG_CONFIG_HOME/trollbridge/` for user installs and
+  `/etc/trollbridge/` for system installs. The private key MUST NOT
   ever be packaged into a Docker image, written to a public-readable
   path, or echoed to logs.
-- **Rotation**: `drawbridge ca rotate` generates a new CA, writes it
+- **Rotation**: `trollbridge ca rotate` generates a new CA, writes it
   alongside the old, and starts signing new leaf certs from the new
   CA after a configurable grace period. Operators MUST install the
   new CA in client trust stores before the grace period ends.
-  drawbridge MUST audit-log every CA rotation event.
-- **Revocation**: drawbridge MAY publish a CRL on a local HTTP
+  trollbridge MUST audit-log every CA rotation event.
+- **Revocation**: trollbridge MAY publish a CRL on a local HTTP
   endpoint; clients that check CRLs MAY use it. Practically, leaf
   cert lifetimes are short enough that revocation is mostly handled
-  by expiry. drawbridge MUST flush the leaf cert cache on operator
-  command (`drawbridge ca flush-cache`).
+  by expiry. trollbridge MUST flush the leaf cert cache on operator
+  command (`trollbridge ca flush-cache`).
 
 ### 7.5 Installing the CA into a client trust store
 
-The install procedure differs by OS. drawbridge SHOULD print exact
+The install procedure differs by OS. trollbridge SHOULD print exact
 commands rather than wave at "install the CA somewhere." Examples:
 
-- **Debian/Ubuntu**: copy `drawbridge-ca.crt` to
-  `/usr/local/share/ca-certificates/drawbridge-ca.crt`, run
+- **Debian/Ubuntu**: copy `trollbridge-ca.crt` to
+  `/usr/local/share/ca-certificates/trollbridge-ca.crt`, run
   `update-ca-certificates`.
 - **Fedora/RHEL**: copy to `/etc/pki/ca-trust/source/anchors/`,
   run `update-ca-trust`.
 - **Alpine**: copy to `/usr/local/share/ca-certificates/`, run
   `update-ca-certificates`.
 - **macOS user**: `security add-trusted-cert -d -r trustRoot -k
-  ~/Library/Keychains/login.keychain drawbridge-ca.crt`.
+  ~/Library/Keychains/login.keychain trollbridge-ca.crt`.
 - **Node.js / Python / Go**: each runtime has its own trust path.
-  drawbridge's docs MUST cover at least Node (`NODE_EXTRA_CA_CERTS`),
+  trollbridge's docs MUST cover at least Node (`NODE_EXTRA_CA_CERTS`),
   Python (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`), and Go (`SSL_CERT_FILE`
   is honored by `crypto/x509` on Linux).
 
@@ -555,7 +555,7 @@ commands rather than wave at "install the CA somewhere." Examples:
 For the recommended Incus deployment (§14):
 
 1. Operator generates the CA on the host.
-2. Operator copies `drawbridge-ca.crt` into the VM image (cloud-init,
+2. Operator copies `trollbridge-ca.crt` into the VM image (cloud-init,
    bind mount, or `incus file push`) at install time.
 3. Operator runs the appropriate `update-ca-certificates` /
    `update-ca-trust` inside the VM.
@@ -567,18 +567,18 @@ For the recommended Incus deployment (§14):
 ### 7.7 Risks of interception
 
 TLS interception is a **trust break** the operator must accept
-deliberately. drawbridge documentation MUST surface these risks:
+deliberately. trollbridge documentation MUST surface these risks:
 
 - **The CA private key is a master key for the trust store.** Anyone
   who steals it can impersonate any HTTPS origin to that client. Host-
   level controls (file permissions, FDE) are essential.
-- **Origin cert validation moves into drawbridge.** Clients can no
-  longer detect a compromised origin themselves. drawbridge MUST
+- **Origin cert validation moves into trollbridge.** Clients can no
+  longer detect a compromised origin themselves. trollbridge MUST
   perform full chain + hostname + expiry verification on the origin
   side, and MUST refuse to forward when verification fails (without
   an explicit per-rule override).
 - **Pinned-cert clients break.** A client that pins
-  `Let's Encrypt R3` will reject drawbridge's leaf. drawbridge MUST
+  `Let's Encrypt R3` will reject trollbridge's leaf. trollbridge MUST
   expose a `tls_intercept: false` rule modifier so specific
   destinations can pass through unintercepted.
 - **Compliance.** Some software / EULAs forbid MITM. The operator is
@@ -587,8 +587,8 @@ deliberately. drawbridge documentation MUST surface these risks:
 
 ### 7.8 Origin verification under interception
 
-When interception is on, drawbridge is the TLS client to the origin.
-drawbridge MUST:
+When interception is on, trollbridge is the TLS client to the origin.
+trollbridge MUST:
 
 - Use the system trust store (or operator-configured trust store) to
   verify the origin's chain.
@@ -596,7 +596,7 @@ drawbridge MUST:
 - Reject expired or revoked origin certs unless an explicit rule
   modifier overrides.
 - Surface origin TLS failures to the client as a clear `502 Bad
-  Gateway` with a `Drawbridge-Reason: origin-tls-failure` header.
+  Gateway` with a `Trollbridge-Reason: origin-tls-failure` header.
 
 ---
 
@@ -627,7 +627,7 @@ globally and overridable per identity:
   denied. Recommended for production agents and CI.
 - **`default-allow`** — any request not matched by a `deny` rule is
   allowed. Acceptable only for trusted local-dev use where audit-log
-  review is the primary control. drawbridge MUST log a startup
+  review is the primary control. trollbridge MUST log a startup
   warning when this mode is in use.
 - **`default-ask`** — any request not matched by any rule is held
   for either LLM advisor or operator approval. Recommended for new
@@ -653,7 +653,7 @@ priority overrides. Example:
     - redact_authorization_header
 ```
 
-Rule fields drawbridge MUST support:
+Rule fields trollbridge MUST support:
 
 - `id` — string, unique. Used in audit logs and CLI references.
 - `description` — string, human-readable.
@@ -695,23 +695,23 @@ first):
 2. **Bearer token** in `Proxy-Authorization: Bearer <token>`,
    matched against operator-configured tokens.
 3. **Source IP** matching a configured map.
-4. **Header heuristic** (`X-Drawbridge-Identity` or similar) — treated
+4. **Header heuristic** (`X-Trollbridge-Identity` or similar) — treated
    as **advisory**, never as the sole identity.
 
-If no identity matches, drawbridge MUST treat the request as
+If no identity matches, trollbridge MUST treat the request as
 `identity: anonymous`. Rules that require a specific identity MUST NOT
 match anonymous requests.
 
 ### 8.5 Holds and approvals
 
-When effect is `ask_user`, drawbridge:
+When effect is `ask_user`, trollbridge:
 
 1. Generates a `hold_id`.
 2. Holds the client connection, OR returns `511 Network Authentication
-   Required` with `Drawbridge-Hold-Id: <id>` and a `Retry-After:
+   Required` with `Trollbridge-Hold-Id: <id>` and a `Retry-After:
    <seconds>` header (configurable per-rule).
 3. Surfaces the held request to the operator via:
-   - `drawbridge decisions --pending` (CLI)
+   - `trollbridge decisions --pending` (CLI)
    - HTTP control API on a separate port (`/v1/holds`)
 4. Awaits operator action.
 
@@ -842,7 +842,7 @@ The engine MUST validate every advisor decision before applying:
 
 ### 9.6 Provider, model, latency
 
-drawbridge MUST be provider-agnostic; the LLM is configured by
+trollbridge MUST be provider-agnostic; the LLM is configured by
 `llm.provider`, `llm.model`, `llm.endpoint`, `llm.api_key_path`. The
 default recommended provider in Phase 4 is whichever Anthropic
 `claude` model is current at the time of implementation; the design
@@ -860,7 +860,7 @@ identity.
 
 ### 9.8 Replay
 
-drawbridge MUST support `drawbridge logs replay --rules <file>`:
+trollbridge MUST support `trollbridge logs replay --rules <file>`:
 re-run policy decisions over a past audit log under a new rule set,
 including re-consulting the LLM advisor (if the operator opts in),
 and produce a report of which past decisions would change.
@@ -871,7 +871,7 @@ and produce a report of which past decisions would change.
 
 ### 10.0 Decision pipeline
 
-drawbridge evaluates each request in a fixed order. The first
+trollbridge evaluates each request in a fixed order. The first
 stage that fires produces the decision; later stages do not run.
 
 1. **Deny list (flat text).** Match against `policy.deny_files`
@@ -931,13 +931,13 @@ short-circuit cheap checks before expensive ones:
 ### 10.3 Conflict handling
 
 Two rules with the same `priority` whose match clauses both fire on
-the same request: the first declared wins. drawbridge MUST emit a
+the same request: the first declared wins. trollbridge MUST emit a
 startup warning when conflicting rules are detected.
 
 ### 10.4 Hot reload
 
-On `SIGHUP`, drawbridge MUST reload the rule file. If the new file is
-malformed, drawbridge MUST keep running with the previous rules and
+On `SIGHUP`, trollbridge MUST reload the rule file. If the new file is
+malformed, trollbridge MUST keep running with the previous rules and
 emit an error to stderr. Reload events MUST be audit-logged.
 
 ### 10.5 Rule version tagging
@@ -1039,8 +1039,8 @@ metadata.google.internal
 metadata.azure.com
 ```
 
-`drawbridge init` writes default `allow.txt` and `deny.txt`
-files alongside `drawbridge.yaml` so a fresh deployment has a
+`trollbridge init` writes default `allow.txt` and `deny.txt`
+files alongside `trollbridge.yaml` so a fresh deployment has a
 working starting point.
 
 #### 10.8.1 Mutation is human-only
@@ -1048,25 +1048,25 @@ working starting point.
 The flat lists are mutated only by:
 
 1. The operator hand-editing the file in any text editor.
-2. The interactive console (`drawbridge run` with stdin
+2. The interactive console (`trollbridge run` with stdin
    attached to a tty); see §13.7.
 
 The LLM advisor MUST NOT modify either list. The advisor's
 output schema (§9.4) MAY include a `suggested_rule` field
-surfaced to the operator, but no code path in drawbridge
+surfaced to the operator, but no code path in trollbridge
 writes the lists in response to advisor output. This is a
 load-bearing safety property: a malicious or jailbroken advisor
 cannot expand its own permitted destinations.
 
 #### 10.8.2 Hot reload
 
-drawbridge watches each configured allow/deny file's mtime and
+trollbridge watches each configured allow/deny file's mtime and
 size at a 1-second cadence. When a change is detected, the file
 is re-parsed and the in-memory list pointer is swapped
 atomically. Reload events are written to the operational log:
-`drawbridge: allowlist reloaded (N patterns)`.
+`trollbridge: allowlist reloaded (N patterns)`.
 
-If the new file fails to parse, drawbridge MUST keep the prior
+If the new file fails to parse, trollbridge MUST keep the prior
 in-memory list and emit a warning. The proxy never serves with
 a half-loaded list.
 
@@ -1076,7 +1076,7 @@ no new dependency, robust across atomic-rename editors, and the
 
 #### 10.8.3 Sorted insertion
 
-When drawbridge writes a list file (via the console), the file
+When trollbridge writes a list file (via the console), the file
 MUST be re-sorted before write. Sort key:
 
 1. Reversed labels of the host (case-insensitive).
@@ -1095,7 +1095,7 @@ with their pattern. Blank lines among patterns are dropped.
 
 Hand-written files are NOT re-sorted on read. The watcher only
 parses the file; it does not write back. Sorting fires only
-when the console writes (because that is when drawbridge
+when the console writes (because that is when trollbridge
 authors content).
 
 #### 10.8.4 Advisor receives lists as read-only input
@@ -1123,10 +1123,10 @@ Each request passes through these stages in order:
 4. **Body inspection (conditional).** If any pending rule requires
    body content (`body_pattern`, `content_type` of multipart with
    nested rules) AND the request has a body AND interception is on,
-   drawbridge reads up to `inspection.max_request_body_bytes` (default
+   trollbridge reads up to `inspection.max_request_body_bytes` (default
    1 MiB) into a buffer for inspection. Larger bodies are streamed
    without buffering, and rules that depend on body content cannot
-   match — drawbridge MUST treat unmet body-dependent matches as
+   match — trollbridge MUST treat unmet body-dependent matches as
    unmatched, NOT as matched-but-hidden.
 5. **Final decision.** Engine evaluates body-dependent rules.
 6. **Redaction.** Modifiers apply (e.g., remove `Authorization`
@@ -1139,7 +1139,7 @@ Each request passes through these stages in order:
 
 ### 11.2 Streaming preservation
 
-drawbridge MUST detect and preserve streaming responses:
+trollbridge MUST detect and preserve streaming responses:
 
 - `Transfer-Encoding: chunked` — pass through chunk-by-chunk.
 - `Content-Type: text/event-stream` — pass through line-by-line; do
@@ -1151,7 +1151,7 @@ drawbridge MUST detect and preserve streaming responses:
 ### 11.3 Body sampling
 
 When the audit log requires a body sample (configurable per rule),
-drawbridge captures the **first N bytes** (default 4 KiB) AFTER
+trollbridge captures the **first N bytes** (default 4 KiB) AFTER
 redaction. The sample MUST be marked with `sample_truncated: true` if
 the body exceeded N.
 
@@ -1177,8 +1177,8 @@ Future modifiers (Phase 4+): `prefer_structured_tool: <mcp-tool>`,
 ### 11.5 Failure during inspection
 
 If body inspection fails (parse error, decode error, size limit
-exceeded for a rule that required the body), drawbridge MUST fail
-closed: the request is denied with a `Drawbridge-Reason:
+exceeded for a rule that required the body), trollbridge MUST fail
+closed: the request is denied with a `Trollbridge-Reason:
 inspection-failed` header and an audit-log entry naming the cause.
 This MUST NOT leak the body content to the audit log.
 
@@ -1188,7 +1188,7 @@ This MUST NOT leak the body content to the audit log.
 
 ### 12.1 Modes
 
-drawbridge supports the three top-level modes from §8.2. The
+trollbridge supports the three top-level modes from §8.2. The
 allowlist/denylist behavior under each:
 
 - **`default-deny`** — operators write `allow` rules. Anything not
@@ -1228,17 +1228,17 @@ appear continuously. Operators using `default-allow` SHOULD:
 
 ### 12.4 Hierarchical rules
 
-Rules MAY be split across multiple files; drawbridge MUST load all
+Rules MAY be split across multiple files; trollbridge MUST load all
 files referenced under `policy.include:` in declared order. This
 supports composition: a base rule set + per-environment additions.
 
 ### 12.5 Built-in suggested deny set
 
-drawbridge SHOULD ship a `policy/suggested-denies.yaml` that operators
+trollbridge SHOULD ship a `policy/suggested-denies.yaml` that operators
 MAY include. It contains rules for known-bad classes (e.g.,
 `metadata.google.internal`, `169.254.169.254`, common pastebin hosts,
 known C2 infrastructure where lists are public). Operators MAY add
-or remove from it. This file is curated by drawbridge maintainers and
+or remove from it. This file is curated by trollbridge maintainers and
 MUST be auditable.
 
 ---
@@ -1248,7 +1248,7 @@ MUST be auditable.
 ### 13.1 CLI shape
 
 ```
-drawbridge <command> [args] [flags]
+trollbridge <command> [args] [flags]
 ```
 
 A single binary, Cobra-style subcommands.
@@ -1257,37 +1257,37 @@ A single binary, Cobra-style subcommands.
 
 | Command | Purpose |
 |---|---|
-| `drawbridge init` | Create a default `drawbridge.yaml` and CA. MUST print a human-readable summary to stdout listing every file created, their paths, the CA SHA-256 fingerprint, and the next-step commands (install CA into client trust store; review and edit rules). MUST refuse to overwrite existing files; `--force` archives them per §7.4. |
-| `drawbridge validate` | Validate the configuration and rule set; reject unknown modifier names, unknown effect strings, conflicting rule IDs. Exit 0 on success, 1 on error. |
-| `drawbridge doctor` | Pre-flight check: load the config and rule files; when `llm.enabled`, dispatch a real classification call against the configured provider with a synthetic input. Each step prints `OK` / `FAIL: <reason>`. Non-zero exit on any failure. Used to catch misconfigured endpoints / API keys / providers before `drawbridge run`. |
-| `drawbridge run` | Start the proxy in the foreground. Reads config from `--config` or `DRAWBRIDGE_CONFIG`. |
-| `drawbridge ca init` | Generate a new CA. Refuses if one exists unless `--force`. |
-| `drawbridge ca export` | Print the CA cert (public) to stdout, or write to `--out <file>`. |
-| `drawbridge ca rotate` | Roll the CA. New CA is generated; old is kept until `--retire` is passed. |
-| `drawbridge ca flush-cache` | Drop cached leaf certs. Useful during rotation or after a rule change. |
-| `drawbridge decisions [--since <duration>] [--pending]` | Stream recent decisions; `--pending` shows held requests. |
-| `drawbridge approve <hold-id> [--scope once\|session\|rule]` | Approve a held request. |
-| `drawbridge deny <hold-id>` | Deny a held request. |
-| `drawbridge rules list` | Print loaded rules with their priorities. |
-| `drawbridge rules add <file>` | Append a rule file to the active set. |
-| `drawbridge rules reload` | Re-read rule files (equivalent to SIGHUP). |
-| `drawbridge logs tail` | Tail the structured audit log, formatted for humans. |
-| `drawbridge logs replay --rules <file> --since <duration>` | Replay past decisions against a new rule set; report differences. |
-| `drawbridge sessions` | Show active client sessions with identity and decision counts. |
-| `drawbridge selftest --from-vm` | Phase 5+ helper. Run from inside the agent VM. Attempts a small set of direct connections to non-proxy destinations and reports whether the egress firewall blocked them; reports whether the proxy is reachable and whether the CA is trusted by the system. Used to confirm the deployment topology before trusting it. |
-| `drawbridge version` | Print version and build info. |
+| `trollbridge init` | Create a default `trollbridge.yaml` and CA. MUST print a human-readable summary to stdout listing every file created, their paths, the CA SHA-256 fingerprint, and the next-step commands (install CA into client trust store; review and edit rules). MUST refuse to overwrite existing files; `--force` archives them per §7.4. |
+| `trollbridge validate` | Validate the configuration and rule set; reject unknown modifier names, unknown effect strings, conflicting rule IDs. Exit 0 on success, 1 on error. |
+| `trollbridge doctor` | Pre-flight check: load the config and rule files; when `llm.enabled`, dispatch a real classification call against the configured provider with a synthetic input. Each step prints `OK` / `FAIL: <reason>`. Non-zero exit on any failure. Used to catch misconfigured endpoints / API keys / providers before `trollbridge run`. |
+| `trollbridge run` | Start the proxy in the foreground. Reads config from `--config` or `TROLLBRIDGE_CONFIG`. |
+| `trollbridge ca init` | Generate a new CA. Refuses if one exists unless `--force`. |
+| `trollbridge ca export` | Print the CA cert (public) to stdout, or write to `--out <file>`. |
+| `trollbridge ca rotate` | Roll the CA. New CA is generated; old is kept until `--retire` is passed. |
+| `trollbridge ca flush-cache` | Drop cached leaf certs. Useful during rotation or after a rule change. |
+| `trollbridge decisions [--since <duration>] [--pending]` | Stream recent decisions; `--pending` shows held requests. |
+| `trollbridge approve <hold-id> [--scope once\|session\|rule]` | Approve a held request. |
+| `trollbridge deny <hold-id>` | Deny a held request. |
+| `trollbridge rules list` | Print loaded rules with their priorities. |
+| `trollbridge rules add <file>` | Append a rule file to the active set. |
+| `trollbridge rules reload` | Re-read rule files (equivalent to SIGHUP). |
+| `trollbridge logs tail` | Tail the structured audit log, formatted for humans. |
+| `trollbridge logs replay --rules <file> --since <duration>` | Replay past decisions against a new rule set; report differences. |
+| `trollbridge sessions` | Show active client sessions with identity and decision counts. |
+| `trollbridge selftest --from-vm` | Phase 5+ helper. Run from inside the agent VM. Attempts a small set of direct connections to non-proxy destinations and reports whether the egress firewall blocked them; reports whether the proxy is reachable and whether the CA is trusted by the system. Used to confirm the deployment topology before trusting it. |
+| `trollbridge version` | Print version and build info. |
 
-`drawbridge` invoked with no subcommand MUST print top-level help to
+`trollbridge` invoked with no subcommand MUST print top-level help to
 stdout and exit 0 (matching the Cobra/POSIX convention). It MUST NOT
 attempt to start the proxy without an explicit `run` subcommand —
 silent startup-by-default is a footgun.
 
 ### 13.3 Flags common to all commands
 
-- `--config <path>` (default `$XDG_CONFIG_HOME/drawbridge/drawbridge.yaml`,
-  or `/etc/drawbridge/drawbridge.yaml` for system installs).
+- `--config <path>` (default `$XDG_CONFIG_HOME/trollbridge/trollbridge.yaml`,
+  or `/etc/trollbridge/trollbridge.yaml` for system installs).
 - `--log-level <debug|info|warn|error>` (default `info`). Also
-  `DRAWBRIDGE_LOG_LEVEL`. Persistent across all subcommands.
+  `TROLLBRIDGE_LOG_LEVEL`. Persistent across all subcommands.
 - `--verbose, -v` is a `run`-subcommand-local alias for
   `--log-level=debug`. (It is not made persistent because
   `logs replay --verbose` already uses the same flag with a
@@ -1300,7 +1300,7 @@ silent startup-by-default is a footgun.
 YAML, single file by default. Top-level keys:
 
 ```yaml
-drawbridge_version: 3
+trollbridge_version: 3
 
 # Per-surface bind (host:port). Host aliases: lo = 127.0.0.1,
 # all = 0.0.0.0. Bracket IPv6 literals: [fd00::1]:8081.
@@ -1313,8 +1313,8 @@ mode: default-ask          # default-deny | default-allow | default-ask
 interception:
   enabled: false           # Phase 1: false. Set true for Phase 3+.
   ca:
-    cert_path: /etc/drawbridge/drawbridge-ca.crt
-    key_path: /etc/drawbridge/drawbridge-ca.key
+    cert_path: /etc/trollbridge/trollbridge-ca.crt
+    key_path: /etc/trollbridge/trollbridge-ca.key
   leaf_key_type: rsa-4096  # rsa-4096 (default, max compat) | ecdsa-p256 (faster)
   passthrough_hosts:       # never intercept these
     - "*.googleapis.com"
@@ -1324,7 +1324,7 @@ llm:
   provider: anthropic      # anthropic -> Bearer; aoai -> api-key (Azure OpenAI)
   model: claude-opus-4-7
   endpoint: https://api.anthropic.com
-  api_key_path: /etc/drawbridge/llm.key
+  api_key_path: /etc/trollbridge/llm.key
   timeout_seconds: 8
   cache_ttl_seconds: 300
   send_body: false
@@ -1340,7 +1340,7 @@ redaction:
     - regex: "(?i)bearer [a-z0-9._-]+"
 
 logging:
-  audit_path: /var/log/drawbridge/audit.jsonl
+  audit_path: /var/log/trollbridge/audit.jsonl
   audit_buffer_size: 1024
   audit_overflow: deny     # deny | drop | block
   operational_path: stderr
@@ -1393,7 +1393,7 @@ Rule files referenced under `policy.include` use the rule shape from
 
 ### 13.5 Help text discipline
 
-`drawbridge --help` MUST list commands grouped by purpose (operate,
+`trollbridge --help` MUST list commands grouped by purpose (operate,
 configure, audit, manage CA). Each command's `--help` MUST give a
 one-line summary, the full flag list, and at least one example.
 
@@ -1401,16 +1401,16 @@ one-line summary, the full flag list, and at least one example.
 
 Configuration- and rule-load errors MUST name **what** failed,
 **where** (file + position), what valid input looks like, and the
-**fix**. Three concrete examples drawbridge MUST be capable of
+**fix**. Three concrete examples trollbridge MUST be capable of
 producing:
 
-- `Configuration error at line 42 of drawbridge.yaml:` `mode` must
+- `Configuration error at line 42 of trollbridge.yaml:` `mode` must
   be one of `default-deny`, `default-allow`, `default-ask`. Got:
   `default-asks`. Fix: correct the typo.
-- `Cannot read CA private key at /etc/drawbridge/drawbridge-ca.key:
-  permission denied. Fix: ensure the drawbridge process user has
-  read access (mode 0600, owned by drawbridge user), or run
-  `drawbridge ca init` to generate a new CA.`
+- `Cannot read CA private key at /etc/trollbridge/trollbridge-ca.key:
+  permission denied. Fix: ensure the trollbridge process user has
+  read access (mode 0600, owned by trollbridge user), or run
+  `trollbridge ca init` to generate a new CA.`
 - `Rule load error in rules/dev-overrides.yaml at rule index 3
   (id: allow-internal-tools): missing required field` `effect`.
   Valid values: `allow | deny | ask_user | ask_llm`. Fix: add an
@@ -1423,22 +1423,22 @@ or unrecoverable internal error MAY emit a stack to stderr at
 
 ### 13.6 Environment variables
 
-drawbridge MUST honor:
+trollbridge MUST honor:
 
-- `DRAWBRIDGE_CONFIG` — path to the config file.
-- `DRAWBRIDGE_LOG_LEVEL` — overrides config's log level.
-- `HTTP_PROXY` / `HTTPS_PROXY` — drawbridge's *outbound* proxy (for
-  upstream destinations), separate from the proxy drawbridge itself
+- `TROLLBRIDGE_CONFIG` — path to the config file.
+- `TROLLBRIDGE_LOG_LEVEL` — overrides config's log level.
+- `HTTP_PROXY` / `HTTPS_PROXY` — trollbridge's *outbound* proxy (for
+  upstream destinations), separate from the proxy trollbridge itself
   exposes.
 
-drawbridge MUST NOT silently honor any env var that overrides
+trollbridge MUST NOT silently honor any env var that overrides
 security-relevant config (mode, interception, CA paths). These are
 file-only.
 
 ### 13.7 Interactive console
 
-When `drawbridge run` is invoked with stdin attached to a
-terminal, drawbridge MUST start an interactive REPL on stdin
+When `trollbridge run` is invoked with stdin attached to a
+terminal, trollbridge MUST start an interactive REPL on stdin
 that lets the operator mutate the flat allow / deny lists in
 flight. The console is silently disabled when stdin is not a
 tty (systemd, Docker without `-it`, Incus exec without a pty)
@@ -1483,7 +1483,7 @@ load-bearing security state.
 
 ### 14.1 Local (developer laptop)
 
-drawbridge runs as a user process on `127.0.0.1:8080`. The developer
+trollbridge runs as a user process on `127.0.0.1:8080`. The developer
 sets `HTTP_PROXY` / `HTTPS_PROXY` in their shell. The CA is installed
 into the developer's user trust store.
 
@@ -1493,7 +1493,7 @@ for honest dev workflows where the audit log is the primary control.
 
 ### 14.2 Host-side daemon for an Incus VM (recommended)
 
-drawbridge runs on the Incus host, listening on the host's bridge IP
+trollbridge runs on the Incus host, listening on the host's bridge IP
 (`192.168.x.y:8080`). The agent runs in an Incus VM. The VM's network
 profile constrains egress to `192.168.x.y:8080` only (typically a
 combination of an Incus network ACL plus iptables on the host that
@@ -1502,12 +1502,12 @@ build time.
 
 The strength of this topology comes from the network constraint, not
 from the proxy alone. The agent inside the VM cannot reach anything
-except drawbridge — the agent's only path to the internet is through
+except trollbridge — the agent's only path to the internet is through
 the proxy, which is the property the proxy depends on.
 
 ### 14.3 Sidecar container
 
-drawbridge runs as a sidecar in a container pod or compose stack.
+trollbridge runs as a sidecar in a container pod or compose stack.
 The agent container's egress is constrained by network policies to
 the sidecar IP only. The CA is mounted into the agent container's
 trust store at start.
@@ -1517,7 +1517,7 @@ agent environments.
 
 ### 14.4 System-wide host daemon
 
-drawbridge runs as a systemd service on a shared host where multiple
+trollbridge runs as a systemd service on a shared host where multiple
 agents (or multiple developers) connect. Each agent's identity is
 resolved via mTLS or token, and rules are scoped per-identity. This
 is appropriate for an internal team's "shared agent network." The
@@ -1526,9 +1526,9 @@ permissions; this is the highest-value secret in the system.
 
 ### 14.5 What the design does NOT cover
 
-- Running drawbridge inside the agent's own VM. (The agent could
+- Running trollbridge inside the agent's own VM. (The agent could
   trivially terminate the proxy.)
-- Running drawbridge on a different network the agent has no path to
+- Running trollbridge on a different network the agent has no path to
   reach. (Same problem.)
 
 ---
@@ -1537,13 +1537,13 @@ permissions; this is the highest-value secret in the system.
 
 ### 15.1 Streams
 
-drawbridge produces three log streams:
+trollbridge produces three log streams:
 
 1. **Audit log** (JSONL, one entry per decision; the load-bearing
    record).
 2. **Operational log** — leveled, human-readable narrative emitted
    via `log/slog` with a custom text handler. Format:
-   `<rfc3339-nano> <LEVEL> drawbridge: <msg> [k=v ...]`. Sink is
+   `<rfc3339-nano> <LEVEL> trollbridge: <msg> [k=v ...]`. Sink is
    `os.Stderr` when `logging.operational_path: stderr` (the
    sentinel default), otherwise the configured filesystem path
    (opened append-only, mode 0640, parent dir 0750; fail-closed
@@ -1558,7 +1558,7 @@ drawbridge produces three log streams:
    exists as a stub.*
 
 Metric labels MUST be bounded. The core decision metric is
-`drawbridge_decisions_total` with labels:
+`trollbridge_decisions_total` with labels:
 
 - `effect` — `allow | deny | ask_user_resolved_allow | ask_user_resolved_deny | ask_user_timed_out`
 - `decision_source` — `allowlist | denylist | rule | default | llm_advisor | approval_queue | approval_timeout`
@@ -1614,8 +1614,8 @@ Each entry MUST contain:
 
 ### 15.2.1 Audit log file permissions
 
-drawbridge MUST create the audit log file with mode `0640`, owned by
-the drawbridge process user and group `drawbridge` (or the operator-
+trollbridge MUST create the audit log file with mode `0640`, owned by
+the trollbridge process user and group `trollbridge` (or the operator-
 configured group). The audit log contains request metadata that
 SHOULD NOT be world-readable. Operators who need cross-user audit
 review SHOULD add reviewers to the configured group rather than
@@ -1638,31 +1638,31 @@ the principle that the *property* (redacted) AND the *claim*
 
 The audit log MUST NEVER contain the CA private key, LLM API key,
 operator file paths to secrets, or any credential the operator has
-configured drawbridge to redact.
+configured trollbridge to redact.
 
 ### 15.4 Async write
 
 The audit logger writes asynchronously to disk via a bounded buffer.
 On buffer overflow (writes slower than decisions):
 
-- `audit_overflow: deny` (default) — drawbridge denies new requests
-  with `Drawbridge-Reason: audit-buffer-full`. Audit-log loss would
+- `audit_overflow: deny` (default) — trollbridge denies new requests
+  with `Trollbridge-Reason: audit-buffer-full`. Audit-log loss would
   be a security-control loss, so denying is the safe behavior.
-- `audit_overflow: drop` — drawbridge drops the audit entry, allows
+- `audit_overflow: drop` — trollbridge drops the audit entry, allows
   the request, and emits a metric increment. Acceptable only in
   environments where availability dominates auditability.
-- `audit_overflow: block` — drawbridge blocks the dispatcher until
+- `audit_overflow: block` — trollbridge blocks the dispatcher until
   the buffer drains. May cause client timeouts.
 
 ### 15.5 Rotation
 
-drawbridge MUST support log rotation via SIGUSR1: close the current
+trollbridge MUST support log rotation via SIGUSR1: close the current
 file, reopen the configured path. External tools (logrotate)
 complete the rotation.
 
 ### 15.6 Replay
 
-`drawbridge logs replay --rules <new-rules.yaml> --since 7d` reads
+`trollbridge logs replay --rules <new-rules.yaml> --since 7d` reads
 each audit entry from the past 7 days, re-evaluates the decision
 against `<new-rules.yaml>`, and emits a report:
 
@@ -1676,7 +1676,7 @@ question that operators ask after an incident.
 
 ### 15.7 Compact human stream
 
-`drawbridge logs tail` formats the JSONL as a single line per
+`trollbridge logs tail` formats the JSONL as a single line per
 decision: `<timestamp> <decision> <method> <host>:<port><path>
 [reason]`. Color-coded by effect.
 
@@ -1687,7 +1687,7 @@ decision: `<timestamp> <decision> <method> <host>:<port><path>
 | # | Failure | Recovery | Visibility |
 |---|---|---|---|
 | 1 | Origin server unreachable | 502 to client; audit-log entry. | Audit log + metric. |
-| 2 | Origin TLS verification fails | 502 with `Drawbridge-Reason: origin-tls-failure`; audit log. | Audit log + metric. |
+| 2 | Origin TLS verification fails | 502 with `Trollbridge-Reason: origin-tls-failure`; audit log. | Audit log + metric. |
 | 3 | LLM provider unavailable | Fall back per `llm.on_unavailable` (default `ask_user`); audit log. | Metric + operational log. |
 | 4 | LLM returns malformed JSON | Reject; fall back to `ask_user`; audit log records advisor failure. | Audit log + metric. |
 | 5 | Rule file malformed on startup | Refuse to start with clear error message. | Stderr + non-zero exit. |
@@ -1697,14 +1697,14 @@ decision: `<timestamp> <decision> <method> <host>:<port><path>
 | 9 | Audit log disk full | Per `audit_overflow` (default `deny`). | Audit log entry on next-success + operational log. |
 | 10 | Approval queue full | Deny new ASK_USER with clear message. | Audit log + metric. |
 | 11 | Approval timeout | Resolve to `deny` (default); audit log records timeout. | Audit log. |
-| 12 | drawbridge crashes mid-request | Client sees connection drop; partial audit-log record may exist. | Operational log + audit log. |
+| 12 | trollbridge crashes mid-request | Client sees connection drop; partial audit-log record may exist. | Operational log + audit log. |
 | 13 | Configuration reload mid-request | In-flight requests use prior rules; new requests use new rules. | Audit log records both versions. |
-| 14 | Body inspection size limit exceeded for a rule that required body | Deny with `Drawbridge-Reason: inspection-failed`. | Audit log. |
-| 15 | Client uses `Connection: Upgrade` to a protocol drawbridge doesn't understand | Deny CONNECT; audit log records protocol. | Audit log. |
+| 14 | Body inspection size limit exceeded for a rule that required body | Deny with `Trollbridge-Reason: inspection-failed`. | Audit log. |
+| 15 | Client uses `Connection: Upgrade` to a protocol trollbridge doesn't understand | Deny CONNECT; audit log records protocol. | Audit log. |
 | 16 | Origin uses `Transfer-Encoding: gzip` (deprecated) | Pass through; do not attempt to inspect compressed bodies in Phase 1. | Body inspection status `not_required`. |
-| 17 | Origin sends bytes before drawbridge has decided (e.g., HTTP/2 push) | drawbridge MUST refuse server push by negotiating it off via SETTINGS. | Operational log if seen. |
+| 17 | Origin sends bytes before trollbridge has decided (e.g., HTTP/2 push) | trollbridge MUST refuse server push by negotiating it off via SETTINGS. | Operational log if seen. |
 | 18 | Race: two requests for the same destination during a rule reload | Each is decided against whichever rule version was active when it arrived; each audit entry records its `rule_set_version`. | Audit log. |
-| 19 | Leaf cert generation fails (crypto rng exhausted, OOM during keygen) | 502 to client with `Drawbridge-Reason: cert-generation-failed`; audit log entry; metric `drawbridge_cert_generation_failures_total` increments. | Audit log + metric. |
+| 19 | Leaf cert generation fails (crypto rng exhausted, OOM during keygen) | 502 to client with `Trollbridge-Reason: cert-generation-failed`; audit log entry; metric `trollbridge_cert_generation_failures_total` increments. | Audit log + metric. |
 | 20 | SIGTERM (graceful shutdown) | Stop accepting new connections; drain in-flight up to `shutdown.grace_seconds` (default 30s); resolve all pending approvals as `deny` with reason `shutdown`; flush audit-log buffer; exit 0. SIGKILL is the operator's escape hatch if shutdown stalls. | Operational log + audit-log entry per resolved hold. |
 
 ---
@@ -1713,29 +1713,29 @@ decision: `<timestamp> <decision> <method> <host>:<port><path>
 
 ### 17.1 Trust boundaries
 
-- **Operator → drawbridge**: trusted. Operator owns the host,
+- **Operator → trollbridge**: trusted. Operator owns the host,
   controls the CA, writes the rules.
-- **drawbridge → agent**: drawbridge does NOT trust the agent.
+- **trollbridge → agent**: trollbridge does NOT trust the agent.
   Identity is asserted by source-IP / mTLS / bearer token; client-
   supplied identity headers are advisory.
-- **drawbridge → origin**: drawbridge does NOT trust origins. Origin
+- **trollbridge → origin**: trollbridge does NOT trust origins. Origin
   TLS chains are verified against the operator-configured trust
   store. Origin response content is treated as data, not authority.
-- **drawbridge → LLM advisor**: drawbridge trusts the advisor for
+- **trollbridge → LLM advisor**: trollbridge trusts the advisor for
   recommendations only. It never elevates the advisor's effect. It
   redacts inputs before sending.
 
 ### 17.2 The "egress firewall is binding" rule
 
-drawbridge by itself does not stop an agent from making a direct
+trollbridge by itself does not stop an agent from making a direct
 TCP connection. The agent's environment MUST be configured so that:
 
-- Direct outbound TCP/UDP to anywhere except drawbridge is dropped at
+- Direct outbound TCP/UDP to anywhere except trollbridge is dropped at
   the firewall (Incus profile, Docker network policy, host iptables).
 - DNS resolution either goes through a controlled resolver or is
   proxied; otherwise the agent can use DNS as a covert channel.
 
-Without these, drawbridge is theatrical.
+Without these, trollbridge is theatrical.
 
 ### 17.3 What the proxy specifically defends against
 
@@ -1765,20 +1765,20 @@ section.)
 
 ### 17.5 Secret handling
 
-- The CA private key MUST live in a file readable only by drawbridge's
+- The CA private key MUST live in a file readable only by trollbridge's
   process user, mode `0600`, owned by that user.
 - LLM API keys MUST live in an operator-controlled file, NOT in the
   config YAML (the config references the path).
-- drawbridge MUST NOT log either secret. drawbridge MUST refuse to
+- trollbridge MUST NOT log either secret. trollbridge MUST refuse to
   start if either file's permissions are too permissive.
-- `drawbridge ca export` writes only the public CA cert. There is no
+- `trollbridge ca export` writes only the public CA cert. There is no
   "export private key" command; if the operator wants to back up the
   private key, they copy the file directly.
 
 ### 17.6 LLM-input-side security
 
 The LLM advisor is an external service the agent might be able to
-*indirectly* reach if it controls request shape carefully. drawbridge
+*indirectly* reach if it controls request shape carefully. trollbridge
 MUST:
 
 - Send only the structured metadata in §9.3, not raw bodies (unless
@@ -1801,7 +1801,7 @@ deterministic engine is the cache primary; the cache cannot upgrade a
 decision the engine would not currently make.
 
 When rules change (`rule_set_version` rotates), the cache is
-invalidated. A `drawbridge ca flush-cache` also flushes decision
+invalidated. A `trollbridge ca flush-cache` also flushes decision
 caches.
 
 ---
@@ -1820,7 +1820,7 @@ and macOS without runtime dependencies.
 
 Deliverables:
 
-- `drawbridge run` accepts plain HTTP and CONNECT; forwards both.
+- `trollbridge run` accepts plain HTTP and CONNECT; forwards both.
 - Deterministic rule engine (YAML, in-memory) with `host`, `port`,
   `path`, `method`, `header_match`, `identity` clauses.
 - `default-deny` and `default-allow` modes.
@@ -1868,7 +1868,7 @@ Deliverables:
 - Advisor schema validation + non-elevation guard.
 - Decision cache.
 - Confidence threshold falling back to `ask_user`.
-- `drawbridge logs replay`.
+- `trollbridge logs replay`.
 - Tests: advisor unit (mock LLM with malformed/elevation/hallucinated
   responses), integration (replay against past audit log).
 
@@ -1878,7 +1878,7 @@ Deliverables:
 
 - Incus VM image recipe (cloud-init, CA install, env vars).
 - Firewall recipe (sample iptables / nftables snippets) that
-  constrains agent VM egress to drawbridge only.
+  constrains agent VM egress to trollbridge only.
 - systemd unit, deb/tarball packaging, optional container image.
 - Documentation pages for each topology.
 - Live-build observation: an operator-confirmed run of the proxy in
@@ -1889,13 +1889,13 @@ Deliverables:
 ### What MUST NOT be skipped
 
 Phase 1's audit log is the load-bearing security artifact even
-without TLS interception. An operator who installs drawbridge for
+without TLS interception. An operator who installs trollbridge for
 HTTP-only or CONNECT-tunnel-only visibility is still getting real
 value.
 
 Phase 5's firewall + Incus integration is the difference between a
 proxy that *could* enforce policy and a deployment that *does*. An
-operator running drawbridge without the firewall is running a
+operator running trollbridge without the firewall is running a
 suggestion box.
 
 ---
@@ -1929,7 +1929,7 @@ suggestion box.
 - **CONNECT deny**: assert 403 to CONNECT.
 - **CONNECT then HTTPS to stub**: full HTTPS-tunneled round trip.
 - **TLS interception** (Phase 3): client with test CA installed;
-  drawbridge intercepts; assert body modifier applied and audit log
+  trollbridge intercepts; assert body modifier applied and audit log
   entry shape correct.
 - **Audit log shape**: drive a known set of requests; parse JSONL;
   assert every required field per §15.2.
@@ -1952,8 +1952,8 @@ suggestion box.
   resolution and the advisor's recommendation as a non-elevating
   hint.
 - **ALPN h1 negotiation under interception** (Phase 3): point
-  drawbridge at an h2-capable origin in intercept mode; verify that
-  drawbridge negotiates `h1` on both sides and that the resulting
+  trollbridge at an h2-capable origin in intercept mode; verify that
+  trollbridge negotiates `h1` on both sides and that the resulting
   request/response round-trips correctly.
 
 ### 19.3 Sweep tests
@@ -1961,9 +1961,9 @@ suggestion box.
 - **No plaintext secrets in audit log.** Drive requests whose bodies
   and headers contain `secret-XYZ`, `Bearer XYZ`, etc. After the
   test, `grep secret-XYZ audit.jsonl` MUST find zero matches.
-- **No CA private key in any output.** Drive `drawbridge ca init`,
+- **No CA private key in any output.** Drive `trollbridge ca init`,
   `ca export`, `ca rotate`, then grep all written files for the
-  private-key PEM marker; only `drawbridge-ca.key` MUST contain it.
+  private-key PEM marker; only `trollbridge-ca.key` MUST contain it.
 - **Configuration reload coverage.** SIGHUP under various rule-file
   states (valid v2, malformed v2, identical to v1) — each behavior
   is asserted.
@@ -1971,10 +1971,10 @@ suggestion box.
 ### 19.4 Deployment-contract tests (Phase 5)
 
 - **Incus VM constraint test.** Stand up a test Incus VM with the
-  recommended firewall profile; run a drawbridge instance on the
+  recommended firewall profile; run a trollbridge instance on the
   host; from inside the VM attempt to `curl example.com` directly
   (without proxy env) — MUST fail with network unreachable. With
-  proxy env set — MUST go through drawbridge.
+  proxy env set — MUST go through trollbridge.
 - **Live build gate.** Per the global CI/IaC insight, the Phase 5
   closure deliverable is an *observed* end-to-end run on a real
   Incus host, recorded in the implementation note.
@@ -1993,7 +1993,7 @@ confirms or revises.
 
 ### 19.6 Test runtime classification
 
-drawbridge tests fall into four runtime classes; each class has a
+trollbridge tests fall into four runtime classes; each class has a
 matching test technology:
 
 - Pure logic (rule engine, redactors) → in-process Go unit tests.
@@ -2077,14 +2077,14 @@ request_shape_hash)` so it cannot upgrade decisions across rule
 changes. Operators concerned about defensive depth can set the TTL
 to 0.
 
-### 20.7 Should drawbridge proxy DNS too?
+### 20.7 Should trollbridge proxy DNS too?
 
 **Tradeoff.** DNS exfiltration is a real attack vector. Adding DNS
 proxying expands scope but also expands the protection.
 
 **Recommendation.** Out of scope for v1. Document the gap;
 recommend that operators run a controlled DNS resolver for the agent
-environment. A future drawbridge MAY add DNS proxying if user demand
+environment. A future trollbridge MAY add DNS proxying if user demand
 justifies the complexity.
 
 ### 20.8 Should the proxy auto-suggest rules?
@@ -2093,7 +2093,7 @@ justifies the complexity.
 ergonomic. It also lets the LLM (indirectly) write its own rules.
 
 **Recommendation.** The advisor MAY produce a `suggested_rule` in
-its output; drawbridge surfaces it via `drawbridge decisions
+its output; trollbridge surfaces it via `trollbridge decisions
 --suggestions`, but it MUST NOT auto-create the rule. Rule
 authorship stays operator-only.
 
@@ -2104,15 +2104,15 @@ discoverable than a CLI. It is also another attack surface, more
 code, and an additional thing the operator has to authenticate.
 
 **Recommendation.** Phase 1–5 ship CLI-only. A separate project MAY
-build a web UI on top of drawbridge's HTTP control API later. This
-keeps drawbridge's surface area focused.
+build a web UI on top of trollbridge's HTTP control API later. This
+keeps trollbridge's surface area focused.
 
 ### 20.10 Versioning the audit log schema
 
 **Tradeoff.** Auditors want stable schemas; the design will evolve.
 
 **Recommendation.** Every audit-log entry includes
-`drawbridge_version` and `audit_schema_version` fields.
+`trollbridge_version` and `audit_schema_version` fields.
 Schema changes bump `audit_schema_version`; replay tooling reads the
 field and applies appropriate parsing. Removing fields from the
 audit log is forbidden in a minor version; only added fields are

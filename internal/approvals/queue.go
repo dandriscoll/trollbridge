@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/types"
 	"github.com/google/uuid"
 )
 
@@ -118,7 +118,7 @@ func (q *Queue) Wait(ctx context.Context, id string, ch <-chan types.Decision) t
 		return types.Decision{
 			Effect: types.EffectAskUserResolvedDeny,
 			Source: types.SourceApprovalTimeout,
-			Reason: "drawbridge shutdown; approvals denied",
+			Reason: "trollbridge shutdown; approvals denied",
 		}
 	}
 }
@@ -198,7 +198,7 @@ func (q *Queue) Shutdown() {
 		case h.resolveCh <- types.Decision{
 			Effect: types.EffectAskUserResolvedDeny,
 			Source: types.SourceApprovalTimeout,
-			Reason: "drawbridge shutdown; approvals denied",
+			Reason: "trollbridge shutdown; approvals denied",
 		}:
 		default:
 		}

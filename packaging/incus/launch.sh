@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Convenience script that launches an Incus VM wired to a host-side
-# drawbridge.
+# trollbridge.
 #
 # Edits required: HOST_IP and CA_PATH at the top.
 #
@@ -10,12 +10,12 @@ set -euo pipefail
 
 HOST_IP="${HOST_IP:-10.10.10.1}"
 PROXY_PORT="${PROXY_PORT:-8080}"
-CA_PATH="${CA_PATH:-/etc/drawbridge/drawbridge-ca.crt}"
+CA_PATH="${CA_PATH:-/etc/trollbridge/trollbridge-ca.crt}"
 IMAGE="${IMAGE:-images:debian/12}"
 NAME="${1:-agent-vm}"
 
 if [[ ! -r "$CA_PATH" ]]; then
-  echo "drawbridge CA cert not found at $CA_PATH; run 'drawbridge ca init' first" >&2
+  echo "trollbridge CA cert not found at $CA_PATH; run 'trollbridge ca init' first" >&2
   exit 1
 fi
 
@@ -42,5 +42,5 @@ incus launch "$IMAGE" "$NAME" --vm \
   --config "user.user-data=$(cat "$TMP_INIT")"
 
 echo "launched $NAME; once boot is complete, run:"
-echo "  incus exec $NAME -- drawbridge selftest --from-vm"
-echo "(after copying the drawbridge binary into the VM)."
+echo "  incus exec $NAME -- trollbridge selftest --from-vm"
+echo "(after copying the trollbridge binary into the VM)."

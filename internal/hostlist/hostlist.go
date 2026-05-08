@@ -60,10 +60,10 @@ type HostList struct {
 }
 
 // LoadInline parses pre-extracted entry strings (e.g., from
-// `lists.allow` / `lists.deny` in drawbridge.yaml) and returns a
+// `lists.allow` / `lists.deny` in trollbridge.yaml) and returns a
 // merged HostList. Empty strings and `#`-prefixed comments are
 // skipped, mirroring LoadFiles. Per-entry diagnostic source uses
-// the provided sourceLabel (e.g., "drawbridge.yaml:lists.allow").
+// the provided sourceLabel (e.g., "trollbridge.yaml:lists.allow").
 func LoadInline(name, sourceLabel string, entries []string) (*HostList, error) {
 	out := &HostList{Name: name}
 	for i, raw := range entries {
@@ -88,7 +88,7 @@ func LoadInline(name, sourceLabel string, entries []string) (*HostList, error) {
 // merged HostList. Returns an error if any file cannot be read or
 // any line cannot be parsed.
 //
-// Deprecated: v2 schema stores lists inline in drawbridge.yaml; use
+// Deprecated: v2 schema stores lists inline in trollbridge.yaml; use
 // LoadInline. Kept temporarily for tests that still operate on the
 // legacy .txt format.
 func LoadFiles(name string, paths []string) (*HostList, error) {

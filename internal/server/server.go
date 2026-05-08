@@ -19,19 +19,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/advisor"
-	"github.com/dandriscoll/drawbridge/internal/approvals"
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/ca"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/control"
-	"github.com/dandriscoll/drawbridge/internal/hostlist"
-	"github.com/dandriscoll/drawbridge/internal/identity"
-	"github.com/dandriscoll/drawbridge/internal/oplog"
-	"github.com/dandriscoll/drawbridge/internal/policy"
-	"github.com/dandriscoll/drawbridge/internal/redact"
-	"github.com/dandriscoll/drawbridge/internal/sessions"
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/advisor"
+	"github.com/dandriscoll/trollbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/ca"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/control"
+	"github.com/dandriscoll/trollbridge/internal/hostlist"
+	"github.com/dandriscoll/trollbridge/internal/identity"
+	"github.com/dandriscoll/trollbridge/internal/oplog"
+	"github.com/dandriscoll/trollbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/redact"
+	"github.com/dandriscoll/trollbridge/internal/sessions"
+	"github.com/dandriscoll/trollbridge/internal/types"
 
 	"github.com/google/uuid"
 )
@@ -39,7 +39,7 @@ import (
 // Version is set at build time via -ldflags="-X ...".
 var Version = "0.3.1-dev"
 
-// Server holds the long-lived state of a running drawbridge.
+// Server holds the long-lived state of a running trollbridge.
 type Server struct {
 	cfg      *config.Config
 	engine   *policy.Engine
@@ -172,7 +172,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 			ttl,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("CA load failed (required for %s): %w; fix: run `drawbridge ca init`",
+			return nil, fmt.Errorf("CA load failed (required for %s): %w; fix: run `trollbridge ca init`",
 				caRequiredReason(cfg.Interception.Enabled, controllerOn), err)
 		}
 		if cfg.Interception.Enabled {
@@ -396,7 +396,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && s.MaxBodySampleBytes > 0 && bodyMethodNeedsSample(r.Method) {
 		prefix, err := io.ReadAll(io.LimitReader(r.Body, int64(s.MaxBodySampleBytes)+1))
 		if err != nil {
-			http.Error(w, "drawbridge: body read failed", http.StatusBadRequest)
+			http.Error(w, "trollbridge: body read failed", http.StatusBadRequest)
 			s.writeAudit(req, types.Decision{Effect: types.EffectDeny, Source: types.SourceDefault, Reason: "body read failed: " + err.Error()},
 				"", 0, http.StatusBadRequest, 0, time.Since(start), err.Error())
 			return
@@ -453,14 +453,14 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	outbound, err := s.buildOutbound(r)
 	if err != nil {
 		rlog.Error("bad request", "event", oplog.EventBadRequest, "error", err.Error())
-		http.Error(w, "drawbridge: bad request", http.StatusBadRequest)
+		http.Error(w, "trollbridge: bad request", http.StatusBadRequest)
 		s.writeAudit(req, decision, "", 0, http.StatusBadRequest, 0, time.Since(start), err.Error())
 		return
 	}
 	resp, err := s.transport.RoundTrip(outbound)
 	if err != nil {
 		rlog.Error("forward error", "event", oplog.EventForwardError, "error", err.Error())
-		http.Error(w, "drawbridge: upstream error: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "trollbridge: upstream error: "+err.Error(), http.StatusBadGateway)
 		s.writeAudit(req, decision, "", 0, http.StatusBadGateway, 0, time.Since(start), err.Error())
 		return
 	}
@@ -473,7 +473,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(k, v)
 		}
 	}
-	w.Header().Set("Via", strings.TrimSpace(w.Header().Get("Via")+" 1.1 drawbridge"))
+	w.Header().Set("Via", strings.TrimSpace(w.Header().Get("Via")+" 1.1 trollbridge"))
 	w.WriteHeader(resp.StatusCode)
 	n, _ := io.Copy(w, resp.Body)
 
@@ -488,7 +488,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 // ask_user rule directly), enqueue and block.
 //
 // As a side effect, when the advisor is consulted, the request's
-// `Headers` map gets a transient `X-Drawbridge-LLM-Input-Hash`
+// `Headers` map gets a transient `X-Trollbridge-LLM-Input-Hash`
 // entry the audit-write path strips back out and stores in
 // `llm_input_hash`. This couples advisor input to the audit
 // record without threading a side-channel.
@@ -525,7 +525,7 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 			AllowList:      lists.Allow,
 			DenyList:       lists.Deny,
 		}
-		req.Headers.Set("X-Drawbridge-LLM-Input-Hash", advisor.CanonicalizeInput(input))
+		req.Headers.Set("X-Trollbridge-LLM-Input-Hash", advisor.CanonicalizeInput(input))
 
 		d, _ := s.advisor.Classify(ctx, req, s.engine.RuleSetVersion(), nil, hdrs, lists)
 		if d.Effect == types.EffectAllow || d.Effect == types.EffectDeny {
@@ -560,15 +560,15 @@ func bodyMethodNeedsSample(method string) bool {
 }
 
 func (s *Server) refuseHTTP(w http.ResponseWriter, req *types.RequestEvent, d types.Decision, start time.Time) {
-	w.Header().Set("Drawbridge-Reason", string(d.Effect)+": "+d.Reason)
+	w.Header().Set("Trollbridge-Reason", string(d.Effect)+": "+d.Reason)
 	switch d.Effect {
 	case types.EffectDeny, types.EffectAskUserResolvedDeny, types.EffectAskUserTimedOut:
-		http.Error(w, "drawbridge: request denied: "+d.Reason, http.StatusForbidden)
+		http.Error(w, "trollbridge: request denied: "+d.Reason, http.StatusForbidden)
 	case types.EffectAskUser, types.EffectAskLLM:
 		// Should not reach here; holdAndWait converts these.
-		http.Error(w, "drawbridge: request requires approval", http.StatusNetworkAuthenticationRequired)
+		http.Error(w, "trollbridge: request requires approval", http.StatusNetworkAuthenticationRequired)
 	default:
-		http.Error(w, "drawbridge: request not allowed", http.StatusForbidden)
+		http.Error(w, "trollbridge: request not allowed", http.StatusForbidden)
 	}
 	s.writeAudit(req, d, "", 0, statusFromEffect(d.Effect), 0, time.Since(start), "")
 }
@@ -584,7 +584,7 @@ func (s *Server) buildOutbound(r *http.Request) (*http.Request, error) {
 	}
 	out.Header = r.Header.Clone()
 	stripHopByHop(out.Header)
-	out.Header.Set("Via", strings.TrimSpace(out.Header.Get("Via")+" 1.1 drawbridge"))
+	out.Header.Set("Via", strings.TrimSpace(out.Header.Get("Via")+" 1.1 trollbridge"))
 	return out, nil
 }
 
@@ -599,8 +599,8 @@ func stripHopByHop(h http.Header) {
 		"Connection", "Proxy-Connection", "Proxy-Authorization",
 		"Proxy-Authenticate", "Keep-Alive", "TE", "Trailers",
 		"Transfer-Encoding", "Upgrade",
-		// drawbridge-internal hint headers MUST NOT leak to origins.
-		"X-Drawbridge-LLM-Input-Hash",
+		// trollbridge-internal hint headers MUST NOT leak to origins.
+		"X-Trollbridge-LLM-Input-Hash",
 		"X-Original-Query",
 	} {
 		h.Del(name)
@@ -664,15 +664,15 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.engine.History().Record(req, decision, time.Now().UTC())
 	if !(decision.Effect == types.EffectAllow || decision.Effect == types.EffectAskUserResolvedAllow) {
-		w.Header().Set("Drawbridge-Reason", string(decision.Effect)+": "+decision.Reason)
-		http.Error(w, "drawbridge: CONNECT denied: "+decision.Reason, http.StatusForbidden)
+		w.Header().Set("Trollbridge-Reason", string(decision.Effect)+": "+decision.Reason)
+		http.Error(w, "trollbridge: CONNECT denied: "+decision.Reason, http.StatusForbidden)
 		s.writeAudit(req, decision, "", 0, http.StatusForbidden, 0, time.Since(start), "")
 		return
 	}
 
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		http.Error(w, "drawbridge: hijacking not supported", http.StatusInternalServerError)
+		http.Error(w, "trollbridge: hijacking not supported", http.StatusInternalServerError)
 		s.writeAudit(req, decision, "", 0, http.StatusInternalServerError, 0, time.Since(start), "no hijacker")
 		return
 	}
@@ -680,7 +680,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)),
 		time.Duration(s.cfg.Forwarder.ConnectionAcquireTimeoutSeconds)*time.Second)
 	if err != nil {
-		http.Error(w, "drawbridge: upstream dial failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "trollbridge: upstream dial failed: "+err.Error(), http.StatusBadGateway)
 		s.writeAudit(req, decision, "", 0, http.StatusBadGateway, 0, time.Since(start), err.Error())
 		return
 	}
@@ -746,14 +746,14 @@ func setReadDeadlineNow(c net.Conn) error {
 // writeAuditWithBody is like writeAudit but also redacts and stores a
 // body sample (used by the interception path).
 func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, body []byte, status int, size int64, latency time.Duration, errStr string) {
-	llmInputHash := req.Headers.Get("X-Drawbridge-LLM-Input-Hash")
+	llmInputHash := req.Headers.Get("X-Trollbridge-LLM-Input-Hash")
 	queryRedacted, _ := s.redactor.Query(req.Headers.Get("X-Original-Query"))
 	headers, headerCount := s.redactor.Headers(req.Headers, d.Modifiers)
 	_ = headers
 	bodyRes := s.redactor.Body(body, req.Headers.Get("Content-Type"))
 	sample, truncated := redact.SampleForAudit(bodyRes.Output, 4096)
 	entry := audit.Entry{
-		DrawbridgeVersion:    Version,
+		TrollbridgeVersion:    Version,
 		AuditSchemaVersion:   1,
 		RequestID:            req.ID,
 		SessionID:            req.SessionID,
@@ -800,9 +800,9 @@ func inspectionStatus(hasBody, truncated bool) string {
 }
 
 func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryRedacted string, redactedCount int, status int, size int64, latency time.Duration, errStr string) {
-	llmInputHash := req.Headers.Get("X-Drawbridge-LLM-Input-Hash")
+	llmInputHash := req.Headers.Get("X-Trollbridge-LLM-Input-Hash")
 	entry := audit.Entry{
-		DrawbridgeVersion:    Version,
+		TrollbridgeVersion:    Version,
 		AuditSchemaVersion:   1,
 		RequestID:            req.ID,
 		SessionID:            req.SessionID,
@@ -998,13 +998,13 @@ func (s *Server) DenyList() *hostlist.HostList {
 }
 
 // SetLists installs the inline allow/deny patterns parsed from
-// drawbridge.yaml's `lists.allow` / `lists.deny`.
+// trollbridge.yaml's `lists.allow` / `lists.deny`.
 func (s *Server) SetLists(allow, deny []string) error {
-	a, err := hostlist.LoadInline("allow", "drawbridge.yaml:lists.allow", allow)
+	a, err := hostlist.LoadInline("allow", "trollbridge.yaml:lists.allow", allow)
 	if err != nil {
 		return err
 	}
-	d, err := hostlist.LoadInline("deny", "drawbridge.yaml:lists.deny", deny)
+	d, err := hostlist.LoadInline("deny", "trollbridge.yaml:lists.deny", deny)
 	if err != nil {
 		return err
 	}

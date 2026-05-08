@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/config"
 )
 
 func TestResolver_AnonymousByDefault(t *testing.T) {

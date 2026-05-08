@@ -12,9 +12,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/approvals"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/controlclient"
+	"github.com/dandriscoll/trollbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/controlclient"
 	"golang.org/x/term"
 )
 
@@ -57,11 +57,11 @@ func (c *httpClient) Deny(id, reason string) error {
 // including on panic.
 func RunApprovals(ctx context.Context, cfg *config.Config, in, out *os.File) (err error) {
 	if !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(out.Fd())) {
-		return errors.New("drawbridge tui: stdin/stdout is not a terminal")
+		return errors.New("trollbridge tui: stdin/stdout is not a terminal")
 	}
 	oldState, err := term.MakeRaw(int(in.Fd()))
 	if err != nil {
-		return fmt.Errorf("drawbridge tui: enter raw mode: %w", err)
+		return fmt.Errorf("trollbridge tui: enter raw mode: %w", err)
 	}
 	defer func() {
 		// Always restore the cooked terminal state. Hide-cursor / alt-
@@ -70,7 +70,7 @@ func RunApprovals(ctx context.Context, cfg *config.Config, in, out *os.File) (er
 		fmt.Fprint(out, "\x1b[?25h\x1b[?1049l")
 		_ = term.Restore(int(in.Fd()), oldState)
 		if r := recover(); r != nil {
-			err = fmt.Errorf("drawbridge tui: panic: %v", r)
+			err = fmt.Errorf("trollbridge tui: panic: %v", r)
 		}
 	}()
 	// Enter alternate screen + hide cursor so the host shell's
@@ -271,7 +271,7 @@ func render(out io.Writer, m Model) error {
 	b.WriteString("\x1b[H\x1b[2J") // home + clear
 
 	// Header.
-	b.WriteString(boldLine(fmt.Sprintf("drawbridge approvals — %d pending", len(m.Holds)), m.Cols))
+	b.WriteString(boldLine(fmt.Sprintf("trollbridge approvals — %d pending", len(m.Holds)), m.Cols))
 	b.WriteString("\r\n")
 
 	// Body.

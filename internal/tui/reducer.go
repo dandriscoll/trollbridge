@@ -8,7 +8,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/dandriscoll/drawbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/approvals"
 )
 
 // Model is the immutable state the renderer reads.

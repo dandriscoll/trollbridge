@@ -1,20 +1,20 @@
 [Unit]
-Description=drawbridge LLM-aware HTTP/HTTPS proxy
-Documentation=https://github.com/dandriscoll/drawbridge
+Description=trollbridge LLM-aware HTTP/HTTPS proxy
+Documentation=https://github.com/dandriscoll/trollbridge
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=drawbridge
-Group=drawbridge
-ExecStart=/usr/local/bin/drawbridge run --config /etc/drawbridge/drawbridge.yaml
+User=trollbridge
+Group=trollbridge
+ExecStart=/usr/local/bin/trollbridge run --config /etc/trollbridge/trollbridge.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 # Operational log level: uncomment to override the default (info).
 # Valid values: debug | info | warn | error.
 # Equivalent to `--log-level` on the command line; read at startup
 # (SIGHUP does not currently re-read it).
-# Environment="DRAWBRIDGE_LOG_LEVEL=info"
+# Environment="TROLLBRIDGE_LOG_LEVEL=info"
 KillSignal=SIGTERM
 TimeoutStopSec=45
 Restart=on-failure
@@ -34,7 +34,7 @@ RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-ReadWritePaths=/var/log/drawbridge /etc/drawbridge
+ReadWritePaths=/var/log/trollbridge /etc/trollbridge
 
 # CAP_NET_BIND_SERVICE only needed when binding ports < 1024.
 # AmbientCapabilities=CAP_NET_BIND_SERVICE

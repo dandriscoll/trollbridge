@@ -19,18 +19,18 @@ import (
 	"time"
 )
 
-// TestSubprocess_DrawbridgeBinaryServesAndAuditsAndExitsCleanly is
+// TestSubprocess_TrollbridgeBinaryServesAndAuditsAndExitsCleanly is
 // the carry-forward 031.I.5 test: build the binary, exec it,
 // drive a real HTTP client through it, then SIGTERM and assert
 // clean exit + audit log shape. This is the runtime layer the
 // in-process tests don't cover.
-func TestSubprocess_DrawbridgeBinaryServesAndAuditsAndExitsCleanly(t *testing.T) {
+func TestSubprocess_TrollbridgeBinaryServesAndAuditsAndExitsCleanly(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("subprocess test relies on POSIX signals")
 	}
 	repoRoot := findRepoRoot(t)
-	binPath := filepath.Join(t.TempDir(), "drawbridge")
-	build := exec.Command("go", "build", "-o", binPath, "./cmd/drawbridge")
+	binPath := filepath.Join(t.TempDir(), "trollbridge")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/trollbridge")
 	build.Dir = repoRoot
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -40,7 +40,7 @@ func TestSubprocess_DrawbridgeBinaryServesAndAuditsAndExitsCleanly(t *testing.T)
 	dir := t.TempDir()
 	auditPath := filepath.Join(dir, "audit.jsonl")
 	rulesPath := filepath.Join(dir, "rules.yaml")
-	cfgPath := filepath.Join(dir, "drawbridge.yaml")
+	cfgPath := filepath.Join(dir, "trollbridge.yaml")
 
 	// Stub origin.
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +67,7 @@ func TestSubprocess_DrawbridgeBinaryServesAndAuditsAndExitsCleanly(t *testing.T)
 		t.Fatal(err)
 	}
 	_ = ctrlAddr
-	cfgYAML := fmt.Sprintf(`drawbridge_version: 3
+	cfgYAML := fmt.Sprintf(`trollbridge_version: 3
 proxy: lo:%s
 control: 0
 mode: default-deny

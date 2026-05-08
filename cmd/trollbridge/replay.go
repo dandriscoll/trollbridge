@@ -8,14 +8,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/policy"
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/types"
 	"github.com/spf13/cobra"
 )
 
-// replay command lives under `drawbridge logs replay`.
+// replay command lives under `trollbridge logs replay`.
 func newLogsReplayCmd() *cobra.Command {
 	var configPath, rulesPath string
 	var since time.Duration
@@ -37,7 +37,7 @@ func newLogsReplayCmd() *cobra.Command {
 
 			// Build a candidate engine using the new rules
 			// stand-alone. This does NOT touch the active rule set
-			// in the running drawbridge.
+			// in the running trollbridge.
 			engine, err := policy.NewEngine(cfg.Mode, []string{rulesPath}, policy.KnownModifiers())
 			if err != nil {
 				return &configErr{err}
@@ -113,7 +113,7 @@ func newLogsReplayCmd() *cobra.Command {
 				return &runtimeErr{err}
 			}
 
-			fmt.Fprintln(out, "drawbridge logs replay: report")
+			fmt.Fprintln(out, "trollbridge logs replay: report")
 			fmt.Fprintf(out, "  rules version: %s\n", engine.RuleSetVersion())
 			fmt.Fprintf(out, "  unchanged:     %d\n", counts["unchanged"])
 			fmt.Fprintf(out, "  flipped allow: %d\n", counts["flip_to_allow"])
@@ -123,7 +123,7 @@ func newLogsReplayCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "drawbridge.yaml path")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")
 	cmd.Flags().StringVar(&rulesPath, "rules", "", "rule file to replay against (required)")
 	cmd.Flags().DurationVar(&since, "since", 0, "only replay entries newer than this duration (e.g. 24h)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print each flipped decision")

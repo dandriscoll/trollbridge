@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -47,28 +47,28 @@ func newTestCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "test <url>",
 		Short: "Send a single request through the running proxy and print the proxy's decision plus the response.",
-		Long: `Test sends one HTTP/HTTPS request through the running drawbridge
-proxy (proxy address is read from drawbridge.yaml) and prints both
+		Long: `Test sends one HTTP/HTTPS request through the running trollbridge
+proxy (proxy address is read from trollbridge.yaml) and prints both
 the proxy's decision (allow / deny / hold + matching rule, resolved
 from the audit log) and the upstream response (status, selected
 headers, body).
 
 Examples:
 
-  drawbridge test https://api.github.com/zen
-  drawbridge test -X POST -H 'Content-Type: application/json' \
+  trollbridge test https://api.github.com/zen
+  trollbridge test -X POST -H 'Content-Type: application/json' \
                   --body '{"q":"hi"}' https://api.openai.com/v1/chat/completions
 
 For HTTPS URLs with TLS interception enabled, the test client
-automatically trusts the configured drawbridge CA. With interception
+automatically trusts the configured trollbridge CA. With interception
 disabled, the proxy is a transparent CONNECT tunnel and the test
 client must already trust the upstream's certificate.
 
 Held requests (under default-ask) return HTTP 511 with a
-Drawbridge-Reason header; this command surfaces the hold and
+Trollbridge-Reason header; this command surfaces the hold and
 the operator command needed to approve it.
 
-Decision correlation reads the audit log named by drawbridge.yaml's
+Decision correlation reads the audit log named by trollbridge.yaml's
 logging.audit_path. Under heavy concurrent traffic the matched
 entry is "newest matching (method, host, path)"; for an idle proxy
 this is unambiguous.
@@ -78,7 +78,7 @@ proxy env embedded inline, and bare) instead of sending the request.
 The flag does not contact the proxy daemon; --show-body, --raw,
 --timeout, and --no-decision do not apply under --print-curl.
 The emitted curl command targets the proxy at the address from
-drawbridge.yaml; the host that runs the curl command must share
+trollbridge.yaml; the host that runs the curl command must share
 network reachability with the daemon.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -99,7 +99,7 @@ network reachability with the daemon.`,
 				// would silently emit `https_proxy='http://' curl …`.
 				// Match runTest's disabled() guard for symmetry.
 				if cfg.Proxy.Disabled() {
-					return &configErr{fmt.Errorf("proxy is disabled in drawbridge.yaml (proxy: 0); set proxy: lo:8080 (or another bind) so --print-curl knows what proxy address to embed")}
+					return &configErr{fmt.Errorf("proxy is disabled in trollbridge.yaml (proxy: 0); set proxy: lo:8080 (or another bind) so --print-curl knows what proxy address to embed")}
 				}
 				renderCurl(cmd.OutOrStdout(), req, body, bodyFile, cfg.Proxy.ClientAddr())
 				return nil
@@ -116,7 +116,7 @@ network reachability with the daemon.`,
 			})
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "drawbridge.yaml path")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")
 	cmd.Flags().StringVarP(&method, "method", "X", "GET", "HTTP method")
 	cmd.Flags().StringArrayVarP(&headers, "header", "H", nil, "extra request header (\"KEY: VALUE\"; repeatable)")
 	cmd.Flags().StringVar(&body, "body", "", "request body (string)")
@@ -186,7 +186,7 @@ func buildTestRequest(rawURL, method string, headers []string, body, bodyFile st
 
 func runTest(ctx context.Context, out io.Writer, cfg *config.Config, req *http.Request, opts testOpts) error {
 	if cfg.Proxy.Disabled() {
-		return &configErr{fmt.Errorf("proxy is disabled in drawbridge.yaml (proxy: 0); set proxy: lo:8080 (or another bind) and run drawbridge run")}
+		return &configErr{fmt.Errorf("proxy is disabled in trollbridge.yaml (proxy: 0); set proxy: lo:8080 (or another bind) and run trollbridge run")}
 	}
 	proxyAddr := cfg.Proxy.ClientAddr()
 	proxyURL, err := url.Parse("http://" + proxyAddr)
@@ -200,7 +200,7 @@ func runTest(ctx context.Context, out io.Writer, cfg *config.Config, req *http.R
 		if perr == nil {
 			tlsCfg.RootCAs = pool
 		} else {
-			fmt.Fprintf(os.Stderr, "drawbridge test: warning: configured interception CA at %s is unreadable (%v); falling back to system trust\n",
+			fmt.Fprintf(os.Stderr, "trollbridge test: warning: configured interception CA at %s is unreadable (%v); falling back to system trust\n",
 				cfg.Interception.CA.CertPath, perr)
 		}
 	}
@@ -252,10 +252,10 @@ func annotateRequestErr(err error, proxyAddr string, interceptionOn bool, scheme
 	s := err.Error()
 	switch {
 	case strings.Contains(s, "connection refused"), strings.Contains(s, "no such host"):
-		return fmt.Errorf("cannot reach proxy at %s: %w; is `drawbridge run` running?", proxyAddr, err)
+		return fmt.Errorf("cannot reach proxy at %s: %w; is `trollbridge run` running?", proxyAddr, err)
 	case strings.Contains(s, "x509"), strings.Contains(s, "certificate"):
 		if scheme == "https" && !interceptionOn {
-			return fmt.Errorf("TLS handshake to upstream failed: %w; interception is disabled in drawbridge.yaml — the test client's TLS session is end-to-end with the upstream. Either enable interception, or trust the upstream's CA in your system store", err)
+			return fmt.Errorf("TLS handshake to upstream failed: %w; interception is disabled in trollbridge.yaml — the test client's TLS session is end-to-end with the upstream. Either enable interception, or trust the upstream's CA in your system store", err)
 		}
 		return fmt.Errorf("TLS handshake failed: %w", err)
 	}
@@ -279,12 +279,12 @@ func loadInterceptionCA(path string) (*x509.CertPool, error) {
 
 func renderResult(out io.Writer, req *http.Request, proxyAddr string, resp *http.Response, body []byte, opts testOpts, dec *audit.Entry, decErr error) {
 	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
-	w("drawbridge test:\n")
+	w("trollbridge test:\n")
 	w("  request:    %s %s\n", req.Method, req.URL.String())
 	w("  via proxy:  %s\n", proxyAddr)
 	w("  status:     %s\n", resp.Status)
-	if r := resp.Header.Get("Drawbridge-Reason"); r != "" {
-		w("  drawbridge: %s\n", r)
+	if r := resp.Header.Get("Trollbridge-Reason"); r != "" {
+		w("  trollbridge: %s\n", r)
 	}
 	if v := resp.Header.Get("Via"); v != "" {
 		w("  via:        %s\n", v)
@@ -316,16 +316,16 @@ func renderResult(out io.Writer, req *http.Request, proxyAddr string, resp *http
 	if resp.StatusCode == http.StatusNetworkAuthenticationRequired {
 		holdID := extractHoldID(dec)
 		if holdID != "" {
-			w("  hint:       held — approve via `drawbridge approve %s`\n", holdID)
+			w("  hint:       held — approve via `trollbridge approve %s`\n", holdID)
 		} else {
-			w("  hint:       held — list pending via `drawbridge decisions --pending`, then `drawbridge approve <id>`\n")
+			w("  hint:       held — list pending via `trollbridge decisions --pending`, then `trollbridge approve <id>`\n")
 		}
 	}
 
 	if len(resp.Header) > 0 {
 		keys := make([]string, 0, len(resp.Header))
 		for k := range resp.Header {
-			if k == "Drawbridge-Reason" || k == "Via" {
+			if k == "Trollbridge-Reason" || k == "Via" {
 				continue
 			}
 			keys = append(keys, k)
@@ -392,7 +392,7 @@ func shellQuote(s string) string {
 
 // renderCurl writes two curl invocations to out: variant 1 with the
 // proxy env embedded inline as a one-shot prefix (works in a fresh
-// shell), and variant 2 bare (assumes `eval "$(drawbridge env)"`
+// shell), and variant 2 bare (assumes `eval "$(trollbridge env)"`
 // already ran in the caller's shell). Both variants are built from
 // the same args list — single source of truth, no drift between them.
 //
@@ -407,11 +407,11 @@ func renderCurl(out io.Writer, req *http.Request, body, bodyFile, proxyAddr stri
 		shellQuote(proxyURL), shellQuote(proxyURL))
 
 	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
-	w("# drawbridge test --print-curl: equivalent curl command(s)\n")
+	w("# trollbridge test --print-curl: equivalent curl command(s)\n")
 	w("# variant 1 — proxy env embedded inline (works in a fresh shell)\n")
 	w("%s%s\n", envPrefix, bare)
 	w("\n")
-	w("# variant 2 — bare (assumes you have already run: eval \"$(drawbridge env)\")\n")
+	w("# variant 2 — bare (assumes you have already run: eval \"$(trollbridge env)\")\n")
 	w("%s\n", bare)
 }
 

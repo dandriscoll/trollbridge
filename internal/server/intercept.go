@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/oplog"
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/oplog"
+	"github.com/dandriscoll/trollbridge/internal/types"
 	"github.com/google/uuid"
 )
 
@@ -60,7 +60,7 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 		// The TLS handshake never completed — there is no inner
 		// HTTP request to attribute this to, but the operator still
 		// needs an audit-shaped record (and a correlated operational
-		// log line) so that "TLS to drawbridge stopped working" is
+		// log line) so that "TLS to trollbridge stopped working" is
 		// debuggable. Mint a synthetic request_id and emit a deny
 		// entry, mirroring the malformed-request shape below.
 		requestID := uuid.NewString()
@@ -196,7 +196,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 
 	if !(decision.Effect == types.EffectAllow || decision.Effect == types.EffectAskUserResolvedAllow) {
 		// Refuse: 403 over the intercepted TLS connection.
-		body := fmt.Sprintf("drawbridge: request denied: %s", decision.Reason)
+		body := fmt.Sprintf("trollbridge: request denied: %s", decision.Reason)
 		resp := &http.Response{
 			StatusCode: http.StatusForbidden,
 			Proto:      "HTTP/1.1",
@@ -204,7 +204,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 			Header: http.Header{
 				"Content-Type":      {"text/plain; charset=utf-8"},
 				"Content-Length":    {strconv.Itoa(len(body))},
-				"Drawbridge-Reason": {string(decision.Effect) + ": " + decision.Reason},
+				"Trollbridge-Reason": {string(decision.Effect) + ": " + decision.Reason},
 				"Connection":        {"close"},
 			},
 			Body:          io.NopCloser(strings.NewReader(body)),
@@ -225,7 +225,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		RootCAs:    s.originRoots,
 	})
 	if err != nil {
-		body := "drawbridge: origin TLS verification failed: " + err.Error()
+		body := "trollbridge: origin TLS verification failed: " + err.Error()
 		resp := &http.Response{
 			StatusCode: http.StatusBadGateway,
 			Proto:      "HTTP/1.1",
@@ -233,7 +233,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 			Header: http.Header{
 				"Content-Type":      {"text/plain; charset=utf-8"},
 				"Content-Length":    {strconv.Itoa(len(body))},
-				"Drawbridge-Reason": {"origin-tls-failure"},
+				"Trollbridge-Reason": {"origin-tls-failure"},
 				"Connection":        {"close"},
 			},
 			Body:          io.NopCloser(strings.NewReader(body)),
@@ -250,7 +250,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	outbound.URL.Scheme = "https"
 	outbound.URL.Host = host
 	stripHopByHop(outbound.Header)
-	outbound.Header.Set("Via", strings.TrimSpace(outbound.Header.Get("Via")+" 1.1 drawbridge"))
+	outbound.Header.Set("Via", strings.TrimSpace(outbound.Header.Get("Via")+" 1.1 trollbridge"))
 	outbound.RequestURI = "" // client requests must have empty RequestURI
 	if outbound.Body == nil && len(bodyBuf) > 0 {
 		outbound.Body = io.NopCloser(bytes.NewReader(bodyBuf))

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/approvals"
 )
 
 type stubClient struct {
@@ -107,7 +107,7 @@ func TestRunLoop_ApproveFlowEndToEnd(t *testing.T) {
 	if len(client.denyIDs) != 0 {
 		t.Errorf("denyIDs = %v, want none", client.denyIDs)
 	}
-	if !strings.Contains(stdout.String(), "drawbridge approvals") {
+	if !strings.Contains(stdout.String(), "trollbridge approvals") {
 		t.Errorf("stdout missing header; first 200: %q", first(stdout.String(), 200))
 	}
 }

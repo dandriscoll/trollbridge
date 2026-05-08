@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/advisor"
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/advisor"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/policy"
 )
 
 // bootHotReloadProxy boots a Server with WatchAndReload running.
@@ -111,7 +111,7 @@ func linesFrom(path string) []string {
 
 // TestHotReload_FileEditTakesEffectWithoutRestart confirmed an
 // out-of-band edit to allow.txt was picked up by the watcher in v1.
-// v2 stores lists inline in drawbridge.yaml and the only mutation
+// v2 stores lists inline in trollbridge.yaml and the only mutation
 // path is the REPL (which calls configwrite + SetLists). The
 // file-watcher behaviour is gone; this test is skipped.
 func TestHotReload_FileEditTakesEffectWithoutRestart(t *testing.T) {
@@ -272,7 +272,7 @@ func TestAdvisor_CannotMutateLists(t *testing.T) {
   effect: ask_llm
 `, originHost)
 
-	// Advisor proposes a suggested_rule. drawbridge must NOT
+	// Advisor proposes a suggested_rule. trollbridge must NOT
 	// auto-apply it.
 	prov := &advisor.MockProvider{Output: advisor.Output{
 		Effect:        "allow",

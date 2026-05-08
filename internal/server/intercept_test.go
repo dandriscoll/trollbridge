@@ -19,15 +19,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/ca"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/ca"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/policy"
 )
 
-// interceptHarness wires a drawbridge with interception enabled,
+// interceptHarness wires a trollbridge with interception enabled,
 // using a fresh CA and a stub HTTPS origin whose cert is signed by
-// a *separate* test CA that drawbridge's originRoots trusts.
+// a *separate* test CA that trollbridge's originRoots trusts.
 type interceptHarness struct {
 	t           *testing.T
 	srv         *Server
@@ -50,7 +50,7 @@ func bootInterceptProxy(t *testing.T, rules string, redactionYAML string) *inter
 	}
 	auditPath := filepath.Join(dir, "audit.jsonl")
 
-	// Generate the drawbridge CA (ECDSA for speed in tests).
+	// Generate the trollbridge CA (ECDSA for speed in tests).
 	caCertPath := filepath.Join(dir, "ca.crt")
 	caKeyPath := filepath.Join(dir, "ca.key")
 	dbCA, err := ca.Init(caCertPath, caKeyPath, ca.KeyTypeECDSAP256, false)
@@ -59,7 +59,7 @@ func bootInterceptProxy(t *testing.T, rules string, redactionYAML string) *inter
 	}
 
 	// Origin: httptest.NewTLSServer uses its OWN cert. We trust it
-	// in drawbridge's originRoots by adding the test server's
+	// in trollbridge's originRoots by adding the test server's
 	// CA to the system pool we'll override.
 	originSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Echo back the inbound body for assertion.
@@ -103,9 +103,9 @@ func bootInterceptProxy(t *testing.T, rules string, redactionYAML string) *inter
 		}
 		// trivial: load from a temp file via config.Load to reuse
 		// the parser. Build a minimal config file.
-		mainCfgPath := filepath.Join(dir, "drawbridge.yaml")
+		mainCfgPath := filepath.Join(dir, "trollbridge.yaml")
 		_ = ctrlAddr
-		if err := os.WriteFile(mainCfgPath, []byte(`drawbridge_version: 3
+		if err := os.WriteFile(mainCfgPath, []byte(`trollbridge_version: 3
 proxy: lo:8080
 control: 0
 mode: default-deny
@@ -145,8 +145,8 @@ policy:
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Add the test origin's CA to drawbridge's originRoots so
-	// drawbridge can verify it on dial-out.
+	// Add the test origin's CA to trollbridge's originRoots so
+	// trollbridge can verify it on dial-out.
 	originCert := originSrv.Certificate()
 	pool := x509.NewCertPool()
 	pool.AddCert(originCert)
@@ -187,7 +187,7 @@ func (h *interceptHarness) close() {
 }
 
 // clientWithOurCA returns an http.Client that uses the proxy AND
-// trusts drawbridge's CA (so the client doesn't reject the
+// trusts trollbridge's CA (so the client doesn't reject the
 // intercepted leaf).
 func (h *interceptHarness) clientWithOurCA() *http.Client {
 	pool := x509.NewCertPool()
@@ -285,8 +285,8 @@ func TestIntercept_DeniesPathAndAuditsCleanly(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status: got %d, want 403; body=%s", resp.StatusCode, string(body))
 	}
-	if reason := resp.Header.Get("Drawbridge-Reason"); reason == "" {
-		t.Error("missing Drawbridge-Reason header on intercepted deny")
+	if reason := resp.Header.Get("Trollbridge-Reason"); reason == "" {
+		t.Error("missing Trollbridge-Reason header on intercepted deny")
 	}
 
 	entries := h.auditEntries()

@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/policy"
 )
 
 // captureOpLog constructs a slog.Logger that writes into a buffer
@@ -31,7 +31,7 @@ func captureOpLog(level slog.Level) (*slog.Logger, *bytes.Buffer) {
 	return slog.New(h), buf
 }
 
-// bootHTTPProxyWithOpLog wires a plain-HTTP drawbridge against a
+// bootHTTPProxyWithOpLog wires a plain-HTTP trollbridge against a
 // stub origin and returns the proxy address, the origin URL (host:port),
 // the captured op-log buffer, and a cleanup func.
 func bootHTTPProxyWithOpLog(t *testing.T, level slog.Level) (proxyAddr, originURL string, opBuf *bytes.Buffer, cleanup func()) {
@@ -64,7 +64,7 @@ func bootHTTPProxyWithOpLog(t *testing.T, level slog.Level) (proxyAddr, originUR
 		Identities: []config.Identity{{ID: "test-client", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
 		Policy:     config.Policy{Include: []string{rulesPath}},
 	}
-	cfg.DrawbridgeVersion = config.SchemaVersion
+	cfg.TrollbridgeVersion = config.SchemaVersion
 
 	engine, err := policy.NewEngine(cfg.Mode, cfg.ResolveIncludePaths(rulesPath), policy.KnownModifiers())
 	if err != nil {
@@ -209,9 +209,9 @@ func TestIntercept_TLSHandshakeFailureProducesAuditEntry(t *testing.T) {
 			break
 		}
 	}
-	// Garbage bytes — drawbridge's TLS server will fail handshake.
+	// Garbage bytes — trollbridge's TLS server will fail handshake.
 	_, _ = conn.Write([]byte("not a TLS ClientHello\x00\x00\x00\x00\x00"))
-	// Give drawbridge time to write the audit entry.
+	// Give trollbridge time to write the audit entry.
 	time.Sleep(200 * time.Millisecond)
 	conn.Close()
 

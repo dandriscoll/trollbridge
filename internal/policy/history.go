@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
 // HistoryEntry is one prior-decision record kept in memory for the

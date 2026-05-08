@@ -15,11 +15,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
 )
 
-// minimalTestYaml writes a v3 drawbridge.yaml pointing the proxy at
+// minimalTestYaml writes a v3 trollbridge.yaml pointing the proxy at
 // the given client-reachable host:port. The audit_path lives in the
 // same temp dir; a caller can append fixture entries to it.
 func minimalTestYaml(t *testing.T, proxyHost string, proxyPort int) (cfgPath, auditPath string) {
@@ -33,9 +33,9 @@ func minimalTestYaml(t *testing.T, proxyHost string, proxyPort int) (cfgPath, au
 	case "0.0.0.0":
 		host = "all"
 	}
-	cfgPath = filepath.Join(dir, "drawbridge.yaml")
+	cfgPath = filepath.Join(dir, "trollbridge.yaml")
 	body := strings.Join([]string{
-		"drawbridge_version: 3",
+		"trollbridge_version: 3",
 		fmt.Sprintf("proxy: %s:%d", host, proxyPort),
 		"control: 0",
 		"controller: {auth: mtls}",
@@ -73,7 +73,7 @@ func appendAuditEntry(t *testing.T, path string, e audit.Entry) {
 }
 
 // fakeOriginAsProxy is an httptest.Server that *acts as if it were
-// the drawbridge proxy*. The test client points its HTTP_PROXY at
+// the trollbridge proxy*. The test client points its HTTP_PROXY at
 // it; for plain HTTP requests through a forward proxy, the client
 // sends `GET http://upstream/... HTTP/1.1` to the proxy, which lets
 // us inspect and respond with arbitrary headers/body. This is
@@ -166,7 +166,7 @@ func TestRunTest_ProxyDisabled_GuardedByRuntimeCheck(t *testing.T) {
 
 func TestRunTest_AllowPath_RendersDecisionAndResponse(t *testing.T) {
 	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Via", "1.1 drawbridge")
+		w.Header().Set("Via", "1.1 trollbridge")
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "hello world")
@@ -195,7 +195,7 @@ func TestRunTest_AllowPath_RendersDecisionAndResponse(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"drawbridge test:",
+		"trollbridge test:",
 		"GET http://api.example.com/foo",
 		"status:     200",
 		"decision:   allow (source=rule rule=r-allow-github)",
@@ -212,9 +212,9 @@ func TestRunTest_AllowPath_RendersDecisionAndResponse(t *testing.T) {
 	}
 }
 
-func TestRunTest_DenyPath_RendersDrawbridgeReason(t *testing.T) {
+func TestRunTest_DenyPath_RendersTrollbridgeReason(t *testing.T) {
 	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Drawbridge-Reason", "deny: blocked by allowlist")
+		w.Header().Set("Trollbridge-Reason", "deny: blocked by allowlist")
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, "denied")
 	})
@@ -239,7 +239,7 @@ func TestRunTest_DenyPath_RendersDrawbridgeReason(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"status:     403",
-		"drawbridge: deny: blocked by allowlist",
+		"trollbridge: deny: blocked by allowlist",
 		"decision:   deny (source=allowlist rule=-)",
 	} {
 		if !strings.Contains(out, want) {
@@ -250,7 +250,7 @@ func TestRunTest_DenyPath_RendersDrawbridgeReason(t *testing.T) {
 
 func TestRunTest_HoldPath_511_SurfacesApproveHint(t *testing.T) {
 	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Drawbridge-Reason", "ask_user: needs approval")
+		w.Header().Set("Trollbridge-Reason", "ask_user: needs approval")
 		w.WriteHeader(http.StatusNetworkAuthenticationRequired)
 		fmt.Fprint(w, "held")
 	})
@@ -273,7 +273,7 @@ func TestRunTest_HoldPath_511_SurfacesApproveHint(t *testing.T) {
 		t.Fatalf("runTest: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "drawbridge approve hold-abc") {
+	if !strings.Contains(out, "trollbridge approve hold-abc") {
 		t.Errorf("expected approve hint with hold-abc; got:\n%s", out)
 	}
 }
@@ -464,11 +464,11 @@ func TestRenderCurl_GET_NoBody(t *testing.T) {
 	var buf bytes.Buffer
 	renderCurl(&buf, req, "", "", "127.0.0.1:8080")
 	got := buf.String()
-	want := "# drawbridge test --print-curl: equivalent curl command(s)\n" +
+	want := "# trollbridge test --print-curl: equivalent curl command(s)\n" +
 		"# variant 1 — proxy env embedded inline (works in a fresh shell)\n" +
 		"https_proxy='http://127.0.0.1:8080' http_proxy='http://127.0.0.1:8080' curl 'https://api.github.com/zen'\n" +
 		"\n" +
-		"# variant 2 — bare (assumes you have already run: eval \"$(drawbridge env)\")\n" +
+		"# variant 2 — bare (assumes you have already run: eval \"$(trollbridge env)\")\n" +
 		"curl 'https://api.github.com/zen'\n"
 	if got != want {
 		t.Errorf("renderCurl GET mismatch.\n got:\n%s\nwant:\n%s", got, want)
@@ -563,7 +563,7 @@ func TestRenderCurl_BothVariantsBuiltFromSameArgs(t *testing.T) {
 	envPrefix := "https_proxy='http://127.0.0.1:8080' http_proxy='http://127.0.0.1:8080' "
 	// extract variant-1 line (after first variant comment)
 	v1Header := "# variant 1 — proxy env embedded inline (works in a fresh shell)\n"
-	v2Header := "# variant 2 — bare (assumes you have already run: eval \"$(drawbridge env)\")\n"
+	v2Header := "# variant 2 — bare (assumes you have already run: eval \"$(trollbridge env)\")\n"
 	v1Start := strings.Index(out, v1Header) + len(v1Header)
 	v1End := strings.Index(out[v1Start:], "\n") + v1Start
 	v2Start := strings.Index(out, v2Header) + len(v2Header)

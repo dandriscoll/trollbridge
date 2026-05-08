@@ -2,20 +2,20 @@
 
 Instructions for an LLM-driven coding agent (Claude Code, Cursor,
 Aider, OpenAI Codex, or similar) that has been asked by its user
-to set up and run drawbridge.
+to set up and run trollbridge.
 
 This file is **for the agent, not the human**. The human's quickstart
 is [`README.md`](./README.md). The full spec is [`DESIGN.md`](./DESIGN.md).
 Topology recipes are [`docs/deploy.md`](./docs/deploy.md). The
 annotated config reference is [`config.example.yaml`](./config.example.yaml).
 
-## What drawbridge is, in one paragraph
+## What trollbridge is, in one paragraph
 
-Drawbridge is an HTTP/HTTPS proxy that gates an agent's network
+Trollbridge is an HTTP/HTTPS proxy that gates an agent's network
 egress against a deterministic policy, with optional LLM-advisor
 classification on the gaps. The agent (you) sends requests through
 it; the proxy decides allow / deny / hold-for-approval and writes
-every decision to a JSON-lines audit log. Drawbridge is only
+every decision to a JSON-lines audit log. Trollbridge is only
 effective when the host firewall blocks every other network path —
 the proxy is the *only* way out. See `docs/deploy.md` for the
 firewall posture per topology.
@@ -34,7 +34,7 @@ firewall posture per topology.
   may not write them yourself when the system is running under the
   advisor's identity.
 - **TLS interception needs user action.** If the user wants HTTPS
-  body inspection, they must install `drawbridge-ca.crt` into the
+  body inspection, they must install `trollbridge-ca.crt` into the
   client's trust store. You cannot do this from inside the agent.
   Surface it as a step the user runs.
 - **Public repo.** This file ships in a public OSS repo. Do not paste
@@ -46,7 +46,7 @@ firewall posture per topology.
 Before running any command, get answers to these. Skipping any of
 them produces a configuration the user did not ask for.
 
-1. **Where will drawbridge run?** Local laptop, an Incus VM with a
+1. **Where will trollbridge run?** Local laptop, an Incus VM with a
    firewall, a sidecar container, or a system-wide host daemon. See
    `docs/deploy.md` §1 for trade-offs.
 2. **What is the agent's goal?** Pick one or more from the catalog
@@ -57,12 +57,12 @@ them produces a configuration the user did not ask for.
    or in `default-ask` mode. It cannot elevate above the
    deterministic policy. If on, get the provider, the model string,
    and the path the API key file will live at.
-4. **Should TLS be intercepted?** Without interception, drawbridge
+4. **Should TLS be intercepted?** Without interception, trollbridge
    sees only `host:port` for HTTPS — path, method, header, and body
    rules cannot fire. Default off; turn on only if the user accepts
    installing a CA cert into the client's trust store.
-5. **Where will the audit log live?** Default `/var/log/drawbridge/`
-   on system installs, `~/.drawbridge/` for laptop use. The user
+5. **Where will the audit log live?** Default `/var/log/trollbridge/`
+   on system installs, `~/.trollbridge/` for laptop use. The user
    may want it elsewhere (a dedicated volume, a syslog forwarder).
 
 Write the answers somewhere the user can see them before you start
@@ -72,11 +72,11 @@ configuring — chat is fine, a scratch file is better.
 
 ```sh
 make build
-./bin/drawbridge --help
-./bin/drawbridge version
+./bin/trollbridge --help
+./bin/trollbridge version
 ```
 
-`make build` produces a static `bin/drawbridge` (CGO disabled).
+`make build` produces a static `bin/trollbridge` (CGO disabled).
 Verify `--help` lists the commands you expect: `run`, `init`,
 `validate`, `decisions`, `logs`, `rules`, `approve`, `deny`,
 `sessions`, `selftest`, `ca`, `version`.
@@ -87,27 +87,27 @@ Pick a directory based on the topology decided in Step 0. For
 laptop use:
 
 ```sh
-./bin/drawbridge init -d ~/.drawbridge
+./bin/trollbridge init -d ~/.trollbridge
 ```
 
 For a system install, use a path the daemon will read (the systemd
-unit in `packaging/systemd/` reads `/etc/drawbridge/`).
+unit in `packaging/systemd/` reads `/etc/trollbridge/`).
 
 `init` writes four files into the directory:
 
 | file              | what it is                                       |
 |-------------------|--------------------------------------------------|
-| `drawbridge.yaml` | full config; default mode is `default-deny`      |
+| `trollbridge.yaml` | full config; default mode is `default-deny`      |
 | `allow.txt`       | flat allow list (one pattern per line)           |
 | `deny.txt`        | flat deny list (deny wins over allow)            |
 | `rules.yaml`      | optional structured rules (time windows, identity scope, ask_llm/ask_user effects) |
 
-Open `drawbridge.yaml` and skim it. It is a copy of
+Open `trollbridge.yaml` and skim it. It is a copy of
 `config.example.yaml` with sensible defaults; every key is annotated.
 
 ## Step 3 — Set policy posture
 
-Edit `drawbridge.yaml`'s `mode:` to one of:
+Edit `trollbridge.yaml`'s `mode:` to one of:
 
 - **`default-deny`** — only allow rules forward. Everything else
   (including everything not in `allow.txt`) is denied. Pick this when
@@ -182,7 +182,7 @@ review the first time it shows up.
 ## Step 5 — Configure the LLM advisor (optional)
 
 Skip this step if the user said the advisor should be off. Otherwise
-edit the `llm:` block in `drawbridge.yaml`:
+edit the `llm:` block in `trollbridge.yaml`:
 
 ```yaml
 llm:
@@ -190,7 +190,7 @@ llm:
   provider: anthropic                      # named provider, or any HTTP endpoint
   model: claude-opus-4-7                   # or another model the provider serves
   endpoint: https://api.anthropic.com
-  api_key_path: /etc/drawbridge/llm.key    # FILE path, not the key
+  api_key_path: /etc/trollbridge/llm.key    # FILE path, not the key
   timeout_seconds: 8
   cache_ttl_seconds: 300
   send_body: false                         # never send bodies by default
@@ -202,8 +202,8 @@ Then write the API key into the file you named:
 
 ```sh
 umask 077
-printf '%s' "$ANTHROPIC_API_KEY" > /etc/drawbridge/llm.key
-chmod 600 /etc/drawbridge/llm.key
+printf '%s' "$ANTHROPIC_API_KEY" > /etc/trollbridge/llm.key
+chmod 600 /etc/trollbridge/llm.key
 ```
 
 Do not echo the key into your chat history.
@@ -218,8 +218,8 @@ The wire payload (DESIGN.md §9 — a JSON object with `effect`,
 `suggested_rule`) is fixed across providers; point `endpoint:` at a
 wrapper that speaks it.
 
-**Verify the LLM connection** with `drawbridge doctor -c <path>`
-before the first `drawbridge run`: it loads the YAML, parses the
+**Verify the LLM connection** with `trollbridge doctor -c <path>`
+before the first `trollbridge run`: it loads the YAML, parses the
 rules and lists, and dispatches a synthetic classification call
 against the configured provider. Any mismatched endpoint, bad key,
 or misnamed provider surfaces as a `FAIL: …` line with a non-zero
@@ -243,24 +243,24 @@ exit, instead of being a silent degradation at runtime.
 Skip if the user did not opt in. Otherwise:
 
 ```sh
-./bin/drawbridge ca init                # writes drawbridge-ca.{crt,key}
-./bin/drawbridge ca export --out drawbridge-ca.crt
+./bin/trollbridge ca init                # writes trollbridge-ca.{crt,key}
+./bin/trollbridge ca export --out trollbridge-ca.crt
 ```
 
-Then **the user** installs `drawbridge-ca.crt` into the client's
+Then **the user** installs `trollbridge-ca.crt` into the client's
 trust store (OS-level, language runtime, browser — depends on what
 will run through the proxy). You cannot do this from inside the
 agent. Tell the user the exact path and ask them to confirm before
 flipping the switch.
 
-In `drawbridge.yaml`:
+In `trollbridge.yaml`:
 
 ```yaml
 interception:
   enabled: true
   ca:
-    cert_path: /etc/drawbridge/drawbridge-ca.crt
-    key_path:  /etc/drawbridge/drawbridge-ca.key
+    cert_path: /etc/trollbridge/trollbridge-ca.crt
+    key_path:  /etc/trollbridge/trollbridge-ca.key
   passthrough_hosts:
     - "*.googleapis.com"
     - "login.microsoftonline.com"
@@ -273,7 +273,7 @@ Without interception, HTTPS rules can only match on host and port.
 ## Step 7 — Validate
 
 ```sh
-./bin/drawbridge validate -c ~/.drawbridge/drawbridge.yaml
+./bin/trollbridge validate -c ~/.trollbridge/trollbridge.yaml
 ```
 
 Report any error to the user verbatim. Do not silence and re-try.
@@ -284,7 +284,7 @@ the CA files in place.
 ## Step 8 — Run and verify
 
 ```sh
-./bin/drawbridge run -c ~/.drawbridge/drawbridge.yaml
+./bin/trollbridge run -c ~/.trollbridge/trollbridge.yaml
 ```
 
 It prints the listen address. Now in another shell, exercise the
@@ -307,7 +307,7 @@ curl -sI https://example.com/ || true
 Then in a third shell:
 
 ```sh
-./bin/drawbridge logs tail --follow
+./bin/trollbridge logs tail --follow
 ```
 
 The user should see one decision per request, with effect, identity,
@@ -319,16 +319,16 @@ firewall.
 
 Tell the user the four day-to-day commands:
 
-- `drawbridge logs tail --follow` — live audit log.
-- `drawbridge decisions --since 1h` — recent decisions in summary.
-- `drawbridge approve <hold-id> [--scope once|session|rule]` —
+- `trollbridge logs tail --follow` — live audit log.
+- `trollbridge decisions --since 1h` — recent decisions in summary.
+- `trollbridge approve <hold-id> [--scope once|session|rule]` —
   resolve a held request as approved; the scope flag controls
   whether the decision is one-shot, lasts the session, or becomes a
   saved rule.
-- `drawbridge deny <hold-id> [--reason "…"]` — resolve a held
+- `trollbridge deny <hold-id> [--reason "…"]` — resolve a held
   request as denied; the reason lands in the audit log.
-- The interactive console — when `drawbridge run` is run on a
-  terminal (TTY), it offers a `drawbridge>` prompt for
+- The interactive console — when `trollbridge run` is run on a
+  terminal (TTY), it offers a `trollbridge>` prompt for
   `allow <pattern>` / `deny <pattern>` / `remove <pattern>` /
   `list [allow|deny]`. Edits go to the first configured allow / deny
   file and the file watcher reloads within ~1 second.
@@ -345,16 +345,16 @@ Read `docs/deploy.md` before doing any of these and ask the user
 which topology they chose in Step 0.
 
 - **Incus VM** — `packaging/incus/cloud-init.yaml` provisions a VM
-  with drawbridge running and the firewall locked to "egress only
-  via the host bridge IP". Run `drawbridge selftest --from-vm` to
+  with trollbridge running and the firewall locked to "egress only
+  via the host bridge IP". Run `trollbridge selftest --from-vm` to
   verify the VM cannot reach the internet except through the proxy.
 - **Sidecar container** — `packaging/docker/Dockerfile` builds a
   static image. Compose it on a network with `internal: true` so the
   sidecar is the only egress path. Mount the CA cert; set
   `HTTPS_PROXY` in the agent container.
-- **Systemd host daemon** — `packaging/systemd/drawbridge.service`
-  runs as a non-root user with `/etc/drawbridge/` as the config
-  root. `journalctl -u drawbridge` for the operational log.
+- **Systemd host daemon** — `packaging/systemd/trollbridge.service`
+  runs as a non-root user with `/etc/trollbridge/` as the config
+  root. `journalctl -u trollbridge` for the operational log.
 - **Firewall snippets** — `packaging/firewall/` has `nftables.conf`
   and `iptables.sh`. The proxy is only as strong as the firewall;
   if the agent has any other path out, the policy doesn't bind.
@@ -363,7 +363,7 @@ which topology they chose in Step 0.
 
 When you finish, summarise (in chat, briefly):
 
-1. Topology chosen and where drawbridge is running.
+1. Topology chosen and where trollbridge is running.
 2. Mode and the high-level policy ("default-deny with an allow list
    of N hosts" or "default-ask with the advisor on").
 3. Whether TLS interception is on, and if so, whether the CA cert is

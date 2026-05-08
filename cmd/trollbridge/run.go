@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/console"
-	"github.com/dandriscoll/drawbridge/internal/oplog"
-	"github.com/dandriscoll/drawbridge/internal/policy"
-	"github.com/dandriscoll/drawbridge/internal/server"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/console"
+	"github.com/dandriscoll/trollbridge/internal/oplog"
+	"github.com/dandriscoll/trollbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/server"
 	"github.com/spf13/cobra"
 )
 
@@ -80,7 +80,7 @@ func newRunCmd() *cobra.Command {
 			ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer cancel()
 
-			// Fast-path lists are inline in drawbridge.yaml's
+			// Fast-path lists are inline in trollbridge.yaml's
 			// `lists.allow` / `lists.deny`. The console REPL writes
 			// new patterns back to the file via configwrite and
 			// triggers an in-process re-parse via console.Config.
@@ -102,7 +102,7 @@ func newRunCmd() *cobra.Command {
 			}()
 
 			// Console REPL when stdin is a tty. REPL mutations write
-			// back to drawbridge.yaml and trigger an in-process
+			// back to trollbridge.yaml and trigger an in-process
 			// re-parse of the lists.
 			if !noConsole && console.IsInteractive(os.Stdin) {
 				go func() {
@@ -142,7 +142,7 @@ func newRunCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml (default: $DRAWBRIDGE_CONFIG, then $XDG_CONFIG_HOME/drawbridge/drawbridge.yaml)")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml (default: $TROLLBRIDGE_CONFIG, then $XDG_CONFIG_HOME/trollbridge/trollbridge.yaml)")
 	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the interactive console even when stdin is a tty")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "alias for --log-level=debug; emits per-request lifecycle records on the operational log")
 	return cmd

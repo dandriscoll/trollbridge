@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/release.sh — bump version, tag, and cut a drawbridge release.
+# scripts/release.sh — bump version, tag, and cut a trollbridge release.
 #
 # Single-command release flow: reads the current version from the
 # README, prompts for major/minor/patch, computes the new version,
@@ -127,7 +127,7 @@ sed_inplace() {
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 if [[ -z "$REPO_ROOT" ]]; then
-    echo "release failed: not inside a git repository; fix: cd into the drawbridge checkout" >&2
+    echo "release failed: not inside a git repository; fix: cd into the trollbridge checkout" >&2
     exit 2
 fi
 cd "$REPO_ROOT"
@@ -139,9 +139,9 @@ SERVER_GO="$REPO_ROOT/internal/server/server.go"
 # ---------- discover current version ----------
 
 # Anchor: the README's release-asset URL fragment, e.g.,
-#   releases/download/v0.1.0/drawbridge_v0.1.0_linux_amd64.tar.gz
+#   releases/download/v0.1.0/trollbridge_v0.1.0_linux_amd64.tar.gz
 # Or with a pre-release suffix:
-#   releases/download/v0.2.0-rc.1/drawbridge_v0.2.0-rc.1_linux_amd64.tar.gz
+#   releases/download/v0.2.0-rc.1/trollbridge_v0.2.0-rc.1_linux_amd64.tar.gz
 # Stable across releases because release.sh always tarball-names the
 # same way.
 discover_current_version() {
@@ -263,12 +263,12 @@ preflight_gh_release() {
 apply_bumps() {
     local old="$1" new="$2"
     # README: only the URL fragments. Anchored on the surrounding
-    # `releases/download/` path and the `drawbridge_v` filename
+    # `releases/download/` path and the `trollbridge_v` filename
     # prefix to avoid clobbering unrelated text.
     sed_inplace -E \
         -e "s|releases/download/v${old}/|releases/download/v${new}/|g" \
-        -e "s|drawbridge_v${old}_|drawbridge_v${new}_|g" \
-        -e "s|drawbridge_v${old}_linux_amd64/drawbridge|drawbridge_v${new}_linux_amd64/drawbridge|g" \
+        -e "s|trollbridge_v${old}_|trollbridge_v${new}_|g" \
+        -e "s|trollbridge_v${old}_linux_amd64/trollbridge|trollbridge_v${new}_linux_amd64/trollbridge|g" \
         "$README"
     # server.go: only the literal `var Version = "<old>-dev"` line.
     sed_inplace -E "s|^var Version = \"${old}-dev\"|var Version = \"${new}-dev\"|" "$SERVER_GO"
@@ -284,8 +284,8 @@ apply_bumps() {
     # the hand-edit case would defeat vacuously).
     local missing=()
     grep -q "releases/download/v${new}/" "$README" || missing+=("URL fragment 'releases/download/v${new}/'")
-    grep -q "drawbridge_v${new}_" "$README" || missing+=("tarball-name fragment 'drawbridge_v${new}_'")
-    grep -q "drawbridge_v${new}_linux_amd64/drawbridge" "$README" || missing+=("install-line fragment 'drawbridge_v${new}_linux_amd64/drawbridge'")
+    grep -q "trollbridge_v${new}_" "$README" || missing+=("tarball-name fragment 'trollbridge_v${new}_'")
+    grep -q "trollbridge_v${new}_linux_amd64/trollbridge" "$README" || missing+=("install-line fragment 'trollbridge_v${new}_linux_amd64/trollbridge'")
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo "bump failed: README is missing the following after sed:" >&2
         printf '  - %s\n' "${missing[@]}" >&2
@@ -305,7 +305,7 @@ commit_and_tag() {
     git add "$README" "$SERVER_GO"
     git commit -m "release: bump version to v${new}" \
                -m "Updates the README install-snippet URL and the internal/server/server.go" \
-               -m "var Version fallback. The fallback is shown only when drawbridge is" \
+               -m "var Version fallback. The fallback is shown only when trollbridge is" \
                -m "built without the release script's -ldflags injection (e.g. 'go run')." \
                >/dev/null
     git tag -a "v${new}" -m "release v${new}"
@@ -316,7 +316,7 @@ commit_and_tag() {
 # ---------- build matrix ----------
 
 LDFLAGS_FOR() {
-    echo "-s -w -X github.com/dandriscoll/drawbridge/internal/server.Version=v$1"
+    echo "-s -w -X github.com/dandriscoll/trollbridge/internal/server.Version=v$1"
 }
 
 TARGETS=(
@@ -336,18 +336,18 @@ build_matrix() {
         os="${target%/*}"
         arch="${target#*/}"
         stage="$(mktemp -d)"
-        dirname="drawbridge_v${new}_${os}_${arch}"
+        dirname="trollbridge_v${new}_${os}_${arch}"
         mkdir -p "$stage/$dirname"
         echo "build: $dirname" >&2
         CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
             go build -trimpath -ldflags="$ldflags" \
-            -o "$stage/$dirname/drawbridge" ./cmd/drawbridge
+            -o "$stage/$dirname/trollbridge" ./cmd/trollbridge
         cp LICENSE README.md "$stage/$dirname/"
         tarname="${dirname}.tar.gz"
         tar -czf "$DIST/$tarname" -C "$stage" "$dirname"
         rm -rf "$stage"
     done
-    (cd "$DIST" && $SHA256_CMD drawbridge_*.tar.gz > SHA256SUMS)
+    (cd "$DIST" && $SHA256_CMD trollbridge_*.tar.gz > SHA256SUMS)
 }
 
 # ---------- push + publish ----------
@@ -370,7 +370,7 @@ push_and_publish() {
         gh release delete "v${new}" --yes >/dev/null 2>&1 || true
     fi
     echo "publish: creating release v${new}" >&2
-    gh release create "v${new}" --generate-notes "$DIST"/drawbridge_*.tar.gz "$DIST/SHA256SUMS"
+    gh release create "v${new}" --generate-notes "$DIST"/trollbridge_*.tar.gz "$DIST/SHA256SUMS"
     echo "release: $(gh release view "v${new}" --json url -q .url)" >&2
 }
 

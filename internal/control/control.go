@@ -1,4 +1,4 @@
-// Package control implements drawbridge's HTTPS control plane (the
+// Package control implements trollbridge's HTTPS control plane (the
 // approval API). It listens on the same adapter as the proxy, on
 // `ports.control`, with mTLS enforced for every endpoint except
 // `/v1/healthz`. Operator client certs are issued by the same CA
@@ -19,9 +19,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/approvals"
-	"github.com/dandriscoll/drawbridge/internal/policy"
-	"github.com/dandriscoll/drawbridge/internal/sessions"
+	"github.com/dandriscoll/trollbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/sessions"
 )
 
 // CAOps is the subset of the CA package the control plane needs.
@@ -93,7 +93,7 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	if host != "" && host != "0.0.0.0" && host != "127.0.0.1" && host != "localhost" {
 		sans = append(sans, host)
 	}
-	serverCert, err := s.tlsProv.IssueServerCertFor("drawbridge-controller", sans)
+	serverCert, err := s.tlsProv.IssueServerCertFor("trollbridge-controller", sans)
 	if err != nil {
 		return "", fmt.Errorf("control plane: issue server cert: %w", err)
 	}
@@ -161,7 +161,7 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 				s.opLog.Error("control plane error",
 					"event", "control_plane_error", "error", err.Error())
 			} else {
-				fmt.Fprintf(os.Stderr, "drawbridge: control plane error: %v\n", err)
+				fmt.Fprintf(os.Stderr, "trollbridge: control plane error: %v\n", err)
 			}
 		}
 	}()

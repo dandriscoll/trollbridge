@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dandriscoll/drawbridge/internal/advisor"
+	"github.com/dandriscoll/trollbridge/internal/advisor"
 )
 
-// minimalDoctorYaml writes a v3 drawbridge.yaml for doctor tests.
+// minimalDoctorYaml writes a v3 trollbridge.yaml for doctor tests.
 // llmEnabled controls whether the llm block is enabled; the
 // fixture also writes a rules.yaml referenced by policy.include.
 func minimalDoctorYaml(t *testing.T, llmEnabled bool) string {
@@ -20,7 +20,7 @@ func minimalDoctorYaml(t *testing.T, llmEnabled bool) string {
 	dir := t.TempDir()
 	rulesPath := filepath.Join(dir, "rules.yaml")
 	mustWrite(t, rulesPath, "")
-	cfgPath := filepath.Join(dir, "drawbridge.yaml")
+	cfgPath := filepath.Join(dir, "trollbridge.yaml")
 	llmBlock := "llm:\n  enabled: false\n"
 	if llmEnabled {
 		llmBlock = strings.Join([]string{
@@ -33,7 +33,7 @@ func minimalDoctorYaml(t *testing.T, llmEnabled bool) string {
 		}, "\n")
 	}
 	body := strings.Join([]string{
-		"drawbridge_version: 3",
+		"trollbridge_version: 3",
 		"proxy: lo:8080",
 		"control: 0",
 		"controller: {auth: mtls}",
@@ -135,8 +135,8 @@ func TestDoctor_LlmDispatchError_ReturnsRuntimeErr(t *testing.T) {
 
 func TestDoctor_BadYaml_ReturnsConfigErr(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "drawbridge.yaml")
-	mustWrite(t, cfgPath, "drawbridge_version: 2\nadapter: lo\n")
+	cfgPath := filepath.Join(dir, "trollbridge.yaml")
+	mustWrite(t, cfgPath, "trollbridge_version: 2\nadapter: lo\n")
 
 	var stdout bytes.Buffer
 	cmd := newDoctorCmd()

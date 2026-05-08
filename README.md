@@ -1,4 +1,4 @@
-# drawbridge
+# trollbridge
 
 An LLM-powered HTTP/HTTPS proxy that lets LLM agents reach network
 resources under controlled, inspectable, policy-governed conditions.
@@ -8,7 +8,7 @@ deps.
 
 - [`DESIGN.md`](DESIGN.md) — full design document.
 - [`AGENTS.md`](AGENTS.md) — instructions for an LLM coding agent
-  asked to set up drawbridge for you.
+  asked to set up trollbridge for you.
 - [`docs/deploy.md`](docs/deploy.md) — deployment recipes.
 - [`config.example.yaml`](config.example.yaml) — annotated config;
   the simple authoring surface lives inline as `lists.allow` /
@@ -22,15 +22,15 @@ deps.
 
 Pre-built binaries for Linux and macOS (amd64 and arm64) are
 attached to each tagged release on the
-[releases page](https://github.com/dandriscoll/drawbridge/releases).
+[releases page](https://github.com/dandriscoll/trollbridge/releases).
 
 ```sh
-curl -L -o drawbridge.tar.gz \
-  https://github.com/dandriscoll/drawbridge/releases/download/v0.3.1/drawbridge_v0.3.1_linux_amd64.tar.gz
+curl -L -o trollbridge.tar.gz \
+  https://github.com/dandriscoll/trollbridge/releases/download/v0.3.1/trollbridge_v0.3.1_linux_amd64.tar.gz
 # Verify against the release's SHA256SUMS file before extracting.
-tar -xzf drawbridge.tar.gz
-sudo install -m 0755 drawbridge_v0.3.1_linux_amd64/drawbridge /usr/local/bin/drawbridge
-drawbridge version
+tar -xzf trollbridge.tar.gz
+sudo install -m 0755 trollbridge_v0.3.1_linux_amd64/trollbridge /usr/local/bin/trollbridge
+trollbridge version
 ```
 
 ## Build from source
@@ -38,23 +38,23 @@ drawbridge version
 Requires Go 1.26+.
 
 ```sh
-git clone https://github.com/dandriscoll/drawbridge.git
-cd drawbridge
+git clone https://github.com/dandriscoll/trollbridge.git
+cd trollbridge
 make build
-./bin/drawbridge --help
-./bin/drawbridge init -d ~/.drawbridge
-./bin/drawbridge validate -c ~/.drawbridge/drawbridge.yaml
-./bin/drawbridge run -c ~/.drawbridge/drawbridge.yaml
+./bin/trollbridge --help
+./bin/trollbridge init -d ~/.trollbridge
+./bin/trollbridge validate -c ~/.trollbridge/trollbridge.yaml
+./bin/trollbridge run -c ~/.trollbridge/trollbridge.yaml
 ```
 
 For verbose per-request operational output:
 
 ```sh
-./bin/drawbridge run -c ~/.drawbridge/drawbridge.yaml --verbose
+./bin/trollbridge run -c ~/.trollbridge/trollbridge.yaml --verbose
 # or, equivalently:
-./bin/drawbridge --log-level=debug run -c ~/.drawbridge/drawbridge.yaml
+./bin/trollbridge --log-level=debug run -c ~/.trollbridge/trollbridge.yaml
 # or, via env (works for any subcommand):
-DRAWBRIDGE_LOG_LEVEL=debug ./bin/drawbridge run -c ~/.drawbridge/drawbridge.yaml
+TROLLBRIDGE_LOG_LEVEL=debug ./bin/trollbridge run -c ~/.trollbridge/trollbridge.yaml
 ```
 
 Operational lines carry a `request_id=` field that correlates with
@@ -63,11 +63,11 @@ the same field in the audit log.
 Then in another shell, wire the client's proxy env:
 
 ```sh
-eval "$(drawbridge env -c ~/.drawbridge/drawbridge.yaml)"
+eval "$(trollbridge env -c ~/.trollbridge/trollbridge.yaml)"
 curl https://example.com   # subject to your policy
 ```
 
-`drawbridge env` reads the listen address from your config and emits
+`trollbridge env` reads the listen address from your config and emits
 the upper- and lowercase `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`
 exports a client needs.
 
@@ -77,17 +77,17 @@ When the policy holds a request for operator approval, list and
 resolve held requests in real time with:
 
 ```sh
-drawbridge tui -c ~/.drawbridge/drawbridge.yaml
+trollbridge tui -c ~/.trollbridge/trollbridge.yaml
 ```
 
 Keys: `a` approve · `d` deny · `↑↓` (or `j`/`k`) select · `r` refresh
 now · `q` quit. The list refreshes automatically as the queue
-changes; one-shot `drawbridge approve <id>` / `drawbridge deny <id>`
+changes; one-shot `trollbridge approve <id>` / `trollbridge deny <id>`
 remain available for scripted use.
 
 ## Configuration (schema v3)
 
-`drawbridge.yaml` is organised around four operator decisions:
+`trollbridge.yaml` is organised around four operator decisions:
 
 1. **per-surface bind** — each of `proxy:`, `control:`, `metrics:`
    is a single `<host>:<port>` string. Host aliases: `all` =
@@ -97,7 +97,7 @@ remain available for scripted use.
    `lo:8081`. `metrics: 0` disables the (unimplemented)
    Prometheus endpoint.
 2. **`lists`** — inline `allow:` / `deny:` patterns. The console
-   REPL writes back to drawbridge.yaml; comments outside `lists:`
+   REPL writes back to trollbridge.yaml; comments outside `lists:`
    survive. Each entry is `host[:port][/path]` with an optional
    `<scheme>://` prefix and `*` wildcards.
 3. **`llm`** — provider / model / endpoint / api-key. Provider
@@ -107,39 +107,39 @@ remain available for scripted use.
 4. **`llm.directives`** — inline multi-line system prompt for the
    advisor.
 
-Run `drawbridge doctor -c <path>` after editing the YAML — it
+Run `trollbridge doctor -c <path>` after editing the YAML — it
 loads the config, parses the rules and lists, and (when LLM is
 enabled) issues a real classification call so misconfigured
-endpoints / keys / providers fail loud before `drawbridge run`.
+endpoints / keys / providers fail loud before `trollbridge run`.
 
 The control plane requires mTLS, signed by the same CA used for
 TLS interception. First-run ritual:
 
 ```sh
-./bin/drawbridge ca init                         # generate the CA
-./bin/drawbridge ca client-cert <op-name>        # mint your client cert
-mv <op-name>.crt ~/.drawbridge/controller-client.crt
-mv <op-name>.key ~/.drawbridge/controller-client.key
+./bin/trollbridge ca init                         # generate the CA
+./bin/trollbridge ca client-cert <op-name>        # mint your client cert
+mv <op-name>.crt ~/.trollbridge/controller-client.crt
+mv <op-name>.key ~/.trollbridge/controller-client.key
 ```
 
-The CLI auto-loads the cert/key from `~/.drawbridge/`; override with
-`DRAWBRIDGE_CONTROLLER_CERT` / `DRAWBRIDGE_CONTROLLER_KEY`.
+The CLI auto-loads the cert/key from `~/.trollbridge/`; override with
+`TROLLBRIDGE_CONTROLLER_CERT` / `TROLLBRIDGE_CONTROLLER_KEY`.
 
 For TLS interception (separate from controller mTLS — same CA):
 
 ```sh
-# install drawbridge-ca.crt into your *client* trust store
-# set interception.enabled: true in drawbridge.yaml
+# install trollbridge-ca.crt into your *client* trust store
+# set interception.enabled: true in trollbridge.yaml
 ```
 
-When `drawbridge run` is interactive, it presents a console
+When `trollbridge run` is interactive, it presents a console
 prompt for live edits to `lists.allow` / `lists.deny` in
-drawbridge.yaml:
+trollbridge.yaml:
 
 ```
-drawbridge> allow api.github.com
+trollbridge> allow api.github.com
 added api.github.com to allow (3 patterns total)
-drawbridge> list allow
+trollbridge> list allow
 allow:
   127.0.0.1
   api.github.com
@@ -147,7 +147,7 @@ allow:
 (3 patterns)
 ```
 
-Mutations write back to drawbridge.yaml in place via a
+Mutations write back to trollbridge.yaml in place via a
 yaml.v3 Node-API edit — comments outside the `lists:`
 subtree survive. The running daemon re-parses the file
 after each mutation. List mutation is human-only — the

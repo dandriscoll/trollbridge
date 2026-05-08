@@ -1,5 +1,5 @@
 // Package configwrite mutates `lists.allow` and `lists.deny` inside a
-// drawbridge.yaml file in place, preserving comments and structure
+// trollbridge.yaml file in place, preserving comments and structure
 // outside the touched subtree by using gopkg.in/yaml.v3's Node API.
 //
 // Comments outside the lists subtree (head comments on top-level
@@ -215,7 +215,7 @@ func atomicWrite(path string, data []byte, fallbackMode os.FileMode) error {
 		mode = info.Mode().Perm()
 	}
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".drawbridge-yaml-*.tmp")
+	tmp, err := os.CreateTemp(dir, ".trollbridge-yaml-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}

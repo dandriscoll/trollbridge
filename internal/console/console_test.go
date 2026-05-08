@@ -11,14 +11,14 @@ import (
 	"time"
 )
 
-// minimalV2Yaml writes a v2 drawbridge.yaml in dir with the given
+// minimalV2Yaml writes a v2 trollbridge.yaml in dir with the given
 // allow/deny seed entries. Returns the file path.
 func minimalV2Yaml(t *testing.T, allowSeed, denySeed []string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "drawbridge.yaml")
+	path := filepath.Join(dir, "trollbridge.yaml")
 	var b strings.Builder
-	b.WriteString("drawbridge_version: 3\n")
+	b.WriteString("trollbridge_version: 3\n")
 	b.WriteString("proxy: lo:8080\n")
 	b.WriteString("control: lo:8081\n")
 	b.WriteString("controller: {auth: mtls}\n")
@@ -38,7 +38,7 @@ func minimalV2Yaml(t *testing.T, allowSeed, denySeed []string) string {
 	return path
 }
 
-// runWith drives the REPL against a v2 drawbridge.yaml and returns
+// runWith drives the REPL against a v2 trollbridge.yaml and returns
 // captured stdout.
 func runWith(t *testing.T, configPath, input string) string {
 	t.Helper()

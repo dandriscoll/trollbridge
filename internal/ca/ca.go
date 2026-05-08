@@ -1,4 +1,4 @@
-// Package ca generates and manages drawbridge's local CA + on-demand
+// Package ca generates and manages trollbridge's local CA + on-demand
 // leaf certs for TLS interception. See DESIGN.md §7.
 package ca
 
@@ -82,8 +82,8 @@ func Init(certPath, keyPath string, kt KeyType, force bool) (*CA, error) {
 	}
 	hostname, _ := os.Hostname()
 	subject := pkix.Name{
-		CommonName: fmt.Sprintf("drawbridge local CA %s %s", hostname, time.Now().UTC().Format("20060102")),
-		Organization: []string{"drawbridge"},
+		CommonName: fmt.Sprintf("trollbridge local CA %s %s", hostname, time.Now().UTC().Format("20060102")),
+		Organization: []string{"trollbridge"},
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          newSerial(),
@@ -231,7 +231,7 @@ func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
 
 // IssueClientCert mints a client-auth leaf signed by this CA. The
 // returned tls.Certificate carries Leaf populated. Used to give an
-// operator (`drawbridge ca client-cert <name>`) credentials for the
+// operator (`trollbridge ca client-cert <name>`) credentials for the
 // mTLS-locked control plane. CN=name; no SAN; ExtKeyUsage=ClientAuth;
 // validity = 1 year.
 func (c *CA) IssueClientCert(name string) (*tls.Certificate, error) {

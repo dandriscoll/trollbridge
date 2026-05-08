@@ -10,7 +10,7 @@ import (
 func writeYaml(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "drawbridge.yaml")
+	path := filepath.Join(dir, "trollbridge.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -18,7 +18,7 @@ func writeYaml(t *testing.T, body string) string {
 }
 
 func TestLoad_V3Minimal(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 proxy: lo:8080
 control: lo:8081
 controller: {auth: mtls}
@@ -41,7 +41,7 @@ logging: {audit_path: /tmp/a.jsonl}
 }
 
 func TestLoad_AllAliasResolvesTo0000(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 proxy: all:8080
 control: lo:8081
 controller: {auth: mtls}
@@ -61,7 +61,7 @@ logging: {audit_path: /tmp/a.jsonl}
 }
 
 func TestLoad_PerSurfaceDifferentHosts(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 proxy: all:8080
 control: lo:8081
 controller: {auth: mtls}
@@ -79,7 +79,7 @@ logging: {audit_path: /tmp/a.jsonl}
 }
 
 func TestLoad_V1Rejected(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 1
+	path := writeYaml(t, `trollbridge_version: 1
 listen: {address: 127.0.0.1, port: 8080}
 mode: default-deny
 `)
@@ -87,7 +87,7 @@ mode: default-deny
 	if err == nil {
 		t.Fatal("Load: expected error for v1 config; got nil")
 	}
-	for _, want := range []string{"version 1", "no longer supported", "drawbridge_version: 3", "proxy:", "control:"} {
+	for _, want := range []string{"version 1", "no longer supported", "trollbridge_version: 3", "proxy:", "control:"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("v1 rejection missing %q in:\n%s", want, err.Error())
 		}
@@ -95,7 +95,7 @@ mode: default-deny
 }
 
 func TestLoad_V2Rejected(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 2
+	path := writeYaml(t, `trollbridge_version: 2
 adapter: lo
 ports: {proxy: 8080, control: 8081}
 controller: {auth: mtls}
@@ -105,7 +105,7 @@ mode: default-deny
 	if err == nil {
 		t.Fatal("Load: expected error for v2 config; got nil")
 	}
-	for _, want := range []string{"version 2", "no longer supported", "drawbridge_version: 3", "proxy:", "control:", "all", "lo"} {
+	for _, want := range []string{"version 2", "no longer supported", "trollbridge_version: 3", "proxy:", "control:", "all", "lo"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("v2 rejection missing %q in:\n%s", want, err.Error())
 		}
@@ -113,7 +113,7 @@ mode: default-deny
 }
 
 func TestLoad_AppliesDefaults(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 controller: {auth: mtls}
 mode: default-deny
 logging: {audit_path: /tmp/a.jsonl}
@@ -134,7 +134,7 @@ logging: {audit_path: /tmp/a.jsonl}
 }
 
 func TestLoad_ControlDisabledExplicit(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 proxy: lo:8080
 control: 0
 controller: {auth: mtls}
@@ -151,7 +151,7 @@ logging: {audit_path: /tmp/a.jsonl}
 }
 
 func TestLoad_RejectsNonMtlsControllerAuth(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 proxy: lo:8080
 control: lo:8081
 controller: {auth: bearer}
@@ -233,7 +233,7 @@ func TestParseBind_DisabledForms(t *testing.T) {
 }
 
 func TestValidate_RejectsSameHostSamePortCollision(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 proxy: lo:8080
 control: lo:8080
 controller: {auth: mtls}
@@ -252,7 +252,7 @@ logging: {audit_path: /tmp/a.jsonl}
 func TestValidate_AcceptsSamePortDifferentHost(t *testing.T) {
 	// Same port on different hosts is legal; the kernel decides
 	// whether the binds actually overlap.
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 proxy:   all:8080
 control: 127.0.0.1:8081
 controller: {auth: mtls}
@@ -265,7 +265,7 @@ logging: {audit_path: /tmp/a.jsonl}
 }
 
 func TestValidate_ProxyRequired(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 proxy: 0
 controller: {auth: mtls}
 mode: default-deny
@@ -281,7 +281,7 @@ logging: {audit_path: /tmp/a.jsonl}
 }
 
 func TestLoad_ListsParsedInline(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 3
+	path := writeYaml(t, `trollbridge_version: 3
 proxy: lo:8080
 control: lo:8081
 controller: {auth: mtls}

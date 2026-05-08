@@ -18,7 +18,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/config"
 )
 
 // ErrHoldNotFound is returned when the server responds 404 to a
@@ -106,8 +106,8 @@ func controllerURL(cfg *config.Config, path string) string {
 
 // httpsClient returns an http.Client configured with the operator's
 // client cert + the daemon's CA. Cert and CA paths come from env
-// vars (DRAWBRIDGE_CONTROLLER_CERT / _KEY / _CA) or, when unset, the
-// default locations (~/.drawbridge/controller-client.{crt,key} +
+// vars (TROLLBRIDGE_CONTROLLER_CERT / _KEY / _CA) or, when unset, the
+// default locations (~/.trollbridge/controller-client.{crt,key} +
 // the CA cert path from the config's interception block).
 func httpsClient(cfg *config.Config) (*http.Client, error) {
 	certPath, keyPath, caPath, err := resolveCertPaths(cfg)
@@ -116,11 +116,11 @@ func httpsClient(cfg *config.Config) (*http.Client, error) {
 	}
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("load operator cert (%s + %s): %w; fix: drawbridge ca client-cert <name>", certPath, keyPath, err)
+		return nil, fmt.Errorf("load operator cert (%s + %s): %w; fix: trollbridge ca client-cert <name>", certPath, keyPath, err)
 	}
 	pool, err := loadCAPool(caPath)
 	if err != nil {
-		return nil, fmt.Errorf("load drawbridge CA (%s): %w; fix: drawbridge ca init", caPath, err)
+		return nil, fmt.Errorf("load trollbridge CA (%s): %w; fix: trollbridge ca init", caPath, err)
 	}
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{
@@ -133,15 +133,15 @@ func httpsClient(cfg *config.Config) (*http.Client, error) {
 }
 
 func resolveCertPaths(cfg *config.Config) (cert, key, ca string, err error) {
-	cert = os.Getenv("DRAWBRIDGE_CONTROLLER_CERT")
-	key = os.Getenv("DRAWBRIDGE_CONTROLLER_KEY")
-	ca = os.Getenv("DRAWBRIDGE_CONTROLLER_CA")
+	cert = os.Getenv("TROLLBRIDGE_CONTROLLER_CERT")
+	key = os.Getenv("TROLLBRIDGE_CONTROLLER_KEY")
+	ca = os.Getenv("TROLLBRIDGE_CONTROLLER_CA")
 	if cert == "" || key == "" {
 		home, herr := os.UserHomeDir()
 		if herr != nil {
 			return "", "", "", fmt.Errorf("locate operator cert: %w", herr)
 		}
-		base := filepath.Join(home, ".drawbridge")
+		base := filepath.Join(home, ".trollbridge")
 		if cert == "" {
 			cert = filepath.Join(base, "controller-client.crt")
 		}
@@ -153,7 +153,7 @@ func resolveCertPaths(cfg *config.Config) (cert, key, ca string, err error) {
 		ca = cfg.Interception.CA.CertPath
 	}
 	if ca == "" {
-		return "", "", "", fmt.Errorf("drawbridge CA cert path unknown; set interception.ca.cert_path or DRAWBRIDGE_CONTROLLER_CA")
+		return "", "", "", fmt.Errorf("trollbridge CA cert path unknown; set interception.ca.cert_path or TROLLBRIDGE_CONTROLLER_CA")
 	}
 	return cert, key, ca, nil
 }

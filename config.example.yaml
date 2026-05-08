@@ -1,14 +1,14 @@
-# drawbridge example configuration (schema v3).
+# trollbridge example configuration (schema v3).
 #
 # Organized around the four operator decisions:
 #   1. binds — per-surface listen addresses (proxy / control / metrics)
-#   2. lists — what to allow / deny (inline; drawbridge mutates this file)
+#   2. lists — what to allow / deny (inline; trollbridge mutates this file)
 #   3. llm   — which LLM is the advisor
 #   4. directives — what the advisor is told (inline multi-line prompt)
 #
 # See DESIGN.md for the full specification.
 
-drawbridge_version: 3
+trollbridge_version: 3
 
 # 1. Per-surface binds. Each value combines host and port:
 #      proxy:   lo:8080         # 127.0.0.1
@@ -37,7 +37,7 @@ metrics: 0
 #      *                                 any host (use sparingly)
 #      127.0.0.1                         IP address
 #
-#    Drawbridge writes this list back when the operator types
+#    Trollbridge writes this list back when the operator types
 #    `allow X` / `deny X` / `remove X` in the REPL — comments
 #    elsewhere in this file survive; entry-level comments inside
 #    `lists` are best-effort.
@@ -61,7 +61,7 @@ llm:
   provider: anthropic
   model:    claude-opus-4-7
   endpoint: https://api.anthropic.com
-  api_key_path: /etc/drawbridge/llm.key
+  api_key_path: /etc/trollbridge/llm.key
   timeout_seconds: 8
   cache_ttl_seconds: 300
   send_body: false
@@ -72,7 +72,7 @@ llm:
   # To use Azure OpenAI instead of Anthropic, replace the llm block
   # above with the one below. The endpoint is the deployment-scoped
   # chat-completions URL; the api-version is the only Azure-specific
-  # query string. Drawbridge sends `api-key: <key>` (not Bearer)
+  # query string. Trollbridge sends `api-key: <key>` (not Bearer)
   # automatically when provider is `aoai`.
   #
   # llm:
@@ -80,7 +80,7 @@ llm:
   #   provider: aoai
   #   model:    <deployment-name>     # the Azure deployment, not the underlying model id
   #   endpoint: https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-02-15-preview
-  #   api_key_path: /etc/drawbridge/aoai.key
+  #   api_key_path: /etc/trollbridge/aoai.key
   #   timeout_seconds: 8
   #   cache_ttl_seconds: 300
   #   send_body: false
@@ -91,7 +91,7 @@ llm:
   # 4. Directives — the operator's system-prompt content for the
   #    advisor. Sent verbatim with every classification request.
   directives: |
-    You are drawbridge's security advisor. For each HTTP request you
+    You are trollbridge's security advisor. For each HTTP request you
     receive, decide allow / deny / ask_user. Refuse anything that
     exfiltrates credentials, contacts cloud metadata services, or
     looks like data exfiltration to an unfamiliar destination. When
@@ -101,15 +101,15 @@ llm:
 # mTLS is enforced (the only supported mode in v2). Client certs
 # are issued by the same CA used for TLS interception:
 #
-#   drawbridge ca init
-#   drawbridge ca client-cert <op-name>
+#   trollbridge ca init
+#   trollbridge ca client-cert <op-name>
 #
 # The CLI auto-loads the cert+key from
-# ~/.drawbridge/controller-client.{crt,key} (override via
-# DRAWBRIDGE_CONTROLLER_CERT / _KEY).
+# ~/.trollbridge/controller-client.{crt,key} (override via
+# TROLLBRIDGE_CONTROLLER_CERT / _KEY).
 controller:
   auth: mtls
-  # client_ca_path: /etc/drawbridge/different-ca.crt  # optional override
+  # client_ca_path: /etc/trollbridge/different-ca.crt  # optional override
 
 mode: default-ask
 
@@ -118,8 +118,8 @@ mode: default-ask
 interception:
   enabled: false
   ca:
-    cert_path: /etc/drawbridge/drawbridge-ca.crt
-    key_path:  /etc/drawbridge/drawbridge-ca.key
+    cert_path: /etc/trollbridge/trollbridge-ca.crt
+    key_path:  /etc/trollbridge/trollbridge-ca.key
   leaf_key_type: rsa-4096
   passthrough_hosts:
     - "*.googleapis.com"
@@ -141,7 +141,7 @@ redaction:
     - regex: "(?i)token|key|secret|password"
 
 logging:
-  audit_path: /var/log/drawbridge/audit.jsonl
+  audit_path: /var/log/trollbridge/audit.jsonl
   audit_buffer_size: 1024
   audit_overflow: deny
   operational_path: stderr

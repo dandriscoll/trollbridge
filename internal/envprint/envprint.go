@@ -1,13 +1,13 @@
 // Package envprint renders the shell `export` lines an HTTP client
-// needs to route through a running drawbridge proxy. Used by the
-// `drawbridge env` subcommand. Pure function over Config; no I/O.
+// needs to route through a running trollbridge proxy. Used by the
+// `trollbridge env` subcommand. Pure function over Config; no I/O.
 package envprint
 
 import (
 	"fmt"
 	"strings"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/config"
 )
 
 // Render returns a multi-line string suitable for `eval "$(...)"`.
@@ -21,7 +21,7 @@ func Render(cfg *config.Config) string {
 	noProxy := "localhost,127.0.0.1"
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "# drawbridge env: client exports for HTTPS_PROXY/HTTP_PROXY/NO_PROXY (proxy on %s)\n", proxyURL)
+	fmt.Fprintf(&b, "# trollbridge env: client exports for HTTPS_PROXY/HTTP_PROXY/NO_PROXY (proxy on %s)\n", proxyURL)
 	fmt.Fprintf(&b, "export HTTPS_PROXY=%s\n", proxyURL)
 	fmt.Fprintf(&b, "export HTTP_PROXY=%s\n", proxyURL)
 	fmt.Fprintf(&b, "export NO_PROXY=%s\n", noProxy)

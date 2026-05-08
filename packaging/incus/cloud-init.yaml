@@ -1,22 +1,22 @@
 #cloud-config
 #
 # Cloud-init for an Incus VM running an LLM agent. The VM trusts
-# drawbridge's CA and points its HTTP(S)_PROXY env vars at the
-# host-side drawbridge. The host is responsible for the firewall
+# trollbridge's CA and points its HTTP(S)_PROXY env vars at the
+# host-side trollbridge. The host is responsible for the firewall
 # rule pinning egress (see ../firewall/).
 #
 # Substitute:
-#   {{HOST_IP}}      → the bridge IP of the Incus host (drawbridge
+#   {{HOST_IP}}      → the bridge IP of the Incus host (trollbridge
 #                      listen address), e.g. 10.10.10.1
-#   {{PROXY_PORT}}   → drawbridge listen port, default 8080
-#   {{CA_CERT_PEM}}  → contents of drawbridge-ca.crt
+#   {{PROXY_PORT}}   → trollbridge listen port, default 8080
+#   {{CA_CERT_PEM}}  → contents of trollbridge-ca.crt
 
 write_files:
-  - path: /usr/local/share/ca-certificates/drawbridge-ca.crt
+  - path: /usr/local/share/ca-certificates/trollbridge-ca.crt
     permissions: '0644'
     content: |
 {{CA_CERT_PEM}}
-  - path: /etc/profile.d/drawbridge-proxy.sh
+  - path: /etc/profile.d/trollbridge-proxy.sh
     permissions: '0644'
     content: |
       export HTTP_PROXY="http://{{HOST_IP}}:{{PROXY_PORT}}"
@@ -26,7 +26,7 @@ write_files:
       export NO_PROXY="localhost,127.0.0.1"
       export no_proxy="$NO_PROXY"
       # Some runtimes need their own trust-store env vars:
-      export NODE_EXTRA_CA_CERTS="/usr/local/share/ca-certificates/drawbridge-ca.crt"
+      export NODE_EXTRA_CA_CERTS="/usr/local/share/ca-certificates/trollbridge-ca.crt"
       export REQUESTS_CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
       export SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"
 
@@ -34,4 +34,4 @@ runcmd:
   # Install the CA into the system trust store.
   - update-ca-certificates
   # Quick selftest — run as the agent user once the VM is up.
-  - echo "drawbridge: VM provisioning complete; run 'drawbridge selftest --from-vm' from inside the VM to verify"
+  - echo "trollbridge: VM provisioning complete; run 'trollbridge selftest --from-vm' from inside the VM to verify"

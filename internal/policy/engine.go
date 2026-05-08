@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/types"
 	"gopkg.in/yaml.v3"
 )
 
@@ -84,7 +84,7 @@ func (e *Engine) Reload() error {
 			}
 			for _, mod := range r.Modifiers {
 				if e.knownModifiers != nil && !e.knownModifiers[mod] {
-					return fmt.Errorf("rule load error in %s (id: %s): unknown modifier %q. Run `drawbridge validate` to list known modifiers.", path, r.ID, mod)
+					return fmt.Errorf("rule load error in %s (id: %s): unknown modifier %q. Run `trollbridge validate` to list known modifiers.", path, r.ID, mod)
 				}
 			}
 			if r.Priority == 0 {
@@ -116,7 +116,7 @@ func (e *Engine) RuleSetVersion() string {
 	return e.version
 }
 
-// Rules returns a copy of the active rules (for `drawbridge rules
+// Rules returns a copy of the active rules (for `trollbridge rules
 // list`).
 func (e *Engine) Rules() []Rule {
 	e.mu.RLock()

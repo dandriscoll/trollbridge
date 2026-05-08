@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-const fixture = `# drawbridge example
-drawbridge_version: 3
+const fixture = `# trollbridge example
+trollbridge_version: 3
 
 # Per-surface bind — top-level head comment.
 proxy: lo:8080
 control: lo:8081
 
-# Lists are inline; drawbridge writes them back.
+# Lists are inline; trollbridge writes them back.
 lists:
   allow:
     - existing.example
@@ -29,7 +29,7 @@ llm:
 func writeFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "drawbridge.yaml")
+	path := filepath.Join(dir, "trollbridge.yaml")
 	if err := os.WriteFile(path, []byte(fixture), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestPreservesHeadCommentsOutsideListsSubtree(t *testing.T) {
 	}
 	got := read(t, path)
 	for _, want := range []string{
-		"# drawbridge example",
+		"# trollbridge example",
 		"# Per-surface bind — top-level head comment.",
 		"# LLM section keeps its head comment after a write.",
 	} {
@@ -134,7 +134,7 @@ func TestAtomicWrite_DoesNotLeaveTempFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".drawbridge-yaml-") {
+		if strings.HasPrefix(e.Name(), ".trollbridge-yaml-") {
 			t.Errorf("temp file left behind: %s", e.Name())
 		}
 	}

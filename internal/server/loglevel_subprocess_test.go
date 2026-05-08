@@ -28,8 +28,8 @@ func TestSubprocess_LogLevelBogusFailsClosed(t *testing.T) {
 		t.Skip("subprocess test relies on POSIX")
 	}
 	repoRoot := findRepoRoot(t)
-	binPath := filepath.Join(t.TempDir(), "drawbridge")
-	build := exec.Command("go", "build", "-o", binPath, "./cmd/drawbridge")
+	binPath := filepath.Join(t.TempDir(), "trollbridge")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/trollbridge")
 	build.Dir = repoRoot
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -50,18 +50,18 @@ func TestSubprocess_LogLevelBogusFailsClosed(t *testing.T) {
 	}
 }
 
-// TestSubprocess_DrawbridgeLogLevelEnvHonored asserts that
-// DRAWBRIDGE_LOG_LEVEL=warn suppresses the default INFO startup
+// TestSubprocess_TrollbridgeLogLevelEnvHonored asserts that
+// TROLLBRIDGE_LOG_LEVEL=warn suppresses the default INFO startup
 // banner, while the same binary at default level emits it.
 // Validates the env-precedence path that cobra reads at parse time
 // (in-process tests cannot exercise this with the same fidelity).
-func TestSubprocess_DrawbridgeLogLevelEnvHonored(t *testing.T) {
+func TestSubprocess_TrollbridgeLogLevelEnvHonored(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("subprocess test relies on POSIX")
 	}
 	repoRoot := findRepoRoot(t)
-	binPath := filepath.Join(t.TempDir(), "drawbridge")
-	build := exec.Command("go", "build", "-o", binPath, "./cmd/drawbridge")
+	binPath := filepath.Join(t.TempDir(), "trollbridge")
+	build := exec.Command("go", "build", "-o", binPath, "./cmd/trollbridge")
 	build.Dir = repoRoot
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
@@ -78,7 +78,7 @@ func TestSubprocess_DrawbridgeLogLevelEnvHonored(t *testing.T) {
 	dir := t.TempDir()
 	auditPath := filepath.Join(dir, "audit.jsonl")
 	rulesPath := filepath.Join(dir, "rules.yaml")
-	cfgPath := filepath.Join(dir, "drawbridge.yaml")
+	cfgPath := filepath.Join(dir, "trollbridge.yaml")
 
 	proxyLn, _ := net.Listen("tcp", "127.0.0.1:0")
 	proxyAddr := proxyLn.Addr().String()
@@ -91,7 +91,7 @@ func TestSubprocess_DrawbridgeLogLevelEnvHonored(t *testing.T) {
 	rules := fmt.Sprintf("- id: a\n  match: {host: %s}\n  effect: allow\n", originHost)
 	os.WriteFile(rulesPath, []byte(rules), 0o600)
 	_ = ctrlAddr
-	cfgYAML := fmt.Sprintf(`drawbridge_version: 3
+	cfgYAML := fmt.Sprintf(`trollbridge_version: 3
 proxy: lo:%s
 control: 0
 mode: default-deny
@@ -136,16 +136,16 @@ policy:
 	}
 
 	defaultOut := runOnce()
-	if !strings.Contains(defaultOut, "drawbridge: listening") {
+	if !strings.Contains(defaultOut, "trollbridge: listening") {
 		t.Errorf("default level: expected listening line; got: %s", defaultOut)
 	}
 
-	warnOut := runOnce("DRAWBRIDGE_LOG_LEVEL=warn")
-	if strings.Contains(warnOut, "drawbridge: listening") {
+	warnOut := runOnce("TROLLBRIDGE_LOG_LEVEL=warn")
+	if strings.Contains(warnOut, "trollbridge: listening") {
 		t.Errorf("warn level: expected NO listening INFO line; got: %s", warnOut)
 	}
 
-	debugOut := runOnce("DRAWBRIDGE_LOG_LEVEL=debug")
+	debugOut := runOnce("TROLLBRIDGE_LOG_LEVEL=debug")
 	if !strings.Contains(debugOut, "phase=") {
 		t.Errorf("debug level: expected per-request phase records; got: %s", debugOut)
 	}

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/config"
 )
 
 func TestRender(t *testing.T) {
@@ -17,7 +17,7 @@ func TestRender(t *testing.T) {
 		{"wildcard ipv4 collapses to loopback", "0.0.0.0", 8080, "http://127.0.0.1:8080"},
 		{"wildcard ipv6 collapses to loopback", "::", 8080, "http://[::1]:8080"},
 		{"literal ipv4 passes through", "10.1.2.3", 9090, "http://10.1.2.3:9090"},
-		{"hostname passes through", "drawbridge.internal", 8080, "http://drawbridge.internal:8080"},
+		{"hostname passes through", "trollbridge.internal", 8080, "http://trollbridge.internal:8080"},
 		{"loopback passes through", "127.0.0.1", 8080, "http://127.0.0.1:8080"},
 		{"ipv6 literal gets bracketed", "fd00::1", 8080, "http://[fd00::1]:8080"},
 	}
@@ -40,8 +40,8 @@ func TestRender(t *testing.T) {
 			if !strings.Contains(out, "export NO_PROXY=localhost,127.0.0.1\n") {
 				t.Errorf("missing NO_PROXY in output:\n%s", out)
 			}
-			if !strings.HasPrefix(out, "# drawbridge env:") {
-				t.Errorf("output should start with '# drawbridge env:' comment; got first line: %q",
+			if !strings.HasPrefix(out, "# trollbridge env:") {
+				t.Errorf("output should start with '# trollbridge env:' comment; got first line: %q",
 					strings.SplitN(out, "\n", 2)[0])
 			}
 		})

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
 func TestHistory_MatchesSameIdentitySameHostWithinWindow(t *testing.T) {

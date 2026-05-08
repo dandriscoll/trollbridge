@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/controlclient"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/controlclient"
 	"github.com/spf13/cobra"
 )
 
@@ -20,7 +20,7 @@ func newApproveCmd() *cobra.Command {
 			return holdAction(configPath, args[0], "approve", scope, "", cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	cmd.Flags().StringVar(&scope, "scope", "once", "approval scope (once | session | rule)")
 	return cmd
 }
@@ -35,7 +35,7 @@ func newDenyCmd() *cobra.Command {
 			return holdAction(configPath, args[0], "deny", "", reason, cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	cmd.Flags().StringVar(&reason, "reason", "operator denied", "reason recorded in the audit log")
 	return cmd
 }
@@ -61,7 +61,7 @@ func newSessionsCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	return cmd
 }
 

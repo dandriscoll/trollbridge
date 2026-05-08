@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Sample iptables snippet that pins the agent VM's egress to the
-# host-side drawbridge address. Run this on the Incus HOST.
+# host-side trollbridge address. Run this on the Incus HOST.
 #
 # Variables:
 #   AGENT_VM_IP    — the address of the agent VM on the Incus bridge
-#   PROXY_LISTEN   — the host:port drawbridge listens on (e.g. 10.10.10.1:8080)
+#   PROXY_LISTEN   — the host:port trollbridge listens on (e.g. 10.10.10.1:8080)
 #   DNS_RESOLVER   — controlled DNS resolver address; the agent's
 #                    DNS resolution goes here. If you omit this,
 #                    DNS exfiltration is unmitigated.
@@ -22,7 +22,7 @@ PROXY_PORT="${PROXY_LISTEN##*:}"
 DNS_HOST="${DNS_RESOLVER%:*}"
 DNS_PORT="${DNS_RESOLVER##*:}"
 
-# Allow agent → drawbridge over TCP only.
+# Allow agent → trollbridge over TCP only.
 iptables -I FORWARD -s "$AGENT_VM_IP" -p tcp -d "$PROXY_HOST" --dport "$PROXY_PORT" -j ACCEPT
 # Allow agent → controlled resolver over UDP and TCP (DNS).
 iptables -I FORWARD -s "$AGENT_VM_IP" -p udp -d "$DNS_HOST" --dport "$DNS_PORT" -j ACCEPT
@@ -36,4 +36,4 @@ echo "iptables rules in place. Verify:"
 echo "  iptables -L FORWARD -nv | head"
 echo
 echo "Selftest from inside the agent VM:"
-echo "  drawbridge selftest --from-vm"
+echo "  trollbridge selftest --from-vm"

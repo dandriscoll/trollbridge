@@ -17,12 +17,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/audit"
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/policy"
 )
 
-// proxyHarness boots a real drawbridge server on a random port,
+// proxyHarness boots a real trollbridge server on a random port,
 // returns a client wired to use it as proxy, and a function to
 // stop everything.
 type proxyHarness struct {
@@ -204,8 +204,8 @@ func TestProxy_DeniesUnmatchedHTTPInDefaultDeny(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status: got %d, want 403", resp.StatusCode)
 	}
-	if reason := resp.Header.Get("Drawbridge-Reason"); reason == "" {
-		t.Error("missing Drawbridge-Reason header")
+	if reason := resp.Header.Get("Trollbridge-Reason"); reason == "" {
+		t.Error("missing Trollbridge-Reason header")
 	}
 
 	entries := h.auditEntries()

@@ -1,4 +1,4 @@
-module github.com/dandriscoll/drawbridge
+module github.com/dandriscoll/trollbridge
 
 go 1.26
 

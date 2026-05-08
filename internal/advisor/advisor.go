@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
 // Input is the structured payload sent to the advisor. The fields
@@ -41,7 +41,7 @@ type Input struct {
 	DenyList        []string          `json:"deny_list,omitempty"`
 
 	// Directives is the operator-supplied system-prompt content
-	// (cfg.LLM.Directives). It is verbatim — drawbridge does not
+	// (cfg.LLM.Directives). It is verbatim — trollbridge does not
 	// edit it. The advisor endpoint composes it with the rest of
 	// the request payload before sending to the LLM.
 	Directives string `json:"directives,omitempty"`
@@ -344,7 +344,7 @@ func (c *cache) put(k string, v cacheValue) {
 }
 
 // AuthScheme selects how HTTPClassifier authenticates with the
-// advisor endpoint. Drawbridge's wire shape (DESIGN.md §9) is fixed
+// advisor endpoint. Trollbridge's wire shape (DESIGN.md §9) is fixed
 // across providers; only the auth header changes.
 type AuthScheme int
 

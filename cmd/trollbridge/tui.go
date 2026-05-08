@@ -3,8 +3,8 @@ package main
 import (
 	"os"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/tui"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -14,7 +14,7 @@ func newTUICmd() *cobra.Command {
 		Use:   "tui",
 		Short: "Approve or deny held requests interactively in real time.",
 		Long: `Open a terminal UI that lists currently-held requests from the
-running drawbridge daemon and lets you approve or deny each with a
+running trollbridge daemon and lets you approve or deny each with a
 single keystroke. Refreshes automatically as the queue changes.
 
 Keys:
@@ -37,6 +37,6 @@ Keys:
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	return cmd
 }

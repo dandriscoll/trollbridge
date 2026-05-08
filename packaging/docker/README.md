@@ -1,22 +1,22 @@
-# drawbridge — container image
+# trollbridge — container image
 
 Build:
 
 ```sh
-docker build -f packaging/docker/Dockerfile -t drawbridge:dev .
+docker build -f packaging/docker/Dockerfile -t trollbridge:dev .
 ```
 
 Run as a sidecar (compose example):
 
 ```yaml
 services:
-  drawbridge:
-    image: drawbridge:dev
+  trollbridge:
+    image: trollbridge:dev
     volumes:
-      - ./drawbridge.yaml:/etc/drawbridge/drawbridge.yaml:ro
-      - ./drawbridge-ca.crt:/etc/drawbridge/drawbridge-ca.crt:ro
-      - ./drawbridge-ca.key:/etc/drawbridge/drawbridge-ca.key:ro
-      - ./audit:/var/log/drawbridge
+      - ./trollbridge.yaml:/etc/trollbridge/trollbridge.yaml:ro
+      - ./trollbridge-ca.crt:/etc/trollbridge/trollbridge-ca.crt:ro
+      - ./trollbridge-ca.key:/etc/trollbridge/trollbridge-ca.key:ro
+      - ./audit:/var/log/trollbridge
     ports:
       - "127.0.0.1:8080:8080"   # proxy
       # - "127.0.0.1:8081:8081" # control plane (only enable if
@@ -26,11 +26,11 @@ services:
   agent:
     image: my-coding-agent:dev
     environment:
-      HTTP_PROXY: "http://drawbridge:8080"
-      HTTPS_PROXY: "http://drawbridge:8080"
+      HTTP_PROXY: "http://trollbridge:8080"
+      HTTPS_PROXY: "http://trollbridge:8080"
       NO_PROXY: "localhost,127.0.0.1"
     volumes:
-      - ./drawbridge-ca.crt:/etc/ssl/certs/drawbridge-ca.pem:ro
+      - ./trollbridge-ca.crt:/etc/ssl/certs/trollbridge-ca.pem:ro
     networks:
       - shared
 
@@ -45,10 +45,10 @@ proxy is decorative (DESIGN.md §17.2).
 
 For a real deployment also configure:
 
-- A drawbridge.yaml `approvals.control_auth_mode: bearer` if you
+- A trollbridge.yaml `approvals.control_auth_mode: bearer` if you
   expose the control plane to anyone other than localhost.
 - `interception.enabled: true` and a CA initialized via
-  `drawbridge ca init`.
+  `trollbridge ca init`.
 - `interception.passthrough_hosts` for cert-pinned origins.
 
 The image runs as UID 65534. Bind-mounted host files must be

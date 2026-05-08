@@ -1,7 +1,7 @@
-// Package oplog builds drawbridge's operational logger — a leveled
+// Package oplog builds trollbridge's operational logger — a leveled
 // *slog.Logger writing to stderr or a file. The audit log is the
 // structured record of decisions; this is the running-process
-// narrative the operator reads to answer "what is drawbridge
+// narrative the operator reads to answer "what is trollbridge
 // doing right now?". See DESIGN.md §15.1.
 package oplog
 
@@ -65,14 +65,14 @@ func New(path string, level *slog.LevelVar) (*slog.Logger, error) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			return nil, fmt.Errorf(
 				"open operational log failed: cannot create parent directory %s: %w; "+
-					"fix: ensure the parent directory exists and is writable by the drawbridge user",
+					"fix: ensure the parent directory exists and is writable by the trollbridge user",
 				filepath.Dir(path), err)
 		}
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"open operational log failed: %s: %w; "+
-					"fix: ensure the file path is writable by the drawbridge user, or set logging.operational_path: stderr",
+					"fix: ensure the file path is writable by the trollbridge user, or set logging.operational_path: stderr",
 				path, err)
 		}
 		sink = f
@@ -81,7 +81,7 @@ func New(path string, level *slog.LevelVar) (*slog.Logger, error) {
 	return slog.New(h), nil
 }
 
-// textHandler emits "<ts> <LEVEL> drawbridge: <msg> [k=v ...]" lines.
+// textHandler emits "<ts> <LEVEL> trollbridge: <msg> [k=v ...]" lines.
 // Greppable, sort-friendly, recognizable to operators familiar with
 // the prior `log.LstdFlags` format. We keep the implementation small
 // (no nested groups, no source positions) — operators who want the
@@ -104,7 +104,7 @@ func (h *textHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &textHandler{w: h.w, level: h.level, attrs: merged}
 }
 
-// WithGroup is required by the interface but drawbridge doesn't
+// WithGroup is required by the interface but trollbridge doesn't
 // currently use group semantics; we flatten by ignoring the prefix.
 func (h *textHandler) WithGroup(_ string) slog.Handler { return h }
 
@@ -114,7 +114,7 @@ func (h *textHandler) Handle(_ context.Context, r slog.Record) error {
 	b = append(b, ' ')
 	b = append(b, levelString(r.Level)...)
 	b = append(b, ' ')
-	b = append(b, "drawbridge: "...)
+	b = append(b, "trollbridge: "...)
 	b = append(b, r.Message...)
 	for _, a := range h.attrs {
 		b = appendAttr(b, a)

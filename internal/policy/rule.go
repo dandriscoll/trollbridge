@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/types"
+	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
 // Rule is a single match-and-effect entry. See DESIGN.md §8.3.

@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
-	"github.com/dandriscoll/drawbridge/internal/hostlist"
-	"github.com/dandriscoll/drawbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/hostlist"
+	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/spf13/cobra"
 )
 
@@ -30,16 +30,16 @@ func newValidateCmd() *cobra.Command {
 			if err != nil {
 				return &configErr{err}
 			}
-			allow, err := hostlist.LoadInline("allow", "drawbridge.yaml:lists.allow", cfg.Lists.Allow)
+			allow, err := hostlist.LoadInline("allow", "trollbridge.yaml:lists.allow", cfg.Lists.Allow)
 			if err != nil {
 				return &configErr{err}
 			}
-			deny, err := hostlist.LoadInline("deny", "drawbridge.yaml:lists.deny", cfg.Lists.Deny)
+			deny, err := hostlist.LoadInline("deny", "trollbridge.yaml:lists.deny", cfg.Lists.Deny)
 			if err != nil {
 				return &configErr{err}
 			}
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"drawbridge validate: OK\n"+
+				"trollbridge validate: OK\n"+
 					"  config:    %s\n"+
 					"  mode:      %s\n"+
 					"  allowlist: %d patterns\n"+
@@ -53,6 +53,6 @@ func newValidateCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to drawbridge.yaml")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	return cmd
 }

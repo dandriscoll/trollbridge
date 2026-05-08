@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/dandriscoll/drawbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -20,7 +20,7 @@ func newSelftestCmd() *cobra.Command {
 		Use:   "selftest",
 		Short: "Verify the deployment is wired correctly.",
 		Long: `Selftest exercises the deployment topology from the perspective
-of the agent's host. With --from-vm, drawbridge attempts to reach a
+of the agent's host. With --from-vm, trollbridge attempts to reach a
 small set of well-known direct destinations (with proxy unset) and
 reports whether the egress firewall blocked them. It also tries the
 proxy address with proxy set, and reports whether the configured
@@ -34,7 +34,7 @@ CA is in the system trust store.`,
 				return &configErr{err}
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintln(out, "drawbridge selftest:")
+			fmt.Fprintln(out, "trollbridge selftest:")
 			fmt.Fprintln(out, "  proxy:", cfg.Proxy.Addr())
 			if !cfg.Control.Disabled() {
 				fmt.Fprintln(out, "  control:", cfg.Control.Addr())
@@ -46,7 +46,7 @@ CA is in the system trust store.`,
 			return selftestLocal(cmd.Context(), out, cfg)
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "drawbridge.yaml path")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")
 	cmd.Flags().BoolVar(&fromVM, "from-vm", false, "run the from-VM checks (assumes you are inside the agent VM)")
 	return cmd
 }

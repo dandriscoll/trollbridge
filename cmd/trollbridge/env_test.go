@@ -9,12 +9,12 @@ import (
 	"testing"
 )
 
-// minimalConfig writes a drawbridge.yaml into a temp dir with just
+// minimalConfig writes a trollbridge.yaml into a temp dir with just
 // enough fields to satisfy config.Load; returns the path.
 func minimalConfig(t *testing.T, listenAddress string, listenPort int) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "drawbridge.yaml")
+	path := filepath.Join(dir, "trollbridge.yaml")
 	host := listenAddress
 	switch listenAddress {
 	case "127.0.0.1":
@@ -23,7 +23,7 @@ func minimalConfig(t *testing.T, listenAddress string, listenPort int) string {
 		host = "all"
 	}
 	body := []byte(strings.Join([]string{
-		"drawbridge_version: 3",
+		"trollbridge_version: 3",
 		fmt.Sprintf("proxy: %s:%d", host, listenPort),
 		"control: 0",
 		"mode: default-deny",
@@ -60,7 +60,7 @@ func TestEnvCmdEmitsExports(t *testing.T) {
 		"export https_proxy=http://127.0.0.1:8080",
 		"export http_proxy=http://127.0.0.1:8080",
 		"export no_proxy=localhost,127.0.0.1",
-		"# drawbridge env:",
+		"# trollbridge env:",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in output:\n%s", want, out)
