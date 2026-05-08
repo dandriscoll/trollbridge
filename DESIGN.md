@@ -342,9 +342,8 @@ trollbridge:
    response back to the client. Streaming MUST NOT buffer the entire
    response body before forwarding (this would break SSE and large
    downloads).
-6. If `deny`, MUST return `403 Forbidden` with a `Trollbridge-Reason:
-   <reason>` header and a body that explains the denial in plain
-   text.
+6. If `deny`, MUST return `403 Forbidden` with the deny-response
+   headers and body specified in §5.6.
 7. If `ask_user`, MUST hold the request as defined in §8.5.
 
 ### 5.2 Headers added or modified
@@ -354,6 +353,13 @@ forwarded requests and responses.
 
 trollbridge MUST strip `Proxy-Authorization` and `Proxy-Connection`
 headers before forwarding.
+
+trollbridge MUST add a `Trollbridge-Request-Id: <uuid>` header to
+every response it sends — allow forwarding (HTTP and intercepted
+HTTPS), deny refusal, CONNECT 200 establishment. The value matches
+the `request_id` field in the audit log entry for the same request,
+allowing an operator handed a request id by a client to look it up
+in the audit log directly.
 
 trollbridge MAY add a `Trollbridge-Decision-Id: <uuid>` header to
 forwarded requests so the origin's logs can be correlated with
@@ -381,6 +387,55 @@ trollbridge MUST support HTTP/1.1 keep-alive on the client-facing side.
 trollbridge MAY pool connections to upstream origins. Connection pools
 MUST be keyed by `(scheme, host, port, identity)` so two identities
 do not share an authenticated upstream connection.
+
+### 5.6 Deny response shape
+
+A denied request MUST receive the following response shape, on every
+deny path (plain HTTP, CONNECT pre-tunnel, and intercepted HTTPS):
+
+- **Status.** `403 Forbidden`. (`511 Network Authentication Required`
+  for the unreachable case where an unresolved-ask falls through to
+  the refusal path; ask states that should never have escaped
+  `holdAndWait`.)
+- **`Trollbridge-Request-Id`** header: the request's uuid (same as
+  §5.2; required on every response, not just deny).
+- **`Proxy-Status`** header per RFC 9209: `trollbridge; error=<token>; details="<reason>"; request-id="<uuid>"`.
+  - `error` is `http_request_denied` for policy-driven denials (rule
+    deny, default-deny, inline-list deny, advisor deny, resolved
+    deny). `error` is `proxy_internal_response` for proxy-generated
+    denials (advisor-unavailable fallback, approval timeout).
+  - When a structured rule fired the deny, `details` is prefixed
+    `"rule <id>: <reason>"`. When the inline list, default-mode, or
+    advisor fired it, `details` is the reason without prefix.
+  - `details` and `request-id` are quoted strings per RFC 8941;
+    backslash and double-quote inside `details` MUST be escaped.
+- **`Trollbridge-Reason`** header: `<effect>: <reason>`. Preserved
+  for backwards compatibility with operators who scrape it; new
+  consumers SHOULD prefer `Proxy-Status`.
+- **Body, content-negotiated:**
+  - When the request `Accept` header contains a media range matching
+    `application/json` (other than `*/*`), the body is
+    `Content-Type: application/json` with shape
+    `{"effect", "reason", "rule_id", "request_id"}`. JSON keys
+    mirror the audit-log field names. `rule_id` is the empty string
+    when no structured rule fired.
+  - Otherwise the body is `Content-Type: text/plain; charset=utf-8`
+    with the human-readable refusal text. This is the default for
+    `Accept: */*`, missing `Accept`, and any non-JSON `Accept`.
+
+A denied CONNECT MUST additionally set `Connection: close` so the
+proxy connection terminates cleanly; clients that intend to retry
+must open a new connection.
+
+The same `request_id` value MUST appear in the response header, the
+audit log entry, and (on the operational log) the contextual
+`request_id` slog field.
+
+A denied response over a CONNECT tunnel that has already been
+established (i.e., intercepted HTTPS) follows the same shape as
+plain HTTP. A denied CONNECT before tunnel establishment carries
+the headers but most HTTP client libraries discard the response on
+tunnel failure — operators must use the audit log for diagnosis.
 
 Pool size MUST be bounded by `forwarder.max_idle_connections` (default
 256) globally and `forwarder.max_idle_connections_per_host` (default

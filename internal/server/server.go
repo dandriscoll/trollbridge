@@ -446,7 +446,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		// allowed: forward
 	default:
 		// deny / ask_user_resolved_deny / ask_user_timed_out
-		s.refuseHTTP(w, req, decision, start)
+		s.refuseHTTP(w, r, req, decision, start)
 		return
 	}
 
@@ -474,6 +474,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Via", strings.TrimSpace(w.Header().Get("Via")+" 1.1 trollbridge"))
+	w.Header().Set(HeaderRequestID, req.ID)
 	w.WriteHeader(resp.StatusCode)
 	n, _ := io.Copy(w, resp.Body)
 
@@ -559,17 +560,19 @@ func bodyMethodNeedsSample(method string) bool {
 	return false
 }
 
-func (s *Server) refuseHTTP(w http.ResponseWriter, req *types.RequestEvent, d types.Decision, start time.Time) {
-	w.Header().Set("Trollbridge-Reason", string(d.Effect)+": "+d.Reason)
-	switch d.Effect {
-	case types.EffectDeny, types.EffectAskUserResolvedDeny, types.EffectAskUserTimedOut:
-		http.Error(w, "trollbridge: request denied: "+d.Reason, http.StatusForbidden)
-	case types.EffectAskUser, types.EffectAskLLM:
-		// Should not reach here; holdAndWait converts these.
-		http.Error(w, "trollbridge: request requires approval", http.StatusNetworkAuthenticationRequired)
-	default:
-		http.Error(w, "trollbridge: request not allowed", http.StatusForbidden)
+func (s *Server) refuseHTTP(w http.ResponseWriter, r *http.Request, req *types.RequestEvent, d types.Decision, start time.Time) {
+	headers, body, contentType := denyResponse(d, req.ID, r.Header.Get("Accept"))
+	for k, v := range headers {
+		w.Header().Set(k, v)
 	}
+	w.Header().Set("Content-Type", contentType)
+	status := http.StatusForbidden
+	if d.Effect == types.EffectAskUser || d.Effect == types.EffectAskLLM {
+		// Should not reach here; holdAndWait converts these.
+		status = http.StatusNetworkAuthenticationRequired
+	}
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 	s.writeAudit(req, d, "", 0, statusFromEffect(d.Effect), 0, time.Since(start), "")
 }
 
@@ -664,8 +667,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.engine.History().Record(req, decision, time.Now().UTC())
 	if !(decision.Effect == types.EffectAllow || decision.Effect == types.EffectAskUserResolvedAllow) {
-		w.Header().Set("Trollbridge-Reason", string(decision.Effect)+": "+decision.Reason)
-		http.Error(w, "trollbridge: CONNECT denied: "+decision.Reason, http.StatusForbidden)
+		headers, body, contentType := denyResponse(decision, req.ID, r.Header.Get("Accept"))
+		for k, v := range headers {
+			w.Header().Set(k, v)
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(body)
 		s.writeAudit(req, decision, "", 0, http.StatusForbidden, 0, time.Since(start), "")
 		return
 	}
@@ -692,7 +701,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+	connectOK := "HTTP/1.1 200 Connection Established\r\n" +
+		HeaderRequestID + ": " + req.ID + "\r\n\r\n"
+	if _, err := clientConn.Write([]byte(connectOK)); err != nil {
 		clientConn.Close()
 		upstream.Close()
 		s.writeAudit(req, decision, "", 0, 0, 0, time.Since(start), err.Error())

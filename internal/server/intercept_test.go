@@ -288,6 +288,14 @@ func TestIntercept_DeniesPathAndAuditsCleanly(t *testing.T) {
 	if reason := resp.Header.Get("Trollbridge-Reason"); reason == "" {
 		t.Error("missing Trollbridge-Reason header on intercepted deny")
 	}
+	rid := resp.Header.Get(HeaderRequestID)
+	if rid == "" {
+		t.Error("missing Trollbridge-Request-Id header on intercepted deny")
+	}
+	ps := resp.Header.Get(HeaderProxyStatus)
+	if !strings.HasPrefix(ps, "trollbridge;") || !strings.Contains(ps, "error=http_request_denied") {
+		t.Errorf("Proxy-Status missing or wrong shape on intercepted deny: %q", ps)
+	}
 
 	entries := h.auditEntries()
 	denyFound := false

@@ -312,6 +312,43 @@ host, and reason. If they don't, the proxy is not seeing the
 request — re-check the client's HTTPS_PROXY env var and the host
 firewall.
 
+## What the client sees on a deny
+
+Every response from trollbridge — allow forwarding, deny refusal,
+CONNECT establishment — carries `Trollbridge-Request-Id: <uuid>`,
+which matches the audit log's `request_id`. On deny, the response
+also carries:
+
+- `Proxy-Status: trollbridge; error=http_request_denied; details="<reason>"; request-id="<uuid>"` (RFC 9209).
+- `Trollbridge-Reason: deny: <reason>` (legacy, preserved for
+  backwards compatibility — operators with existing scrapers do
+  not need to migrate).
+- A plain-text body, or a JSON body `{effect, reason, rule_id, request_id}`
+  when the client sent `Accept: application/json`.
+
+If a structured rule fired the deny, `rule_id` is set; if the inline
+allow/deny list or default-mode fired it, `rule_id` is empty.
+Because the client's response header and the audit-log entry carry
+the same `request_id`, an operator handed a request id by an agent
+can grep the audit log directly:
+
+```sh
+grep '<uuid>' ~/.trollbridge/trollbridge.audit.jsonl | jq .
+```
+
+**CONNECT-deny opacity.** When the proxy denies a CONNECT (the
+common case for HTTPS without TLS interception), trollbridge writes
+the 403 + headers + body to the wire — but most HTTP client
+libraries (curl's libcurl, Python `httpx`/`urllib3`/`requests`,
+Node `https`) discard the proxy's response shape on tunnel failure
+and surface a generic "tunnel connect failed" error to the
+application. The signal is on the wire (verifiable with `openssl
+s_client -connect` or a raw TCP dial), but the agent code may not
+see it. Tell the user to grep the audit log when "agent says
+network is broken" and the destination was an HTTPS host: the
+audit log carries the same `request_id` even when the agent's
+client-library hides the response.
+
 ## Step 9 — Hand back to the user
 
 Tell the user the four day-to-day commands:

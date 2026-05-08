@@ -196,18 +196,21 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 
 	if !(decision.Effect == types.EffectAllow || decision.Effect == types.EffectAskUserResolvedAllow) {
 		// Refuse: 403 over the intercepted TLS connection.
-		body := fmt.Sprintf("trollbridge: request denied: %s", decision.Reason)
+		hdrs, body, contentType := denyResponse(decision, req.ID, r.Header.Get("Accept"))
+		respHeader := http.Header{
+			"Content-Type":   {contentType},
+			"Content-Length": {strconv.Itoa(len(body))},
+			"Connection":     {"close"},
+		}
+		for k, v := range hdrs {
+			respHeader.Set(k, v)
+		}
 		resp := &http.Response{
 			StatusCode: http.StatusForbidden,
 			Proto:      "HTTP/1.1",
 			ProtoMajor: 1, ProtoMinor: 1,
-			Header: http.Header{
-				"Content-Type":      {"text/plain; charset=utf-8"},
-				"Content-Length":    {strconv.Itoa(len(body))},
-				"Trollbridge-Reason": {string(decision.Effect) + ": " + decision.Reason},
-				"Connection":        {"close"},
-			},
-			Body:          io.NopCloser(strings.NewReader(body)),
+			Header:        respHeader,
+			Body:          io.NopCloser(bytes.NewReader(body)),
 			ContentLength: int64(len(body)),
 		}
 		_ = resp.Write(tlsConn)
@@ -234,6 +237,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 				"Content-Type":      {"text/plain; charset=utf-8"},
 				"Content-Length":    {strconv.Itoa(len(body))},
 				"Trollbridge-Reason": {"origin-tls-failure"},
+				HeaderRequestID:     {req.ID},
 				"Connection":        {"close"},
 			},
 			Body:          io.NopCloser(strings.NewReader(body)),
@@ -271,6 +275,11 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.Header == nil {
+		resp.Header = http.Header{}
+	}
+	resp.Header.Set(HeaderRequestID, req.ID)
 
 	if err := resp.Write(tlsConn); err != nil {
 		s.writeAuditWithBody(req, decision, bodyBuf, resp.StatusCode, 0, time.Since(start), err.Error())
