@@ -16,7 +16,7 @@ func newCACmd() *cobra.Command {
 		Use:   "ca",
 		Short: "Manage trollbridge's local CA used for TLS interception.",
 	}
-	cmd.AddCommand(newCAInitCmd(), newCAExportCmd(), newCARotateCmd(), newCAFlushCacheCmd(), newCAClientCertCmd())
+	cmd.AddCommand(newCAInitCmd(), newCAExportCmd(), newCAInstallCmd(), newCARotateCmd(), newCAFlushCacheCmd(), newCAClientCertCmd())
 	return cmd
 }
 
@@ -115,7 +115,7 @@ func newCAInitCmd() *cobra.Command {
 			fmt.Fprintln(out, "  fingerprint (sha-256):", c.SHA256Fingerprint())
 			fmt.Fprintln(out, "")
 			fmt.Fprintln(out, "next steps:")
-			fmt.Fprintln(out, "  install the cert into your client trust store; see DESIGN.md §7.5 for OS commands")
+			fmt.Fprintln(out, "  trollbridge ca install -c <config>     # show OS-tailored trust-store install commands")
 			fmt.Fprintln(out, "  set `interception.enabled: true` in your trollbridge.yaml")
 			fmt.Fprintln(out, "  trollbridge run -c <config>")
 			return nil
@@ -147,7 +147,11 @@ func newCAExportCmd() *cobra.Command {
 				_, _ = cmd.OutOrStdout().Write(data)
 				return nil
 			}
-			return os.WriteFile(outPath, data, 0o644)
+			if err := os.WriteFile(outPath, data, 0o644); err != nil {
+				return &runtimeErr{err}
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "wrote %s\nnext: trollbridge ca install   # show OS-tailored trust-store install commands\n", outPath)
+			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")

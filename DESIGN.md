@@ -589,21 +589,32 @@ intermediates).
 ### 7.5 Installing the CA into a client trust store
 
 The install procedure differs by OS. trollbridge SHOULD print exact
-commands rather than wave at "install the CA somewhere." Examples:
+commands rather than wave at "install the CA somewhere." The
+`trollbridge ca install` subcommand is the canonical source: it
+prints copy-pasteable commands tailored to the detected host OS,
+and `--all-platforms` dumps every variant. The reference set of
+platforms it MUST cover:
 
-- **Debian/Ubuntu**: copy `trollbridge-ca.crt` to
-  `/usr/local/share/ca-certificates/trollbridge-ca.crt`, run
-  `update-ca-certificates`.
-- **Fedora/RHEL**: copy to `/etc/pki/ca-trust/source/anchors/`,
-  run `update-ca-trust`.
-- **Alpine**: copy to `/usr/local/share/ca-certificates/`, run
-  `update-ca-certificates`.
-- **macOS user**: `security add-trusted-cert -d -r trustRoot -k
-  ~/Library/Keychains/login.keychain trollbridge-ca.crt`.
-- **Node.js / Python / Go**: each runtime has its own trust path.
-  trollbridge's docs MUST cover at least Node (`NODE_EXTRA_CA_CERTS`),
-  Python (`SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`), and Go (`SSL_CERT_FILE`
-  is honored by `crypto/x509` on Linux).
+- **Debian / Ubuntu / Mint**: copy `trollbridge-ca.crt` to
+  `/usr/local/share/ca-certificates/`, run `update-ca-certificates`.
+- **Fedora / RHEL / CentOS / Rocky**: copy to
+  `/etc/pki/ca-trust/source/anchors/`, run `update-ca-trust`.
+- **Alpine**: same as Debian (`/usr/local/share/ca-certificates/` +
+  `update-ca-certificates`).
+- **Arch / Manjaro**: `trust anchor --store <cert>`.
+- **macOS user keychain**: `security add-trusted-cert -d -r
+  trustRoot -k ~/Library/Keychains/login.keychain-db <cert>`. The
+  system keychain variant requires sudo.
+- **Windows**: `certutil -addstore -f Root <cert>` (admin shell).
+
+The subcommand additionally MUST emit per-runtime trust-bundle
+env-var options for clients that ignore the system trust store:
+Node (`NODE_EXTRA_CA_CERTS`), Python (`SSL_CERT_FILE`,
+`REQUESTS_CA_BUNDLE`), Go on Linux (`SSL_CERT_FILE`), curl
+(`CURL_CA_BUNDLE`), and the Java `keytool` one-shot import.
+
+`trollbridge ca install` MUST NOT execute system commands. It
+prints; the operator runs.
 
 ### 7.6 Inside an Incus VM
 
@@ -1312,6 +1323,7 @@ A single binary, Cobra-style subcommands.
 | `trollbridge run` | Start the proxy in the foreground. Reads config from `--config` or `TROLLBRIDGE_CONFIG`. |
 | `trollbridge ca init` | Generate a new CA. Refuses if one exists unless `--force`. |
 | `trollbridge ca export` | Print the CA cert (public) to stdout, or write to `--out <file>`. |
+| `trollbridge ca install` | Print copy-pasteable commands to install the CA into the OS trust store (and per-runtime trust-bundle env vars). Detects the host OS; `--all-platforms` prints every variant. Does NOT execute system commands. |
 | `trollbridge ca rotate` | Roll the CA. New CA is generated; old is kept until `--retire` is passed. |
 | `trollbridge ca flush-cache` | Drop cached leaf certs. Useful during rotation or after a rule change. |
 | `trollbridge decisions [--since <duration>] [--pending]` | Stream recent decisions; `--pending` shows held requests. |
