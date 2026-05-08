@@ -42,6 +42,7 @@ func newTestCmd() *cobra.Command {
 		raw        bool
 		timeoutSec int
 		noDecision bool
+		printCurl  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "test <url>",
@@ -70,7 +71,15 @@ the operator command needed to approve it.
 Decision correlation reads the audit log named by drawbridge.yaml's
 logging.audit_path. Under heavy concurrent traffic the matched
 entry is "newest matching (method, host, path)"; for an idle proxy
-this is unambiguous.`,
+this is unambiguous.
+
+Use --print-curl to emit an equivalent curl command (two variants:
+proxy env embedded inline, and bare) instead of sending the request.
+The flag does not contact the proxy daemon; --show-body, --raw,
+--timeout, and --no-decision do not apply under --print-curl.
+The emitted curl command targets the proxy at the address from
+drawbridge.yaml; the host that runs the curl command must share
+network reachability with the daemon.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if configPath == "" {
@@ -83,6 +92,17 @@ this is unambiguous.`,
 			req, err := buildTestRequest(args[0], method, headers, body, bodyFile)
 			if err != nil {
 				return &configErr{err}
+			}
+			if printCurl {
+				// Defense-in-depth: config.Load rejects `proxy: 0` today,
+				// but if that contract relaxes, an empty proxy address
+				// would silently emit `https_proxy='http://' curl …`.
+				// Match runTest's disabled() guard for symmetry.
+				if cfg.Proxy.Disabled() {
+					return &configErr{fmt.Errorf("proxy is disabled in drawbridge.yaml (proxy: 0); set proxy: lo:8080 (or another bind) so --print-curl knows what proxy address to embed")}
+				}
+				renderCurl(cmd.OutOrStdout(), req, body, bodyFile, cfg.Proxy.ClientAddr())
+				return nil
 			}
 			to := time.Duration(timeoutSec) * time.Second
 			if timeoutSec <= 0 {
@@ -105,6 +125,7 @@ this is unambiguous.`,
 	cmd.Flags().BoolVar(&raw, "raw", false, "print full response body, no truncation (suppresses --show-body)")
 	cmd.Flags().IntVar(&timeoutSec, "timeout", testDefaultTimeoutSec, "per-request timeout in seconds (0 = no timeout)")
 	cmd.Flags().BoolVar(&noDecision, "no-decision", false, "skip audit-log decision correlation")
+	cmd.Flags().BoolVar(&printCurl, "print-curl", false, "print an equivalent curl command (proxy env embedded, and bare) instead of sending the request")
 	return cmd
 }
 
@@ -359,6 +380,73 @@ func extractHoldID(dec *audit.Entry) string {
 		return ""
 	}
 	return dec.RequestID
+}
+
+// shellQuote wraps s in POSIX single quotes, escaping any internal
+// single quote via the '\'' idiom. The result is safe to paste into
+// bash, dash, or zsh: single quotes preserve every other character
+// literally, including $, `, \, newlines, and shell metacharacters.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// renderCurl writes two curl invocations to out: variant 1 with the
+// proxy env embedded inline as a one-shot prefix (works in a fresh
+// shell), and variant 2 bare (assumes `eval "$(drawbridge env)"`
+// already ran in the caller's shell). Both variants are built from
+// the same args list — single source of truth, no drift between them.
+//
+// proxyAddr is the form returned by cfg.Proxy.ClientAddr()
+// (e.g. "127.0.0.1:8080" or "[::1]:8080"). body and bodyFile are the
+// raw flag values; exactly one is non-empty (or both empty for no body).
+func renderCurl(out io.Writer, req *http.Request, body, bodyFile, proxyAddr string) {
+	args := buildCurlArgs(req, body, bodyFile)
+	bare := "curl " + strings.Join(args, " ")
+	proxyURL := "http://" + proxyAddr
+	envPrefix := fmt.Sprintf("https_proxy=%s http_proxy=%s ",
+		shellQuote(proxyURL), shellQuote(proxyURL))
+
+	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
+	w("# drawbridge test --print-curl: equivalent curl command(s)\n")
+	w("# variant 1 — proxy env embedded inline (works in a fresh shell)\n")
+	w("%s%s\n", envPrefix, bare)
+	w("\n")
+	w("# variant 2 — bare (assumes you have already run: eval \"$(drawbridge env)\")\n")
+	w("%s\n", bare)
+}
+
+// buildCurlArgs returns the per-flag tokens of the curl invocation,
+// each already shell-quoted. GET is omitted (curl's default); other
+// methods emit `-X METHOD`. Headers emit `-H 'KEY: VALUE'` in the
+// order they were supplied. body becomes `--data-raw 'BODY'`;
+// bodyFile becomes `--data-binary @'PATH'`. The URL is always last.
+func buildCurlArgs(req *http.Request, body, bodyFile string) []string {
+	var args []string
+	if m := strings.ToUpper(req.Method); m != "" && m != http.MethodGet {
+		args = append(args, "-X", shellQuote(m))
+	}
+	for _, k := range sortedHeaderKeys(req.Header) {
+		for _, v := range req.Header.Values(k) {
+			args = append(args, "-H", shellQuote(k+": "+v))
+		}
+	}
+	switch {
+	case body != "":
+		args = append(args, "--data-raw", shellQuote(body))
+	case bodyFile != "":
+		args = append(args, "--data-binary", "@"+shellQuote(bodyFile))
+	}
+	args = append(args, shellQuote(req.URL.String()))
+	return args
+}
+
+func sortedHeaderKeys(h http.Header) []string {
+	keys := make([]string, 0, len(h))
+	for k := range h {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 var errAuditNoMatch = errors.New("no match")

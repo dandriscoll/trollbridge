@@ -408,7 +408,7 @@ func TestTestCmd_HelpListsFlags(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("--help: %v", err)
 	}
-	for _, want := range []string{"--method", "--header", "--body", "--show-body", "--raw", "--timeout", "--no-decision"} {
+	for _, want := range []string{"--method", "--header", "--body", "--show-body", "--raw", "--timeout", "--no-decision", "--print-curl"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("--help missing %q", want)
 		}
@@ -429,6 +429,168 @@ func TestTestCmd_ConflictingBodyFlags(t *testing.T) {
 	var ce *configErr
 	if !errors.As(err, &ce) {
 		t.Errorf("err = %v (%T), want configErr", err, err)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"", "''"},
+		{"plain", "'plain'"},
+		{"a b c", "'a b c'"},
+		{"it's", `'it'\''s'`},
+		{"''", `''\'''\'''`},
+		{`$VAR`, `'$VAR'`},
+		{"`backtick`", "'`backtick`'"},
+		{`back\slash`, `'back\slash'`},
+		{"new\nline", "'new\nline'"},
+		{`;|&()<>`, `';|&()<>'`},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := shellQuote(c.in); got != c.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestRenderCurl_GET_NoBody(t *testing.T) {
+	req, err := buildTestRequest("https://api.github.com/zen", "GET", nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	renderCurl(&buf, req, "", "", "127.0.0.1:8080")
+	got := buf.String()
+	want := "# drawbridge test --print-curl: equivalent curl command(s)\n" +
+		"# variant 1 — proxy env embedded inline (works in a fresh shell)\n" +
+		"https_proxy='http://127.0.0.1:8080' http_proxy='http://127.0.0.1:8080' curl 'https://api.github.com/zen'\n" +
+		"\n" +
+		"# variant 2 — bare (assumes you have already run: eval \"$(drawbridge env)\")\n" +
+		"curl 'https://api.github.com/zen'\n"
+	if got != want {
+		t.Errorf("renderCurl GET mismatch.\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestRenderCurl_POST_HeadersAndBody(t *testing.T) {
+	req, err := buildTestRequest(
+		"https://api.openai.com/v1/x", "POST",
+		[]string{"Content-Type: application/json", "Authorization: Bearer abc"},
+		`{"q":"hi"}`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	renderCurl(&buf, req, `{"q":"hi"}`, "", "127.0.0.1:8080")
+	got := buf.String()
+	for _, want := range []string{
+		"-X 'POST'",
+		"-H 'Authorization: Bearer abc'",
+		"-H 'Content-Type: application/json'",
+		`--data-raw '{"q":"hi"}'`,
+		"'https://api.openai.com/v1/x'",
+		"https_proxy='http://127.0.0.1:8080' http_proxy='http://127.0.0.1:8080' curl ",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	// header sort ordering: Authorization should appear before Content-Type
+	if idxA, idxC := strings.Index(got, "Authorization"), strings.Index(got, "Content-Type"); idxA == -1 || idxC == -1 || idxA > idxC {
+		t.Errorf("expected Authorization before Content-Type:\n%s", got)
+	}
+}
+
+func TestRenderCurl_BodyFile(t *testing.T) {
+	dir := t.TempDir()
+	bodyFile := filepath.Join(dir, "with space", "payload.json")
+	if err := os.MkdirAll(filepath.Dir(bodyFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bodyFile, []byte(`{"x":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, err := buildTestRequest("http://x.example/upload", "POST", nil, "", bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	renderCurl(&buf, req, "", bodyFile, "127.0.0.1:8080")
+	got := buf.String()
+	wantToken := "--data-binary @" + shellQuote(bodyFile)
+	if !strings.Contains(got, wantToken) {
+		t.Errorf("expected %q in output; got:\n%s", wantToken, got)
+	}
+	if strings.Contains(got, "--data-raw") {
+		t.Errorf("--body-file should not produce --data-raw:\n%s", got)
+	}
+}
+
+func TestRenderCurl_QuotingHazards(t *testing.T) {
+	req, err := buildTestRequest(
+		"https://x.example/?q='hi'", "POST",
+		[]string{`X-Note: it's "fine"`},
+		`a'b$c;|&`, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	renderCurl(&buf, req, `a'b$c;|&`, "", "127.0.0.1:8080")
+	got := buf.String()
+	for _, want := range []string{
+		`'https://x.example/?q='\''hi'\'''`,                // url
+		`-H 'X-Note: it'\''s "fine"'`,                      // header
+		`--data-raw 'a'\''b$c;|&'`,                          // body
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing escaped form %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderCurl_BothVariantsBuiltFromSameArgs(t *testing.T) {
+	req, err := buildTestRequest("http://x.example/", "POST",
+		[]string{"X-A: one"}, "body", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	renderCurl(&buf, req, "body", "", "127.0.0.1:8080")
+	out := buf.String()
+	envPrefix := "https_proxy='http://127.0.0.1:8080' http_proxy='http://127.0.0.1:8080' "
+	// extract variant-1 line (after first variant comment)
+	v1Header := "# variant 1 — proxy env embedded inline (works in a fresh shell)\n"
+	v2Header := "# variant 2 — bare (assumes you have already run: eval \"$(drawbridge env)\")\n"
+	v1Start := strings.Index(out, v1Header) + len(v1Header)
+	v1End := strings.Index(out[v1Start:], "\n") + v1Start
+	v2Start := strings.Index(out, v2Header) + len(v2Header)
+	v2End := strings.Index(out[v2Start:], "\n") + v2Start
+	v1, v2 := out[v1Start:v1End], out[v2Start:v2End]
+	if got, want := strings.TrimPrefix(v1, envPrefix), v2; got != want {
+		t.Errorf("variant 1 minus env prefix should equal variant 2.\n v1-prefix=%q\n      v2=%q", got, want)
+	}
+}
+
+func TestTestCmd_PrintCurl_NoDaemonNeeded(t *testing.T) {
+	// Point proxy at a closed port; --print-curl must not dial.
+	cfgPath, _ := minimalTestYaml(t, "127.0.0.1", 1)
+	cmd := newTestCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"-c", cfgPath, "--print-curl", "http://example.com/path"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("--print-curl must not contact the daemon; got err: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "curl 'http://example.com/path'") {
+		t.Errorf("expected bare curl line; got:\n%s", out)
+	}
+	if !strings.Contains(out, "https_proxy='http://127.0.0.1:1'") {
+		t.Errorf("expected env-prefix line with proxy URL; got:\n%s", out)
 	}
 }
 
