@@ -68,6 +68,26 @@ llm:
   on_unavailable: ask_user
   confidence_floor: medium
 
+  # --- Azure OpenAI (AOAI) example -------------------------------
+  # To use Azure OpenAI instead of Anthropic, replace the llm block
+  # above with the one below. The endpoint is the deployment-scoped
+  # chat-completions URL; the api-version is the only Azure-specific
+  # query string. Drawbridge sends `api-key: <key>` (not Bearer)
+  # automatically when provider is `aoai`.
+  #
+  # llm:
+  #   enabled: true
+  #   provider: aoai
+  #   model:    <deployment-name>     # the Azure deployment, not the underlying model id
+  #   endpoint: https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-02-15-preview
+  #   api_key_path: /etc/drawbridge/aoai.key
+  #   timeout_seconds: 8
+  #   cache_ttl_seconds: 300
+  #   send_body: false
+  #   on_unavailable: ask_user
+  #   confidence_floor: medium
+  # ---------------------------------------------------------------
+
   # 4. Directives — the operator's system-prompt content for the
   #    advisor. Sent verbatim with every classification request.
   directives: |
