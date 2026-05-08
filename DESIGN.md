@@ -929,12 +929,12 @@ and produce a report of which past decisions would change.
 trollbridge evaluates each request in a fixed order. The first
 stage that fires produces the decision; later stages do not run.
 
-1. **Deny list (flat text).** Match against `policy.deny_files`
-   patterns. A match is a final deny. The rule engine is not
-   consulted; the LLM advisor is not consulted; no approval is
-   requested.
-2. **Allow list (flat text).** Match against
-   `policy.allow_files` patterns. A match is a final allow. Same
+1. **Deny list (inline).** Match against `lists.deny` patterns
+   from `trollbridge.yaml`. A match is a final deny. The rule
+   engine is not consulted; the LLM advisor is not consulted; no
+   approval is requested.
+2. **Allow list (inline).** Match against `lists.allow` patterns
+   from `trollbridge.yaml`. A match is a final allow. Same
    short-circuit semantics as the deny list.
 3. **YAML rule engine.** Evaluate `policy.include` rules in
    priority order; first match decides. Rules MAY produce
@@ -1034,15 +1034,25 @@ out of scope for Phase 1 but the seam exists.
 
 The flat lists are the simplest authoring surface and the
 load-bearing reason most deployments do not need YAML rules at
-all. They live in plain-text files referenced by
-`policy.allow_files` and `policy.deny_files`.
+all. They live as inline arrays inside `trollbridge.yaml`:
 
-Format: one pattern per line. Blank lines and lines starting
-with `#` are ignored; an inline comment after whitespace + `#`
-is also stripped. Each pattern is
+```yaml
+lists:
+  allow:
+    - api.github.com
+    - "*.npmjs.org"
+    - pypi.org
+    - files.pythonhosted.org
+  deny:
+    - 169.254.169.254
+    - metadata.google.internal
+    - metadata.azure.com
+```
+
+Each entry is a pattern of the form
 
 ```
-host[:port][/path]
+[<scheme>://]host[:port][/path]
 ```
 
 with these wildcard semantics:
@@ -1064,6 +1074,9 @@ with these wildcard semantics:
   - `/api/*`: prefix match (`/api/foo`, `/api/`, etc.).
   - `/exact`: exact match only.
   - Mid-string `*` in paths is NOT supported.
+- `scheme` (optional prefix)
+  - omitted: any scheme.
+  - `https://` or `http://`: scheme-scoped match.
 
 Pipeline placement is per §10.0: the deny list is checked
 first, then the allow list, then the YAML engine. Deny wins on
@@ -1072,39 +1085,19 @@ evaluated, no advisor consulted, no approval requested.
 
 The audit log distinguishes flat-list decisions:
 `decision_source` is `denylist` or `allowlist`, and `rule_id`
-is the source-file location (`<path>:<line>`) so the operator
-can locate the matched line.
-
-Example `allow.txt`:
-
-```
-# Coding agent baseline.
-api.github.com
-*.npmjs.org
-pypi.org
-files.pythonhosted.org
-```
-
-Example `deny.txt`:
-
-```
-# Cloud instance metadata services.
-169.254.169.254
-metadata.google.internal
-metadata.azure.com
-```
-
-`trollbridge init` writes default `allow.txt` and `deny.txt`
-files alongside `trollbridge.yaml` so a fresh deployment has a
-working starting point.
+identifies the matched pattern entry so the operator can locate
+it in `trollbridge.yaml`.
 
 #### 10.8.1 Mutation is human-only
 
 The flat lists are mutated only by:
 
-1. The operator hand-editing the file in any text editor.
+1. The operator hand-editing `trollbridge.yaml` in any text
+   editor.
 2. The interactive console (`trollbridge run` with stdin
-   attached to a tty); see §13.7.
+   attached to a tty); see §13.7. Console commands `allow X`
+   / `deny X` / `remove X` invoke `internal/configwrite`,
+   which atomically rewrites the YAML file in place.
 
 The LLM advisor MUST NOT modify either list. The advisor's
 output schema (§9.4) MAY include a `suggested_rule` field
@@ -1113,50 +1106,51 @@ writes the lists in response to advisor output. This is a
 load-bearing safety property: a malicious or jailbroken advisor
 cannot expand its own permitted destinations.
 
-#### 10.8.2 Hot reload
+#### 10.8.2 Mutation propagation
 
-trollbridge watches each configured allow/deny file's mtime and
-size at a 1-second cadence. When a change is detected, the file
-is re-parsed and the in-memory list pointer is swapped
-atomically. Reload events are written to the operational log:
-`trollbridge: allowlist reloaded (N patterns)`.
+Console mutations update the in-memory list pointer in the
+same call that writes the YAML file: `configwrite` returns,
+and the server's `SetLists` runs synchronously before the
+console acknowledges the operator's input. There is no file
+watcher; no race window between disk and memory.
 
-If the new file fails to parse, trollbridge MUST keep the prior
-in-memory list and emit a warning. The proxy never serves with
-a half-loaded list.
+Operator hand-edits to `trollbridge.yaml` are picked up via
+SIGHUP or `trollbridge rules reload`, which re-reads the
+config and re-installs both the rule engine and the inline
+lists. Until reload, the running proxy continues to use the
+prior in-memory lists.
 
-Mtime polling (rather than fsnotify) is the chosen mechanism:
-no new dependency, robust across atomic-rename editors, and the
-1-second latency is acceptable for the operator-edit workflow.
+If a reload fails to parse, trollbridge MUST keep the prior
+in-memory state and emit a warning. The proxy never serves
+with a half-loaded list.
 
 #### 10.8.3 Sorted insertion
 
-When trollbridge writes a list file (via the console), the file
-MUST be re-sorted before write. Sort key:
+When the console writes the YAML file (via `configwrite`),
+new entries are inserted into a sorted position rather than
+appended at the end. Sort key:
 
 1. Reversed labels of the host (case-insensitive).
 2. Wildcard `*` ordered AFTER literal labels at the same
    position. So `*.github.com` falls AFTER `api.github.com`
-   rather than at the top of the file.
+   rather than at the top of the list.
 3. Port (numeric; omitted or `*` = 0, so `host` sorts before
    `host:443`).
 4. Path string.
-5. Raw line text as a final stability tiebreak.
+5. Raw entry text as a final stability tiebreak.
 
-Leading comment lines (lines starting with `#` before any
-non-comment line) are preserved at the top of the file in
-their original order. Inline comments after a pattern stay
-with their pattern. Blank lines among patterns are dropped.
+Surrounding comments and trailing inline comments inside the
+`lists:` block are preserved by the YAML library; comments
+elsewhere in `trollbridge.yaml` are unaffected.
 
-Hand-written files are NOT re-sorted on read. The watcher only
-parses the file; it does not write back. Sorting fires only
-when the console writes (because that is when trollbridge
+Hand-edited entries are NOT re-sorted on reload. Sorting fires
+only when the console writes (because that is when trollbridge
 authors content).
 
 #### 10.8.4 Advisor receives lists as read-only input
 
 When the advisor is consulted, the request's `Input` (§9.3)
-includes the operator's current allow and deny lines (capped
+includes the operator's current allow and deny entries (capped
 at 200 per list to bound the LLM input). This lets the advisor
 classify a request in light of what the operator already
 trusts or blocks. The lists remain read-only — see §10.8.1.
