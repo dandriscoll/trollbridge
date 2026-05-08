@@ -86,35 +86,6 @@ approvals:
   on_timeout: deny
   max_pending: 100
 
-# Identities — how clients are recognized at the proxy. Independent
-# of how operators authenticate to the controller (mTLS, above).
-identities:
-  - id: dev-laptop
-    match:
-      source_ip: 127.0.0.1
-
-# Structured rules for advanced cases (time windows, body patterns,
-# ask_user / ask_llm effects). Optional; the inline allow/deny lists
-# cover most cases.
-policy:
-  include:
-    - rules.yaml
-`
-
-const defaultRulesYAML = `# Optional structured rules. The simple cases live inline in
-# trollbridge.yaml under lists.allow / lists.deny. Reach for this
-# file only when you need time windows, body patterns, identity
-# scoping, or ask_user / ask_llm effects.
-#
-# Example:
-#
-# - id: ask-on-mutating-github
-#   description: Mutating calls to api.github.com require approval.
-#   priority: 300
-#   match:
-#     host: api.github.com
-#     method: ["POST", "PUT", "PATCH", "DELETE"]
-#   effect: ask_user
 `
 
 func newInitCmd() *cobra.Command {
@@ -122,7 +93,7 @@ func newInitCmd() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create a default trollbridge.yaml + rules.yaml.",
+		Short: "Create a default trollbridge.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				dir = "."
@@ -132,7 +103,6 @@ func newInitCmd() *cobra.Command {
 			}
 			files := map[string]string{
 				filepath.Join(dir, "trollbridge.yaml"): defaultConfigYAML,
-				filepath.Join(dir, "rules.yaml"):      defaultRulesYAML,
 			}
 			created := []string{}
 			for path, content := range files {

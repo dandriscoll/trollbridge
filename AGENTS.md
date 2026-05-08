@@ -93,17 +93,14 @@ laptop use:
 For a system install, use a path the daemon will read (the systemd
 unit in `packaging/systemd/` reads `/etc/trollbridge/`).
 
-`init` writes four files into the directory:
-
-| file              | what it is                                       |
-|-------------------|--------------------------------------------------|
-| `trollbridge.yaml` | full config; default mode is `default-deny`      |
-| `allow.txt`       | flat allow list (one pattern per line)           |
-| `deny.txt`        | flat deny list (deny wins over allow)            |
-| `rules.yaml`      | optional structured rules (time windows, identity scope, ask_llm/ask_user effects) |
-
-Open `trollbridge.yaml` and skim it. It is a copy of
-`config.example.yaml` with sensible defaults; every key is annotated.
+`init` writes a single annotated `trollbridge.yaml` (a copy of
+`config.example.yaml` with sensible defaults; every key is annotated).
+Allow / deny patterns live inline under `lists:` and are mutated in
+place when the operator types `allow X` / `deny X` in the console.
+Advanced features — `identities:` and structured rule files via
+`policy.include:` — are not in the default; add them when you need
+time windows, identity scoping, body patterns, or `ask_user` /
+`ask_llm` effects.
 
 ## Step 3 — Set policy posture
 

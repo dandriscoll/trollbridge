@@ -160,19 +160,6 @@ forwarder:
 shutdown:
   grace_seconds: 30
 
-# Identities — how clients are recognized at the proxy. Independent
-# of how operators authenticate to the controller (mTLS, above).
-identities:
-  - id: coding-agent
-    match:
-      mtls_cn: agent.local
-  - id: ci-runner
-    match:
-      bearer_token_sha256: "REPLACE_WITH_SHA256_OF_TOKEN"
-  - id: dev-laptop
-    match:
-      source_ip: 127.0.0.1
-
 # Structured rules for advanced cases. Inline lists cover the simple
 # cases; reach for include only when you need time windows, body
 # patterns, identity scoping, or ask_user / ask_llm effects.
