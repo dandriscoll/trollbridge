@@ -37,7 +37,7 @@ import (
 )
 
 // Version is set at build time via -ldflags="-X ...".
-var Version = "0.3.0-dev"
+var Version = "0.3.1-dev"
 
 // Server holds the long-lived state of a running drawbridge.
 type Server struct {
