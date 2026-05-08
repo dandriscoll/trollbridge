@@ -10,10 +10,9 @@ deps.
 - [`AGENTS.md`](AGENTS.md) — instructions for an LLM coding agent
   asked to set up drawbridge for you.
 - [`docs/deploy.md`](docs/deploy.md) — deployment recipes.
-- [`config.example.yaml`](config.example.yaml) — annotated config.
-- [`allow.example.txt`](allow.example.txt) /
-  [`deny.example.txt`](deny.example.txt) — flat allow/deny
-  lists (the simple authoring surface; see DESIGN.md §10.8).
+- [`config.example.yaml`](config.example.yaml) — annotated config;
+  the simple authoring surface lives inline as `lists.allow` /
+  `lists.deny`.
 - [`rules/base.example.yaml`](rules/base.example.yaml) —
   structured rules (for the advanced cases).
 - [`packaging/`](packaging/) — systemd unit, Dockerfile, Incus
@@ -124,11 +123,12 @@ For TLS interception (separate from controller mTLS — same CA):
 ```
 
 When `drawbridge run` is interactive, it presents a console
-prompt for live edits to the flat allow / deny lists:
+prompt for live edits to `lists.allow` / `lists.deny` in
+drawbridge.yaml:
 
 ```
 drawbridge> allow api.github.com
-added api.github.com to allow.txt (3 patterns total)
+added api.github.com to allow (3 patterns total)
 drawbridge> list allow
 allow:
   127.0.0.1
@@ -137,10 +137,12 @@ allow:
 (3 patterns)
 ```
 
-The console writes are sorted (§10.8.3); the file watcher
-(§10.8.2) picks up out-of-band edits within ~1 second.
-List mutation is human-only — the LLM advisor cannot modify
-allow.txt or deny.txt under any circumstance.
+Mutations write back to drawbridge.yaml in place via a
+yaml.v3 Node-API edit — comments outside the `lists:`
+subtree survive. The running daemon re-parses the file
+after each mutation. List mutation is human-only — the
+LLM advisor cannot modify `lists.allow` / `lists.deny`
+under any circumstance.
 
 See `docs/deploy.md` for deployment recipes and `DESIGN.md` for
 the full specification.
