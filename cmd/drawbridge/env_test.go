@@ -15,16 +15,17 @@ func minimalConfig(t *testing.T, listenAddress string, listenPort int) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "drawbridge.yaml")
-	adapter := listenAddress
-	if listenAddress == "127.0.0.1" {
-		adapter = "lo"
+	host := listenAddress
+	switch listenAddress {
+	case "127.0.0.1":
+		host = "lo"
+	case "0.0.0.0":
+		host = "all"
 	}
 	body := []byte(strings.Join([]string{
-		"drawbridge_version: 2",
-		"adapter: " + adapter,
-		"ports:",
-		fmt.Sprintf("  proxy: %d", listenPort),
-		"  control: 0",
+		"drawbridge_version: 3",
+		fmt.Sprintf("proxy: %s:%d", host, listenPort),
+		"control: 0",
 		"mode: default-deny",
 		"controller: {auth: mtls}",
 		"approvals: {timeout_seconds: 60, on_timeout: deny, max_pending: 16}",

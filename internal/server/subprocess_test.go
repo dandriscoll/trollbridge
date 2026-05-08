@@ -67,9 +67,9 @@ func TestSubprocess_DrawbridgeBinaryServesAndAuditsAndExitsCleanly(t *testing.T)
 		t.Fatal(err)
 	}
 	_ = ctrlAddr
-	cfgYAML := fmt.Sprintf(`drawbridge_version: 2
-adapter: lo
-ports: {proxy: %s, control: 0}
+	cfgYAML := fmt.Sprintf(`drawbridge_version: 3
+proxy: lo:%s
+control: 0
 mode: default-deny
 logging:
   audit_path: %s

@@ -18,9 +18,9 @@ func minimalV2Yaml(t *testing.T, allowSeed, denySeed []string) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "drawbridge.yaml")
 	var b strings.Builder
-	b.WriteString("drawbridge_version: 2\n")
-	b.WriteString("adapter: lo\n")
-	b.WriteString("ports: {proxy: 8080, control: 8081}\n")
+	b.WriteString("drawbridge_version: 3\n")
+	b.WriteString("proxy: lo:8080\n")
+	b.WriteString("control: lo:8081\n")
 	b.WriteString("controller: {auth: mtls}\n")
 	b.WriteString("mode: default-deny\n")
 	b.WriteString("logging: {audit_path: /tmp/audit.jsonl}\n")

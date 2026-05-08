@@ -208,14 +208,22 @@ chmod 600 /etc/drawbridge/llm.key
 
 Do not echo the key into your chat history.
 
-**Provider choice.** `anthropic` is named; for any other vendor, use
-their HTTP endpoint and ensure their response shape conforms to
-DESIGN.md §9 (a JSON object with `effect`, `confidence`, `reason`,
-optional `modifiers`, `scope`, `suggested_rule`). The generic
-`HTTPClassifier` sends `Authorization: Bearer <api_key>` and POSTs
-the request shape from DESIGN.md §9. If the user's vendor needs a
-different auth header, do not edit the binary — tell the user that
-provider needs adapter work.
+**Provider choice.** Two named providers control the auth header:
+- `anthropic` (default) → `Authorization: Bearer <api_key>`
+- `aoai` (Azure OpenAI) → `api-key: <api_key>`
+
+Other strings fall back to generic Bearer with a startup warning.
+The wire payload (DESIGN.md §9 — a JSON object with `effect`,
+`confidence`, `reason`, optional `modifiers`, `scope`,
+`suggested_rule`) is fixed across providers; point `endpoint:` at a
+wrapper that speaks it.
+
+**Verify the LLM connection** with `drawbridge doctor -c <path>`
+before the first `drawbridge run`: it loads the YAML, parses the
+rules and lists, and dispatches a synthetic classification call
+against the configured provider. Any mismatched endpoint, bad key,
+or misnamed provider surfaces as a `FAIL: …` line with a non-zero
+exit, instead of being a silent degradation at runtime.
 
 **Failure modes the user should know:**
 

@@ -129,10 +129,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		queue:    q,
 		sessions: t,
 		control: func() *control.Server {
-			addr := ""
-			if cfg.Ports.Control != 0 {
-				addr = cfg.BindAddr(cfg.Ports.Control)
-			}
+			addr := cfg.Control.Addr() // "" when disabled
 			c := control.New(addr, q, t, engine)
 			c.SetOpLog(opLog)
 			return c
@@ -162,9 +159,10 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 
 	// Load the CA. The CA is needed in two places:
 	//   - TLS interception (when cfg.Interception.Enabled)
-	//   - mTLS controller (when cfg.Ports.Control != 0)
+	//   - mTLS controller (when cfg.Control is bound)
 	// If either is in use, the CA must load successfully.
-	caRequired := cfg.Interception.Enabled || cfg.Ports.Control != 0
+	controllerOn := !cfg.Control.Disabled()
+	caRequired := cfg.Interception.Enabled || controllerOn
 	if caRequired {
 		ttl := time.Duration(cfg.Interception.LeafCertTTLHours) * time.Hour
 		caObj, err := ca.Load(
@@ -175,7 +173,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		)
 		if err != nil {
 			return nil, fmt.Errorf("CA load failed (required for %s): %w; fix: run `drawbridge ca init`",
-				caRequiredReason(cfg.Interception.Enabled, cfg.Ports.Control != 0), err)
+				caRequiredReason(cfg.Interception.Enabled, controllerOn), err)
 		}
 		if cfg.Interception.Enabled {
 			s.ca = caObj
@@ -201,19 +199,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 	}
 	var prov advisor.Provider
 	if cfg.LLM.Enabled {
-		// Default provider: HTTPClassifier pointing at the
-		// configured endpoint. Operators wiring Anthropic-shaped
-		// endpoints can swap the JSON shape on the receiving end.
-		apiKey := ""
-		if cfg.LLM.APIKeyPath != "" {
-			if data, err := os.ReadFile(cfg.LLM.APIKeyPath); err == nil {
-				apiKey = strings.TrimSpace(string(data))
-			}
-		}
-		prov = &advisor.HTTPClassifier{
-			Endpoint: cfg.LLM.Endpoint,
-			APIKey:   apiKey,
-		}
+		prov = buildAdvisorProvider(cfg.LLM, opLog)
 	}
 	s.advisor = advisor.New(advCfg, prov)
 	s.transport = &http.Transport{
@@ -222,7 +208,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		IdleConnTimeout:     90 * time.Second,
 	}
 	s.httpSrv = &http.Server{
-		Addr:              cfg.BindAddr(cfg.Ports.Proxy),
+		Addr:              cfg.Proxy.Addr(),
 		Handler:           http.HandlerFunc(s.serveHTTP),
 		ReadHeaderTimeout: 30 * time.Second,
 		ConnState: func(c net.Conn, state http.ConnState) {
@@ -266,10 +252,7 @@ func (s *Server) ControlAddr() string {
 	if s.control == nil {
 		return ""
 	}
-	if s.cfg.Ports.Control == 0 {
-		return ""
-	}
-	return s.cfg.BindAddr(s.cfg.Ports.Control)
+	return s.cfg.Control.Addr()
 }
 
 // caRequiredReason returns a short string for error messages
@@ -884,6 +867,38 @@ func statusFromEffect(e types.Effect) int {
 
 // silence imports we may not use in some build configs.
 var _ = config.Config{}
+
+// buildAdvisorProvider picks the right advisor.HTTPClassifier auth
+// scheme for the configured provider name. `anthropic` (and the
+// empty default) use the existing Bearer header; `aoai` uses Azure
+// OpenAI's `api-key` header. Unknown values fall back to Bearer
+// with a one-line warning so an unrecognized name does not block
+// startup — the operator's wrapper might already be Bearer-shaped.
+func buildAdvisorProvider(llm config.LLM, opLog *slog.Logger) advisor.Provider {
+	apiKey := ""
+	if llm.APIKeyPath != "" {
+		if data, err := os.ReadFile(llm.APIKeyPath); err == nil {
+			apiKey = strings.TrimSpace(string(data))
+		}
+	}
+	scheme := advisor.AuthBearer
+	switch strings.ToLower(strings.TrimSpace(llm.Provider)) {
+	case "", "anthropic":
+		scheme = advisor.AuthBearer
+	case "aoai":
+		scheme = advisor.AuthAzureAPIKey
+	default:
+		if opLog != nil {
+			opLog.Warn("unrecognized llm.provider; using generic Bearer auth",
+				"event", "advisor_provider_unknown", "provider", llm.Provider)
+		}
+	}
+	return &advisor.HTTPClassifier{
+		Endpoint:   llm.Endpoint,
+		APIKey:     apiKey,
+		AuthScheme: scheme,
+	}
+}
 
 // rawPatterns returns the raw line text of every pattern on the
 // supplied list. Used to surface lists to the advisor as input.

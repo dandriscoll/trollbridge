@@ -8,18 +8,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const defaultConfigYAML = `drawbridge_version: 2
+const defaultConfigYAML = `drawbridge_version: 3
 
-# 1. Adapter — the single network knob the daemon binds to.
-#    Values: lo (loopback), 0.0.0.0 (all interfaces), or a literal IP/hostname.
-adapter: lo
-
-# Ports for the three surfaces. proxy + control are required;
-# metrics: 0 disables the Prometheus endpoint.
-ports:
-  proxy:   8080
-  control: 8081
-  metrics: 0
+# 1. Per-surface bind. Each value is "<host>:<port>". Use:
+#      lo   = 127.0.0.1
+#      all  = 0.0.0.0
+#      a literal IP or hostname (e.g. 10.1.2.3, drawbridge.internal)
+#      [fd00::1]:8081  for IPv6 literals.
+#    'metrics: 0' disables the (unimplemented) Prometheus endpoint.
+proxy:   lo:8080
+control: lo:8081
+metrics: 0
 
 # 2. Allow / deny lists — drawbridge writes them back from the REPL.
 #    Each entry is host[:port][/path] with an optional <scheme>:// prefix
@@ -38,6 +37,9 @@ lists:
     - metadata.google.internal
 
 # 3. LLM — the advisor that classifies ambiguous requests.
+#    provider: anthropic   -> Authorization: Bearer <key>
+#    provider: aoai        -> api-key: <key>          (Azure OpenAI)
+#    Other values fall back to generic Bearer with a startup warning.
 llm:
   enabled: false
   provider: anthropic
@@ -158,6 +160,7 @@ func newInitCmd() *cobra.Command {
 			fmt.Fprintln(out, "  drawbridge ca client-cert <op>                  # issue your operator client cert")
 			fmt.Fprintln(out, "  install <op>.{crt,key} at ~/.drawbridge/controller-client.{crt,key}")
 			fmt.Fprintln(out, "  drawbridge validate -c", filepath.Join(dir, "drawbridge.yaml"))
+			fmt.Fprintln(out, "  drawbridge doctor   -c", filepath.Join(dir, "drawbridge.yaml"), "  # check yaml + LLM connection")
 			fmt.Fprintln(out, "  drawbridge run      -c", filepath.Join(dir, "drawbridge.yaml"))
 			fmt.Fprintln(out, "  eval \"$(drawbridge env -c "+filepath.Join(dir, "drawbridge.yaml")+")\"   # wire client env")
 			return nil

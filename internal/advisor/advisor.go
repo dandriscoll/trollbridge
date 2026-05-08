@@ -343,16 +343,31 @@ func (c *cache) put(k string, v cacheValue) {
 	c.mu.Unlock()
 }
 
+// AuthScheme selects how HTTPClassifier authenticates with the
+// advisor endpoint. Drawbridge's wire shape (DESIGN.md §9) is fixed
+// across providers; only the auth header changes.
+type AuthScheme int
+
+const (
+	// AuthBearer sends `Authorization: Bearer <api_key>`. Used by
+	// `provider: anthropic` and as the generic default.
+	AuthBearer AuthScheme = iota
+	// AuthAzureAPIKey sends `api-key: <api_key>`. Used by
+	// `provider: aoai` (Azure OpenAI).
+	AuthAzureAPIKey
+)
+
 // HTTPClassifier is a generic JSON-over-HTTP advisor provider that
 // posts the Input to a configured endpoint and expects the
 // configured response shape. The DESIGN.md §9 schema is the
 // expected shape; HTTPClassifier is intentionally generic so
 // operators can wire any compatible endpoint.
 type HTTPClassifier struct {
-	Endpoint string
-	APIKey   string
-	Headers  map[string]string
-	Client   *http.Client
+	Endpoint   string
+	APIKey     string
+	AuthScheme AuthScheme
+	Headers    map[string]string
+	Client     *http.Client
 }
 
 // Classify implements Provider.
@@ -370,7 +385,12 @@ func (h *HTTPClassifier) Classify(ctx context.Context, in Input) (Output, error)
 		req.Header.Set(k, v)
 	}
 	if h.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+h.APIKey)
+		switch h.AuthScheme {
+		case AuthAzureAPIKey:
+			req.Header.Set("api-key", h.APIKey)
+		default:
+			req.Header.Set("Authorization", "Bearer "+h.APIKey)
+		}
 	}
 	resp, err := h.Client.Do(req)
 	if err != nil {

@@ -1,7 +1,7 @@
-// Package config loads and validates drawbridge.yaml. v2 schema is
-// organised around the four operator decisions: which adapter the
-// daemon is open on, what is allowed/denied, what LLM is used as the
-// advisor, and what directives the advisor follows.
+// Package config loads and validates drawbridge.yaml. v3 schema is
+// organised around per-surface bind values: each of `proxy`,
+// `control`, `metrics` is a single `<host>:<port>` string. The host
+// supports two aliases: `all` (= 0.0.0.0) and `lo` (= 127.0.0.1).
 package config
 
 import (
@@ -9,26 +9,29 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 // SchemaVersion is the current drawbridge.yaml schema version.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
-// Config is the top-level shape of drawbridge.yaml (v2).
+// Config is the top-level shape of drawbridge.yaml (v3).
 type Config struct {
 	DrawbridgeVersion int `yaml:"drawbridge_version"`
 
-	// The four decisions: foregrounded.
-
-	// Adapter is one of: `lo` (loopback), `0.0.0.0` (all interfaces),
-	// or a literal IP address / hostname. Used to bind the proxy,
-	// control plane, and (optionally) the metrics endpoint.
-	Adapter string `yaml:"adapter"`
-
-	// Ports for each surface. 0 disables.
-	Ports Ports `yaml:"ports"`
+	// Per-surface binds. Each value combines host and port:
+	//   proxy:   lo:8080         # 127.0.0.1
+	//   control: 127.0.0.1:8081
+	//   metrics: 0               # disabled
+	// The host accepts the aliases "all" (= 0.0.0.0) and "lo"
+	// (= 127.0.0.1); literal IPs and hostnames pass through.
+	// Bracket IPv6 literals: "[fd00::1]:8081".
+	Proxy   Bind `yaml:"proxy"`
+	Control Bind `yaml:"control"`
+	Metrics Bind `yaml:"metrics"`
 
 	// Lists are the inline allow / deny patterns. drawbridge reads
 	// them at startup; the console REPL writes them back via a
@@ -40,8 +43,6 @@ type Config struct {
 	// Controller is the security posture for the operator-facing
 	// control plane. mTLS over the existing CA is the only mode.
 	Controller Controller `yaml:"controller"`
-
-	// Secondary configuration; defaults usually fine.
 
 	Mode string `yaml:"mode"` // default-deny | default-allow | default-ask
 
@@ -57,12 +58,138 @@ type Config struct {
 	DecisionCache DecisionCache `yaml:"decisioncache"`
 }
 
-// Ports is the flat per-surface port map. All three surfaces bind to
-// `<adapter>:<port>`. Port 0 disables the surface.
-type Ports struct {
-	Proxy   int `yaml:"proxy"`
-	Control int `yaml:"control"`
-	Metrics int `yaml:"metrics"`
+// Bind is a per-surface listen address: host + port. Port 0 means
+// the surface is disabled (where the surface is optional).
+type Bind struct {
+	// Host is the resolved literal: "127.0.0.1", "0.0.0.0", "::",
+	// a literal IP, or a hostname. Aliases (`all`, `lo`) have been
+	// resolved by the time the field is populated.
+	Host string
+	// Port is 1..65535, or 0 to indicate disabled.
+	Port int
+	// Raw is the original YAML scalar, kept for error messages.
+	Raw string
+}
+
+// UnmarshalYAML accepts a scalar (`lo:8080`, `all:8080`, `0`, `""`)
+// and resolves it into a Bind. Validation that's surface-specific
+// (e.g. proxy must not be disabled) runs in Config.validate.
+func (b *Bind) UnmarshalYAML(node *yaml.Node) error {
+	// Accept scalars only — `proxy: lo:8080`, not a mapping.
+	if node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("expected `<host>:<port>` scalar; got node kind %d", node.Kind)
+	}
+	parsed, err := parseBindScalar(node.Value)
+	if err != nil {
+		return err
+	}
+	*b = parsed
+	return nil
+}
+
+// parseBindScalar converts a single yaml scalar into a Bind.
+// Empty / "0" → disabled. Otherwise expects "<host>:<port>".
+func parseBindScalar(raw string) (Bind, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" || s == "0" {
+		return Bind{Raw: raw, Port: 0}, nil
+	}
+	host, port, err := splitHostPort(s)
+	if err != nil {
+		return Bind{}, fmt.Errorf("bad bind value %q: %s; expected `<host>:<port>` (e.g. `lo:8080`, `all:8080`, `127.0.0.1:8080`, `[fd00::1]:8081`)", raw, err)
+	}
+	host = resolveHostAlias(host)
+	if port < 1 || port > 65535 {
+		return Bind{}, fmt.Errorf("bad bind value %q: port %d outside 1..65535", raw, port)
+	}
+	return Bind{Host: host, Port: port, Raw: raw}, nil
+}
+
+// splitHostPort handles bracketed IPv6 (`[fd00::1]:8080`) and
+// host:port. It does not accept a bare port or a bare host.
+func splitHostPort(s string) (string, int, error) {
+	if strings.HasPrefix(s, "[") {
+		end := strings.LastIndex(s, "]")
+		if end < 0 {
+			return "", 0, fmt.Errorf("missing closing ']' on IPv6 host")
+		}
+		host := s[1:end]
+		rest := s[end+1:]
+		if !strings.HasPrefix(rest, ":") {
+			return "", 0, fmt.Errorf("missing ':<port>' after IPv6 host")
+		}
+		port, err := strconv.Atoi(rest[1:])
+		if err != nil {
+			return "", 0, fmt.Errorf("port not an integer: %q", rest[1:])
+		}
+		return host, port, nil
+	}
+	idx := strings.LastIndex(s, ":")
+	if idx < 0 {
+		return "", 0, fmt.Errorf("missing port (use `host:port`)")
+	}
+	host := s[:idx]
+	if host == "" {
+		return "", 0, fmt.Errorf("missing host (use `lo:%s` or `all:%s`)", s[idx+1:], s[idx+1:])
+	}
+	port, err := strconv.Atoi(s[idx+1:])
+	if err != nil {
+		return "", 0, fmt.Errorf("port not an integer: %q", s[idx+1:])
+	}
+	return host, port, nil
+}
+
+// resolveHostAlias maps `all` → `0.0.0.0` and `lo` → `127.0.0.1`.
+// Other values pass through.
+func resolveHostAlias(h string) string {
+	switch strings.ToLower(strings.TrimSpace(h)) {
+	case "all":
+		return "0.0.0.0"
+	case "lo":
+		return "127.0.0.1"
+	}
+	return h
+}
+
+// Disabled returns true when the surface is off (port 0 / empty).
+func (b Bind) Disabled() bool { return b.Port == 0 }
+
+// Addr returns "<host>:<port>", bracketing IPv6 literals. Returns
+// "" when the bind is disabled.
+func (b Bind) Addr() string {
+	if b.Disabled() {
+		return ""
+	}
+	host := b.Host
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		host = "[" + host + "]"
+	}
+	return fmt.Sprintf("%s:%d", host, b.Port)
+}
+
+// ClientHost returns the address a client co-located with the daemon
+// should dial. Wildcard binds collapse to loopback; everything else
+// passes through (with IPv6 bracketed for URL use).
+func (b Bind) ClientHost() string {
+	switch b.Host {
+	case "", "0.0.0.0":
+		return "127.0.0.1"
+	case "::", "[::]":
+		return "[::1]"
+	}
+	if ip := net.ParseIP(b.Host); ip != nil && ip.To4() == nil {
+		return "[" + b.Host + "]"
+	}
+	return b.Host
+}
+
+// ClientAddr returns "<client-host>:<port>" for a client on the same
+// host as the daemon. Returns "" when the bind is disabled.
+func (b Bind) ClientAddr() string {
+	if b.Disabled() {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", b.ClientHost(), b.Port)
 }
 
 // Lists holds the inline allow / deny patterns. Each entry follows
@@ -74,17 +201,10 @@ type Lists struct {
 }
 
 // Controller carries the control-plane mTLS configuration. mTLS is
-// the only supported mode in v2; the field is present for forward
+// the only supported mode in v3; the field is present for forward
 // compatibility (e.g., adding `auth: oauth2` later).
 type Controller struct {
-	// Auth must be "mtls" (default and only valid value in v2).
-	Auth string `yaml:"auth"`
-
-	// ClientCAPath optionally overrides the CA used to verify
-	// operator client certs. When empty, drawbridge uses the
-	// interception CA (`interception.ca.cert_path`). Listing this
-	// separately is the escape hatch for an operator who wants the
-	// controller to trust a different CA than the proxy.
+	Auth         string `yaml:"auth"`
 	ClientCAPath string `yaml:"client_ca_path"`
 }
 
@@ -146,8 +266,6 @@ type Logging struct {
 	OperationalPath string `yaml:"operational_path"`
 }
 
-// Approvals controls the held-request queue — separate from the
-// controller's auth posture, which lives under `controller`.
 type Approvals struct {
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
 	OnTimeout      string `yaml:"on_timeout"`
@@ -189,8 +307,8 @@ type DecisionCache struct {
 }
 
 // Load reads config from path, applies defaults, validates, and
-// returns the resulting Config. Rejects v1 configs with a migration
-// message that names what changed.
+// returns the resulting Config. Rejects v1 / v2 configs with a
+// migration message that names what changed.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -204,16 +322,27 @@ func Load(path string) (*Config, error) {
 	}
 	if probe.Version == 1 {
 		return nil, fmt.Errorf(`config error in %s: drawbridge_version 1 is no longer supported.
-v2 reorganises the schema around four decisions:
-  - adapter:  one network interface for proxy/control/metrics (replaces listen.address + approvals.control_listen + logging.metrics_listen)
-  - ports:    flat block (proxy / control / metrics) on the chosen adapter
-  - lists:    inline allow/deny (replaces policy.allow_files / deny_files; .txt files no longer used)
-  - llm:      provider/model/key + an inline llm.directives multi-line string
-And replaces bearer-auth on the control plane with mTLS:
-  - controller.auth: mtls (default)
-  - issue an operator client cert with: drawbridge ca client-cert <name>
-Add 'drawbridge_version: 2' to the top of your file and migrate the
-fields above. See config.example.yaml for the canonical v2 shape.`, path)
+v2 reorganised the schema around four decisions; v3 then split the
+single `+"`adapter`"+` knob into per-surface binds. Migrate directly to
+v3:
+  - proxy:   <host>:<port>     (e.g. lo:8080)
+  - control: <host>:<port>     (e.g. lo:8081, 0 to disable)
+  - metrics: <host>:<port> | 0 (0 to disable)
+  - lists:   inline allow/deny
+  - llm:     provider/model/key + inline llm.directives
+  - controller.auth: mtls
+Set drawbridge_version: 3 and see config.example.yaml for the
+canonical shape.`, path)
+	}
+	if probe.Version == 2 {
+		return nil, fmt.Errorf(`config error in %s: drawbridge_version 2 is no longer supported.
+v3 combines the bind host and port per surface (replacing the single
+`+"`adapter`"+` knob and the `+"`ports`"+` block):
+  - proxy:   <host>:<port>     (replaces adapter + ports.proxy)
+  - control: <host>:<port>     (replaces adapter + ports.control; 0 disables)
+  - metrics: <host>:<port> | 0 (replaces adapter + ports.metrics)
+"all" is a new alias for 0.0.0.0; "lo" continues to mean 127.0.0.1.
+Set drawbridge_version: 3 and migrate the fields above.`, path)
 	}
 
 	var cfg Config
@@ -231,17 +360,15 @@ func (c *Config) applyDefaults() {
 	if c.DrawbridgeVersion == 0 {
 		c.DrawbridgeVersion = SchemaVersion
 	}
-	if c.Adapter == "" {
-		c.Adapter = "lo"
+	// Distinguish "field absent" (Raw == "") from "explicit disable"
+	// (Raw == "0"). Absent → apply default; explicit-0 → keep
+	// disabled and let validate() reject if the surface is required.
+	if c.Proxy.Raw == "" && c.Proxy.Port == 0 {
+		c.Proxy = Bind{Host: "127.0.0.1", Port: 8080, Raw: "lo:8080"}
 	}
-	if c.Ports.Proxy == 0 {
-		c.Ports.Proxy = 8080
-	}
-	// Ports.Control = 0 means the operator-facing control plane is
-	// disabled (CLI clients have nothing to connect to). The example
-	// yaml + `drawbridge init` write 8081 explicitly so the default
-	// install gets a working controller without surprise.
-	// Ports.Metrics = 0 means Prometheus endpoint disabled.
+	// Control / Metrics default to disabled. `drawbridge init`
+	// writes an explicit `control: lo:8081` so a fresh install gets
+	// a working controller without surprise.
 	if c.Controller.Auth == "" {
 		c.Controller.Auth = "mtls"
 	}
@@ -319,17 +446,33 @@ func (c *Config) validate(path string) error {
 	default:
 		return fmt.Errorf("config error in %s: `interception.leaf_key_type` must be `rsa-4096` or `ecdsa-p256`. Got: %q.", path, c.Interception.LeafKeyType)
 	}
-	if c.Ports.Proxy < 1 || c.Ports.Proxy > 65535 {
-		return fmt.Errorf("config error in %s: `ports.proxy` must be 1..65535. Got: %d.", path, c.Ports.Proxy)
+	if c.Proxy.Disabled() {
+		return fmt.Errorf("config error in %s: `proxy` is required (e.g. `proxy: lo:8080`)", path)
 	}
-	if c.Ports.Control != 0 && (c.Ports.Control < 1 || c.Ports.Control > 65535) {
-		return fmt.Errorf("config error in %s: `ports.control` must be 0 (disabled) or 1..65535. Got: %d.", path, c.Ports.Control)
+	// Port range checks already happen in parseBindScalar; surface
+	// the same shape here for any field that bypassed the parser.
+	if c.Proxy.Port < 1 || c.Proxy.Port > 65535 {
+		return fmt.Errorf("config error in %s: `proxy` port %d outside 1..65535", path, c.Proxy.Port)
 	}
-	if c.Ports.Metrics != 0 && (c.Ports.Metrics < 1 || c.Ports.Metrics > 65535) {
-		return fmt.Errorf("config error in %s: `ports.metrics` must be 0 (disabled) or 1..65535. Got: %d.", path, c.Ports.Metrics)
+	if !c.Control.Disabled() && (c.Control.Port < 1 || c.Control.Port > 65535) {
+		return fmt.Errorf("config error in %s: `control` port %d outside 1..65535", path, c.Control.Port)
 	}
-	if c.Ports.Control != 0 && c.Ports.Proxy == c.Ports.Control {
-		return fmt.Errorf("config error in %s: `ports.proxy` and `ports.control` must differ; both are %d.", path, c.Ports.Proxy)
+	if !c.Metrics.Disabled() && (c.Metrics.Port < 1 || c.Metrics.Port > 65535) {
+		return fmt.Errorf("config error in %s: `metrics` port %d outside 1..65535", path, c.Metrics.Port)
+	}
+	// Same-host-same-port collisions are illegal. Different hosts
+	// at the same port are legal; the kernel will reject if the
+	// hosts overlap (e.g. all:8080 + lo:8080 collide on bind).
+	if !c.Control.Disabled() && c.Proxy.Host == c.Control.Host && c.Proxy.Port == c.Control.Port {
+		return fmt.Errorf("config error in %s: `proxy` and `control` collide on %s", path, c.Proxy.Addr())
+	}
+	if !c.Metrics.Disabled() {
+		if c.Proxy.Host == c.Metrics.Host && c.Proxy.Port == c.Metrics.Port {
+			return fmt.Errorf("config error in %s: `proxy` and `metrics` collide on %s", path, c.Proxy.Addr())
+		}
+		if !c.Control.Disabled() && c.Control.Host == c.Metrics.Host && c.Control.Port == c.Metrics.Port {
+			return fmt.Errorf("config error in %s: `control` and `metrics` collide on %s", path, c.Control.Addr())
+		}
 	}
 	for i, id := range c.Identities {
 		if id.ID == "" {
@@ -337,31 +480,6 @@ func (c *Config) validate(path string) error {
 		}
 	}
 	return nil
-}
-
-// BindHost returns the literal address the daemon should `net.Listen`
-// on for the configured adapter.
-//
-//	"lo"      -> "127.0.0.1"
-//	"0.0.0.0" -> "0.0.0.0"
-//	"::"      -> "::"
-//	literal IP / hostname -> pass-through
-func (c *Config) BindHost() string {
-	switch c.Adapter {
-	case "lo", "":
-		return "127.0.0.1"
-	}
-	return c.Adapter
-}
-
-// BindAddr returns "<bind-host>:<port>" for the supplied port; for
-// IPv6 literals the host is bracketed.
-func (c *Config) BindAddr(port int) string {
-	host := c.BindHost()
-	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-		host = "[" + host + "]"
-	}
-	return fmt.Sprintf("%s:%d", host, port)
 }
 
 // ResolveIncludePaths returns rule-file paths from c.Policy.Include

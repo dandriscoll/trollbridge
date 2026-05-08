@@ -120,6 +120,7 @@ conditions. See DESIGN.md for the full specification.`,
 
 		op(newInitCmd(), groupConfigure),
 		op(newValidateCmd(), groupConfigure),
+		op(newDoctorCmd(), groupConfigure),
 		op(newRulesCmd(), groupConfigure),
 		op(newEnvCmd(), groupConfigure),
 

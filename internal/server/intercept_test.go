@@ -79,7 +79,7 @@ func bootInterceptProxy(t *testing.T, rules string, redactionYAML string) *inter
 	ctrlLn.Close()
 
 	cfg := &config.Config{
-		Adapter: "127.0.0.1", Ports: config.Ports{Proxy: 0},
+		Proxy: config.Bind{Host: "127.0.0.1", Port: 0},
 		Mode:      "default-deny",
 		Logging:   config.Logging{AuditPath: auditPath, AuditBufferSize: 64, AuditOverflow: "block"},
 		Approvals: config.Approvals{TimeoutSeconds: 5, OnTimeout: "deny", MaxPending: 4},
@@ -105,9 +105,9 @@ func bootInterceptProxy(t *testing.T, rules string, redactionYAML string) *inter
 		// the parser. Build a minimal config file.
 		mainCfgPath := filepath.Join(dir, "drawbridge.yaml")
 		_ = ctrlAddr
-		if err := os.WriteFile(mainCfgPath, []byte(`drawbridge_version: 2
-adapter: lo
-ports: {proxy: 0, control: 0}
+		if err := os.WriteFile(mainCfgPath, []byte(`drawbridge_version: 3
+proxy: lo:8080
+control: 0
 mode: default-deny
 interception:
   enabled: true

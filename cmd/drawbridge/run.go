@@ -129,6 +129,12 @@ func newRunCmd() *cobra.Command {
 				"rules", len(engine.Rules()),
 				"rule_set_version", engine.RuleSetVersion(),
 			)
+			if !cfg.Control.Disabled() {
+				opLog.Info("control listening",
+					"event", oplog.EventControlListening,
+					"addr", cfg.Control.Addr(),
+				)
+			}
 
 			if err := srv.ListenAndServe(ctx); err != nil {
 				return &runtimeErr{err}

@@ -96,3 +96,33 @@ func TestService_CacheKeyIncludesRuleSetVersion(t *testing.T) {
 		t.Errorf("provider called %d times across distinct rule_set_versions, want 2", mock.Calls)
 	}
 }
+
+func TestHTTPClassifier_BearerAuthByDefault(t *testing.T) {
+	srv := newAuthCaptureServer(t)
+	defer srv.Close()
+	cli := &HTTPClassifier{Endpoint: srv.URL, APIKey: "abc123"}
+	if _, err := cli.Classify(context.Background(), Input{Method: "GET", Host: "h", Port: 80, Path: "/"}); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got := srv.lastAuth; got != "Bearer abc123" {
+		t.Errorf("Authorization header = %q, want %q", got, "Bearer abc123")
+	}
+	if got := srv.lastAPIKey; got != "" {
+		t.Errorf("api-key header should be empty for Bearer scheme; got %q", got)
+	}
+}
+
+func TestHTTPClassifier_AzureAPIKeySetsApiKeyHeaderNotBearer(t *testing.T) {
+	srv := newAuthCaptureServer(t)
+	defer srv.Close()
+	cli := &HTTPClassifier{Endpoint: srv.URL, APIKey: "azure-key", AuthScheme: AuthAzureAPIKey}
+	if _, err := cli.Classify(context.Background(), Input{Method: "GET", Host: "h", Port: 80, Path: "/"}); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if got := srv.lastAPIKey; got != "azure-key" {
+		t.Errorf("api-key header = %q, want azure-key", got)
+	}
+	if got := srv.lastAuth; got != "" {
+		t.Errorf("Authorization header should be empty for AOAI; got %q", got)
+	}
+}

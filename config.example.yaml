@@ -1,27 +1,29 @@
-# drawbridge example configuration (schema v2).
+# drawbridge example configuration (schema v3).
 #
 # Organized around the four operator decisions:
-#   1. adapter — which network interface the daemon is open on
-#   2. lists   — what to allow / deny (inline; drawbridge mutates this file)
-#   3. llm     — which LLM is the advisor
+#   1. binds — per-surface listen addresses (proxy / control / metrics)
+#   2. lists — what to allow / deny (inline; drawbridge mutates this file)
+#   3. llm   — which LLM is the advisor
 #   4. directives — what the advisor is told (inline multi-line prompt)
 #
 # See DESIGN.md for the full specification.
 
-drawbridge_version: 2
+drawbridge_version: 3
 
-# 1. Adapter — single network knob the daemon binds to.
-#    Values: lo (loopback only), 0.0.0.0 (all interfaces), or a
-#    literal IP/hostname. The proxy, control plane, and metrics
-#    surfaces all bind on this adapter.
-adapter: lo
-
-# Ports for the three surfaces. proxy + control are required;
-# metrics: 0 disables the Prometheus endpoint.
-ports:
-  proxy:   8080
-  control: 8081
-  metrics: 0
+# 1. Per-surface binds. Each value combines host and port:
+#      proxy:   lo:8080         # 127.0.0.1
+#      control: 127.0.0.1:8081
+#      metrics: 0               # disabled
+#    Host aliases:
+#      lo  = 127.0.0.1
+#      all = 0.0.0.0   (every interface — exposes the surface to the network)
+#    Bracket IPv6 literals: "[fd00::1]:8081".
+#    The proxy and control may bind to different hosts: e.g. expose
+#    the proxy on `all:8080` for sidecars to reach, but keep the
+#    controller on `lo:8081` so only operators on the host can drive it.
+proxy:   lo:8080
+control: lo:8081
+metrics: 0
 
 # 2. Allow / deny lists. Each entry is host[:port][/path] with an
 #    optional <scheme>:// prefix and * wildcards.
@@ -49,6 +51,11 @@ lists:
     - metadata.azure.com
 
 # 3. LLM — the advisor consulted on ambiguous requests.
+#    provider: anthropic   -> Authorization: Bearer <key>     (default)
+#    provider: aoai        -> api-key: <key>                   (Azure OpenAI)
+#    Other strings fall back to generic Bearer with a startup warning.
+#    The wire schema posted to `endpoint` is fixed (DESIGN.md §9);
+#    point at a wrapper that speaks it.
 llm:
   enabled: false
   provider: anthropic

@@ -1259,6 +1259,7 @@ A single binary, Cobra-style subcommands.
 |---|---|
 | `drawbridge init` | Create a default `drawbridge.yaml` and CA. MUST print a human-readable summary to stdout listing every file created, their paths, the CA SHA-256 fingerprint, and the next-step commands (install CA into client trust store; review and edit rules). MUST refuse to overwrite existing files; `--force` archives them per §7.4. |
 | `drawbridge validate` | Validate the configuration and rule set; reject unknown modifier names, unknown effect strings, conflicting rule IDs. Exit 0 on success, 1 on error. |
+| `drawbridge doctor` | Pre-flight check: load the config and rule files; when `llm.enabled`, dispatch a real classification call against the configured provider with a synthetic input. Each step prints `OK` / `FAIL: <reason>`. Non-zero exit on any failure. Used to catch misconfigured endpoints / API keys / providers before `drawbridge run`. |
 | `drawbridge run` | Start the proxy in the foreground. Reads config from `--config` or `DRAWBRIDGE_CONFIG`. |
 | `drawbridge ca init` | Generate a new CA. Refuses if one exists unless `--force`. |
 | `drawbridge ca export` | Print the CA cert (public) to stdout, or write to `--out <file>`. |
@@ -1299,11 +1300,13 @@ silent startup-by-default is a footgun.
 YAML, single file by default. Top-level keys:
 
 ```yaml
-drawbridge_version: 1
+drawbridge_version: 3
 
-listen:
-  address: 127.0.0.1
-  port: 8080
+# Per-surface bind (host:port). Host aliases: lo = 127.0.0.1,
+# all = 0.0.0.0. Bracket IPv6 literals: [fd00::1]:8081.
+proxy:   lo:8080
+control: lo:8081           # 0 disables the operator control plane
+metrics: 0                 # 0 disables the (unimplemented) Prometheus endpoint
 
 mode: default-ask          # default-deny | default-allow | default-ask
 
@@ -1318,7 +1321,7 @@ interception:
 
 llm:
   enabled: false           # Phase 1-3: false. Set true for Phase 4+.
-  provider: anthropic
+  provider: anthropic      # anthropic -> Bearer; aoai -> api-key (Azure OpenAI)
   model: claude-opus-4-7
   endpoint: https://api.anthropic.com
   api_key_path: /etc/drawbridge/llm.key
@@ -1341,10 +1344,8 @@ logging:
   audit_buffer_size: 1024
   audit_overflow: deny     # deny | drop | block
   operational_path: stderr
-  metrics_listen: ""       # off; set host:port to enable Prometheus
 
 approvals:
-  control_listen: 127.0.0.1:8081
   timeout_seconds: 300
   on_timeout: deny
 
@@ -1364,13 +1365,17 @@ identities:
     match:
       bearer_token_sha256: "<hash>"
 
+lists:
+  # Fast-path inline allow/deny (§10.8). Evaluated BEFORE the rule
+  # engine and BEFORE the LLM advisor. A match here is the final
+  # decision. The console REPL writes new entries back here.
+  allow:
+    - api.github.com
+  deny:
+    - 169.254.169.254
+    - metadata.google.internal
+
 policy:
-  # Fast-path flat lists (§10.8). Evaluated BEFORE the rule engine
-  # and BEFORE the LLM advisor. A match here is the final decision.
-  allow_files:
-    - allow.txt
-  deny_files:
-    - deny.txt
   # Structured rules for advanced cases (time, body, ask_user, ask_llm).
   include:
     - rules/base.yaml

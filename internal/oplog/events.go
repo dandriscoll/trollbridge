@@ -6,6 +6,7 @@ const (
 	EventStartup                  = "startup"
 	EventShutdown                 = "shutdown"
 	EventListening                = "listening"
+	EventControlListening         = "control_listening"
 	EventRuleReload               = "rule_reload"
 	EventRuleReloadFailure        = "rule_reload_failure"
 	EventAllowlistReload          = "allowlist_reload"

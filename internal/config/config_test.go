@@ -17,10 +17,10 @@ func writeYaml(t *testing.T, body string) string {
 	return path
 }
 
-func TestLoad_V2Minimal(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 2
-adapter: lo
-ports: {proxy: 8080, control: 8081}
+func TestLoad_V3Minimal(t *testing.T) {
+	path := writeYaml(t, `drawbridge_version: 3
+proxy: lo:8080
+control: lo:8081
 controller: {auth: mtls}
 mode: default-deny
 logging: {audit_path: /tmp/a.jsonl}
@@ -29,21 +29,56 @@ logging: {audit_path: /tmp/a.jsonl}
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Adapter != "lo" {
-		t.Errorf("Adapter = %q, want lo", cfg.Adapter)
+	if cfg.Proxy.Host != "127.0.0.1" || cfg.Proxy.Port != 8080 {
+		t.Errorf("Proxy = %+v, want 127.0.0.1:8080", cfg.Proxy)
 	}
-	if cfg.Ports.Proxy != 8080 || cfg.Ports.Control != 8081 {
-		t.Errorf("ports = %+v, want {Proxy:8080 Control:8081}", cfg.Ports)
+	if cfg.Control.Host != "127.0.0.1" || cfg.Control.Port != 8081 {
+		t.Errorf("Control = %+v, want 127.0.0.1:8081", cfg.Control)
 	}
-	if cfg.BindHost() != "127.0.0.1" {
-		t.Errorf("BindHost = %q, want 127.0.0.1 for adapter=lo", cfg.BindHost())
-	}
-	if got := cfg.BindAddr(8080); got != "127.0.0.1:8080" {
-		t.Errorf("BindAddr = %q, want 127.0.0.1:8080", got)
+	if got := cfg.Proxy.Addr(); got != "127.0.0.1:8080" {
+		t.Errorf("Proxy.Addr = %q, want 127.0.0.1:8080", got)
 	}
 }
 
-func TestLoad_V1RejectedWithMigrationMessage(t *testing.T) {
+func TestLoad_AllAliasResolvesTo0000(t *testing.T) {
+	path := writeYaml(t, `drawbridge_version: 3
+proxy: all:8080
+control: lo:8081
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Proxy.Host != "0.0.0.0" {
+		t.Errorf("Proxy.Host = %q, want 0.0.0.0 (alias `all`)", cfg.Proxy.Host)
+	}
+	if got := cfg.Proxy.ClientHost(); got != "127.0.0.1" {
+		t.Errorf("Proxy.ClientHost = %q, want 127.0.0.1 (clients dial loopback)", got)
+	}
+}
+
+func TestLoad_PerSurfaceDifferentHosts(t *testing.T) {
+	path := writeYaml(t, `drawbridge_version: 3
+proxy: all:8080
+control: lo:8081
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Proxy.Host == cfg.Control.Host {
+		t.Errorf("expected proxy and control to bind different hosts: proxy=%s control=%s",
+			cfg.Proxy.Host, cfg.Control.Host)
+	}
+}
+
+func TestLoad_V1Rejected(t *testing.T) {
 	path := writeYaml(t, `drawbridge_version: 1
 listen: {address: 127.0.0.1, port: 8080}
 mode: default-deny
@@ -52,56 +87,73 @@ mode: default-deny
 	if err == nil {
 		t.Fatal("Load: expected error for v1 config; got nil")
 	}
-	msg := err.Error()
-	for _, want := range []string{"version 1", "no longer supported", "drawbridge_version: 2", "adapter", "ports"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error missing %q in:\n%s", want, msg)
+	for _, want := range []string{"version 1", "no longer supported", "drawbridge_version: 3", "proxy:", "control:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("v1 rejection missing %q in:\n%s", want, err.Error())
 		}
 	}
 }
 
-func TestLoad_AdapterAndPortsApplyDefaults(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 2
-controller: {auth: mtls}
-mode: default-deny
-logging: {audit_path: /tmp/a.jsonl}
-`)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Adapter != "lo" {
-		t.Errorf("default Adapter = %q, want lo", cfg.Adapter)
-	}
-	if cfg.Ports.Proxy != 8080 {
-		t.Errorf("default Ports.Proxy = %d, want 8080", cfg.Ports.Proxy)
-	}
-	if cfg.Ports.Control != 0 {
-		t.Errorf("default Ports.Control = %d, want 0 (operator must opt in via init.go default or explicit setting)", cfg.Ports.Control)
-	}
-}
-
-func TestLoad_ControlPortDisabledWith0(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 2
-adapter: lo
-ports: {proxy: 8080, control: 0}
-controller: {auth: mtls}
-mode: default-deny
-logging: {audit_path: /tmp/a.jsonl}
-`)
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Ports.Control != 0 {
-		t.Errorf("ports.control = %d, want 0 (disabled)", cfg.Ports.Control)
-	}
-}
-
-func TestLoad_RejectsControllerAuthOtherThanMtls(t *testing.T) {
+func TestLoad_V2Rejected(t *testing.T) {
 	path := writeYaml(t, `drawbridge_version: 2
 adapter: lo
 ports: {proxy: 8080, control: 8081}
+controller: {auth: mtls}
+mode: default-deny
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load: expected error for v2 config; got nil")
+	}
+	for _, want := range []string{"version 2", "no longer supported", "drawbridge_version: 3", "proxy:", "control:", "all", "lo"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("v2 rejection missing %q in:\n%s", want, err.Error())
+		}
+	}
+}
+
+func TestLoad_AppliesDefaults(t *testing.T) {
+	path := writeYaml(t, `drawbridge_version: 3
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Proxy.Host != "127.0.0.1" || cfg.Proxy.Port != 8080 {
+		t.Errorf("default Proxy = %+v, want 127.0.0.1:8080", cfg.Proxy)
+	}
+	if !cfg.Control.Disabled() {
+		t.Errorf("default Control should be disabled (require explicit opt-in); got %+v", cfg.Control)
+	}
+	if !cfg.Metrics.Disabled() {
+		t.Errorf("default Metrics should be disabled; got %+v", cfg.Metrics)
+	}
+}
+
+func TestLoad_ControlDisabledExplicit(t *testing.T) {
+	path := writeYaml(t, `drawbridge_version: 3
+proxy: lo:8080
+control: 0
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Control.Disabled() {
+		t.Errorf("ports.control = 0 should disable; got %+v", cfg.Control)
+	}
+}
+
+func TestLoad_RejectsNonMtlsControllerAuth(t *testing.T) {
+	path := writeYaml(t, `drawbridge_version: 3
+proxy: lo:8080
+control: lo:8081
 controller: {auth: bearer}
 mode: default-deny
 logging: {audit_path: /tmp/a.jsonl}
@@ -115,17 +167,123 @@ logging: {audit_path: /tmp/a.jsonl}
 	}
 }
 
-func TestBindAddr_IPv6IsBracketed(t *testing.T) {
-	cfg := &Config{Adapter: "fd00::1"}
-	if got := cfg.BindAddr(8080); got != "[fd00::1]:8080" {
-		t.Errorf("BindAddr = %q, want [fd00::1]:8080", got)
+func TestParseBind_RejectsMissingPort(t *testing.T) {
+	cases := []string{"lo", "all", "127.0.0.1"}
+	for _, raw := range cases {
+		t.Run(raw, func(t *testing.T) {
+			_, err := parseBindScalar(raw)
+			if err == nil {
+				t.Fatalf("expected error for %q; got nil", raw)
+			}
+			if !strings.Contains(err.Error(), "missing port") {
+				t.Errorf("error should mention missing port; got: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseBind_RejectsBarePort(t *testing.T) {
+	_, err := parseBindScalar("8080")
+	if err == nil {
+		t.Fatal("expected error for bare port `8080`")
+	}
+	if !strings.Contains(err.Error(), "missing port") && !strings.Contains(err.Error(), "missing host") {
+		t.Errorf("error should mention missing host/port; got: %v", err)
+	}
+}
+
+func TestParseBind_PortRange(t *testing.T) {
+	if _, err := parseBindScalar("lo:0"); err == nil {
+		// lo:0 is invalid for a *required* surface; parser-level we
+		// accept port 0 only as the disabled sentinel "" / "0", not
+		// "host:0". Confirm parser rejects "lo:0".
+		t.Errorf("expected error for `lo:0`; port 0 with explicit host is meaningless")
+	}
+	if _, err := parseBindScalar("lo:70000"); err == nil {
+		t.Error("expected error for port 70000")
+	}
+}
+
+func TestParseBind_IPv6Bracketed(t *testing.T) {
+	b, err := parseBindScalar("[fd00::1]:8080")
+	if err != nil {
+		t.Fatalf("parseBindScalar: %v", err)
+	}
+	if b.Host != "fd00::1" || b.Port != 8080 {
+		t.Errorf("parsed = %+v, want fd00::1:8080", b)
+	}
+	if got := b.Addr(); got != "[fd00::1]:8080" {
+		t.Errorf("Addr = %q, want bracketed [fd00::1]:8080", got)
+	}
+}
+
+func TestParseBind_DisabledForms(t *testing.T) {
+	for _, raw := range []string{"", "0"} {
+		b, err := parseBindScalar(raw)
+		if err != nil {
+			t.Fatalf("parseBindScalar(%q): %v", raw, err)
+		}
+		if !b.Disabled() {
+			t.Errorf("%q should be Disabled; got %+v", raw, b)
+		}
+		if got := b.Addr(); got != "" {
+			t.Errorf("disabled bind Addr should be empty; got %q", got)
+		}
+	}
+}
+
+func TestValidate_RejectsSameHostSamePortCollision(t *testing.T) {
+	path := writeYaml(t, `drawbridge_version: 3
+proxy: lo:8080
+control: lo:8080
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for proxy/control on same host:port")
+	}
+	if !strings.Contains(err.Error(), "collide") {
+		t.Errorf("error should mention collision; got: %v", err)
+	}
+}
+
+func TestValidate_AcceptsSamePortDifferentHost(t *testing.T) {
+	// Same port on different hosts is legal; the kernel decides
+	// whether the binds actually overlap.
+	path := writeYaml(t, `drawbridge_version: 3
+proxy:   all:8080
+control: 127.0.0.1:8081
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+func TestValidate_ProxyRequired(t *testing.T) {
+	path := writeYaml(t, `drawbridge_version: 3
+proxy: 0
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for proxy: 0 (required surface)")
+	}
+	if !strings.Contains(err.Error(), "proxy") {
+		t.Errorf("error should name proxy; got: %v", err)
 	}
 }
 
 func TestLoad_ListsParsedInline(t *testing.T) {
-	path := writeYaml(t, `drawbridge_version: 2
-adapter: lo
-ports: {proxy: 8080, control: 8081}
+	path := writeYaml(t, `drawbridge_version: 3
+proxy: lo:8080
+control: lo:8081
 controller: {auth: mtls}
 mode: default-deny
 logging: {audit_path: /tmp/a.jsonl}

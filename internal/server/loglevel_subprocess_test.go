@@ -91,9 +91,9 @@ func TestSubprocess_DrawbridgeLogLevelEnvHonored(t *testing.T) {
 	rules := fmt.Sprintf("- id: a\n  match: {host: %s}\n  effect: allow\n", originHost)
 	os.WriteFile(rulesPath, []byte(rules), 0o600)
 	_ = ctrlAddr
-	cfgYAML := fmt.Sprintf(`drawbridge_version: 2
-adapter: lo
-ports: {proxy: %s, control: 0}
+	cfgYAML := fmt.Sprintf(`drawbridge_version: 3
+proxy: lo:%s
+control: 0
 mode: default-deny
 logging:
   audit_path: %s

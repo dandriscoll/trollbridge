@@ -86,21 +86,32 @@ now · `q` quit. The list refreshes automatically as the queue
 changes; one-shot `drawbridge approve <id>` / `drawbridge deny <id>`
 remain available for scripted use.
 
-## Configuration (schema v2)
+## Configuration (schema v3)
 
 `drawbridge.yaml` is organised around four operator decisions:
 
-1. **`adapter`** — which network interface the daemon binds to
-   (`lo` / `0.0.0.0` / a literal IP). Proxy, control plane, and
-   metrics all bind on the same adapter; per-surface ports live
-   under `ports:`.
+1. **per-surface bind** — each of `proxy:`, `control:`, `metrics:`
+   is a single `<host>:<port>` string. Host aliases: `all` =
+   `0.0.0.0`, `lo` = `127.0.0.1`. Bracket IPv6 literals
+   (`[fd00::1]:8081`). Surfaces are independent, so the proxy
+   can listen on `all:8080` while the control plane stays on
+   `lo:8081`. `metrics: 0` disables the (unimplemented)
+   Prometheus endpoint.
 2. **`lists`** — inline `allow:` / `deny:` patterns. The console
    REPL writes back to drawbridge.yaml; comments outside `lists:`
    survive. Each entry is `host[:port][/path]` with an optional
    `<scheme>://` prefix and `*` wildcards.
-3. **`llm`** — provider / model / endpoint / api-key.
+3. **`llm`** — provider / model / endpoint / api-key. Provider
+   selects the auth header: `anthropic` (default) sends
+   `Authorization: Bearer …`; `aoai` (Azure OpenAI) sends
+   `api-key: …`.
 4. **`llm.directives`** — inline multi-line system prompt for the
    advisor.
+
+Run `drawbridge doctor -c <path>` after editing the YAML — it
+loads the config, parses the rules and lists, and (when LLM is
+enabled) issues a real classification call so misconfigured
+endpoints / keys / providers fail loud before `drawbridge run`.
 
 The control plane requires mTLS, signed by the same CA used for
 TLS interception. First-run ritual:

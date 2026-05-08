@@ -44,7 +44,7 @@ func bootProxy(t *testing.T, mode string, rules string) *proxyHarness {
 	auditPath := filepath.Join(dir, "audit.jsonl")
 
 	cfg := &config.Config{
-		Adapter: "127.0.0.1", Ports: config.Ports{Proxy: 0},
+		Proxy: config.Bind{Host: "127.0.0.1", Port: 0},
 		Mode:      mode,
 		Logging:   config.Logging{AuditPath: auditPath, AuditBufferSize: 64, AuditOverflow: "block"},
 		Approvals: config.Approvals{TimeoutSeconds: 60, OnTimeout: "deny", MaxPending: 16},

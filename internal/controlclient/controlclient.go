@@ -13,11 +13,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/dandriscoll/drawbridge/internal/config"
@@ -100,17 +98,10 @@ func HoldAction(cfg *config.Config, id, action, scope, reason string) ([]byte, e
 	return respBody, nil
 }
 
-// controllerURL builds the daemon URL using the configured adapter
-// + control port. Always https — the controller is mTLS-only.
+// controllerURL builds the daemon URL using the configured control
+// bind. Always https — the controller is mTLS-only.
 func controllerURL(cfg *config.Config, path string) string {
-	host := cfg.BindHost()
-	if host == "0.0.0.0" {
-		host = "127.0.0.1"
-	}
-	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-		host = "[" + host + "]"
-	}
-	return "https://" + host + ":" + strconv.Itoa(cfg.Ports.Control) + path
+	return "https://" + cfg.Control.ClientAddr() + path
 }
 
 // httpsClient returns an http.Client configured with the operator's

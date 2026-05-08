@@ -55,7 +55,7 @@ func bootHTTPProxyWithOpLog(t *testing.T, level slog.Level) (proxyAddr, originUR
 	ctrlLn.Close()
 
 	cfg := &config.Config{
-		Adapter: "127.0.0.1", Ports: config.Ports{Proxy: 0},
+		Proxy: config.Bind{Host: "127.0.0.1", Port: 0},
 		Mode:       "default-deny",
 		Logging:    config.Logging{AuditPath: auditPath, AuditBufferSize: 64, AuditOverflow: "block"},
 		Approvals:  config.Approvals{TimeoutSeconds: 5, OnTimeout: "deny", MaxPending: 4},
@@ -64,7 +64,7 @@ func bootHTTPProxyWithOpLog(t *testing.T, level slog.Level) (proxyAddr, originUR
 		Identities: []config.Identity{{ID: "test-client", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
 		Policy:     config.Policy{Include: []string{rulesPath}},
 	}
-	cfg.DrawbridgeVersion = 1
+	cfg.DrawbridgeVersion = config.SchemaVersion
 
 	engine, err := policy.NewEngine(cfg.Mode, cfg.ResolveIncludePaths(rulesPath), policy.KnownModifiers())
 	if err != nil {

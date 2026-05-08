@@ -8,14 +8,11 @@ import (
 )
 
 const fixture = `# drawbridge example
-drawbridge_version: 2
+drawbridge_version: 3
 
-# Adapter — top-level head comment.
-adapter: lo
-
-ports:
-  proxy: 8080
-  control: 8081
+# Per-surface bind — top-level head comment.
+proxy: lo:8080
+control: lo:8081
 
 # Lists are inline; drawbridge writes them back.
 lists:
@@ -117,7 +114,7 @@ func TestPreservesHeadCommentsOutsideListsSubtree(t *testing.T) {
 	got := read(t, path)
 	for _, want := range []string{
 		"# drawbridge example",
-		"# Adapter — top-level head comment.",
+		"# Per-surface bind — top-level head comment.",
 		"# LLM section keeps its head comment after a write.",
 	} {
 		if !strings.Contains(got, want) {

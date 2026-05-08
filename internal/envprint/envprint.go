@@ -17,8 +17,7 @@ import (
 // (curl, wget, and a number of other Unix tools read the
 // lowercase variants only).
 func Render(cfg *config.Config) string {
-	host := connectHost(cfg.BindHost())
-	proxyURL := fmt.Sprintf("http://%s:%d", host, cfg.Ports.Proxy)
+	proxyURL := fmt.Sprintf("http://%s", cfg.Proxy.ClientAddr())
 	noProxy := "localhost,127.0.0.1"
 
 	var b strings.Builder
@@ -30,21 +29,4 @@ func Render(cfg *config.Config) string {
 	fmt.Fprintf(&b, "export http_proxy=%s\n", proxyURL)
 	fmt.Fprintf(&b, "export no_proxy=%s\n", noProxy)
 	return b.String()
-}
-
-// connectHost maps a daemon bind address to the address a client on
-// the same host should dial. Wildcard binds become loopback; literal
-// IPv6 addresses are bracketed for use in a URL; everything else
-// passes through.
-func connectHost(bind string) string {
-	switch bind {
-	case "", "0.0.0.0":
-		return "127.0.0.1"
-	case "::", "[::]":
-		return "[::1]"
-	}
-	if strings.Contains(bind, ":") && !strings.HasPrefix(bind, "[") {
-		return "[" + bind + "]"
-	}
-	return bind
 }
