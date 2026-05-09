@@ -93,7 +93,22 @@ type Service struct {
 	cfg   Config
 	prov  Provider
 	cache *cache
+	// opLog, when set, receives layer-tagged Warn entries when the
+	// provider returns ErrAdvisorWire / ErrAdvisorSchema (issue #25).
+	// nil-safe; tests pass nil.
+	opLog Logger
 }
+
+// Logger is a tiny subset of *slog.Logger used by the advisor for
+// failure tagging. Defined here so the advisor package does not
+// import log/slog directly through every call site.
+type Logger interface {
+	Warn(msg string, args ...any)
+}
+
+// SetLogger wires an optional logger that the service uses to
+// emit layer-tagged advisor-failure events.
+func (s *Service) SetLogger(l Logger) { s.opLog = l }
 
 // New constructs a Service. prov may be nil; if so, the service is
 // disabled and Classify always returns ErrDisabled.
@@ -171,6 +186,7 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 	defer cancel()
 	out, err := s.prov.Classify(cctx, in)
 	if err != nil {
+		s.logFailure(err, req)
 		return s.unavailableDecision("advisor unavailable: " + err.Error()), ""
 	}
 
@@ -184,6 +200,30 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 	}
 	s.cache.put(cacheKey, cacheValue{decision: d, advisorID: advisorID})
 	return d, advisorID
+}
+
+// logFailure emits a layer-tagged Warn for an advisor provider
+// failure (issue #25). Wire failures (HTTP transport, timeout)
+// and schema failures (200 with malformed body) used to read the
+// same in the operational log; this distinguishes them so an
+// operator debugging an advisor outage doesn't have to run
+// `trollbridge doctor` to learn the layer.
+func (s *Service) logFailure(err error, req *types.RequestEvent) {
+	if s.opLog == nil || err == nil {
+		return
+	}
+	event := "advisor_unknown_fail"
+	switch {
+	case errors.Is(err, ErrAdvisorWire):
+		event = "advisor_wire_fail"
+	case errors.Is(err, ErrAdvisorSchema):
+		event = "advisor_schema_fail"
+	}
+	s.opLog.Warn("advisor classify failed",
+		"event", event,
+		"request_id", req.ID,
+		"host", req.Host,
+		"error", err.Error())
 }
 
 func (s *Service) unavailableDecision(reason string) types.Decision {

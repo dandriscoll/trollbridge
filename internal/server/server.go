@@ -202,6 +202,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		prov = buildAdvisorProvider(cfg.LLM, opLog)
 	}
 	s.advisor = advisor.New(advCfg, prov)
+	s.advisor.SetLogger(opLog)
 	s.transport = &http.Transport{
 		MaxIdleConns:        cfg.Forwarder.MaxIdleConns,
 		MaxIdleConnsPerHost: cfg.Forwarder.MaxIdleConnsPerHost,
