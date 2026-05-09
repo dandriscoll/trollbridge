@@ -37,7 +37,7 @@ import (
 )
 
 // Version is set at build time via -ldflags="-X ...".
-var Version = "0.4.4-dev"
+var Version = "0.4.5-dev"
 
 // Server holds the long-lived state of a running trollbridge.
 type Server struct {
@@ -879,12 +879,13 @@ func statusFromEffect(e types.Effect) int {
 // silence imports we may not use in some build configs.
 var _ = config.Config{}
 
-// buildAdvisorProvider picks the right advisor.HTTPClassifier auth
-// scheme for the configured provider name. `anthropic` (and the
-// empty default) use the existing Bearer header; `aoai` uses Azure
-// OpenAI's `api-key` header. Unknown values fall back to Bearer
-// with a one-line warning so an unrecognized name does not block
-// startup — the operator's wrapper might already be Bearer-shaped.
+// buildAdvisorProvider constructs the advisor.HTTPClassifier with
+// the right Translator for the configured provider name. `anthropic`
+// (and the empty default) speaks the Anthropic Messages API;
+// `aoai` speaks Azure OpenAI chat-completions. Unknown values fall
+// back to the anthropic translator with a one-line warning so an
+// unrecognized name does not block startup — the operator can still
+// fix it without redeploying.
 func buildAdvisorProvider(llm config.LLM, opLog *slog.Logger) advisor.Provider {
 	apiKey := ""
 	if llm.APIKeyPath != "" {
@@ -892,22 +893,28 @@ func buildAdvisorProvider(llm config.LLM, opLog *slog.Logger) advisor.Provider {
 			apiKey = strings.TrimSpace(string(data))
 		}
 	}
-	scheme := advisor.AuthBearer
-	switch strings.ToLower(strings.TrimSpace(llm.Provider)) {
-	case "", "anthropic":
-		scheme = advisor.AuthBearer
-	case "aoai":
-		scheme = advisor.AuthAzureAPIKey
-	default:
-		if opLog != nil {
-			opLog.Warn("unrecognized llm.provider; using generic Bearer auth",
-				"event", "advisor_provider_unknown", "provider", llm.Provider)
+	endpoint := llm.Endpoint
+	if strings.EqualFold(strings.TrimSpace(llm.Provider), "aoai") {
+		canonical, hint, _ := advisor.NormalizeAOAIEndpoint(endpoint)
+		if hint != "" && opLog != nil {
+			opLog.Info("aoai endpoint normalized",
+				"event", "advisor_endpoint_normalized",
+				"original", endpoint,
+				"canonical", canonical,
+				"hint", hint)
 		}
+		endpoint = canonical
+	}
+	translator, known := advisor.TranslatorFor(llm.Provider, endpoint)
+	if !known && opLog != nil {
+		opLog.Warn("unrecognized llm.provider; using anthropic translator",
+			"event", "advisor_provider_unknown", "provider", llm.Provider)
 	}
 	return &advisor.HTTPClassifier{
-		Endpoint:   llm.Endpoint,
+		Endpoint:   endpoint,
 		APIKey:     apiKey,
-		AuthScheme: scheme,
+		Model:      llm.Model,
+		Translator: translator,
 	}
 }
 

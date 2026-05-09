@@ -4,6 +4,12 @@ dist/
 trollbridge.audit.jsonl
 *.bak
 
+# Operator credentials. trollbridge init writes the LLM api key into
+# the config directory (often the repo root during development);
+# never commit it. *.key matches any sibling key files.
+llm.key
+*.key
+
 # Go workspace
 /vendor/
 /go.work.sum

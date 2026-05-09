@@ -38,14 +38,15 @@ lists:
     - metadata.google.internal
 
 # 3. LLM — the advisor that classifies ambiguous requests.
-#    provider: anthropic   -> Authorization: Bearer <key>
-#    provider: aoai        -> api-key: <key>          (Azure OpenAI)
-#    Other values fall back to generic Bearer with a startup warning.
+#    Trollbridge speaks each provider's native API directly.
+#    provider: anthropic   -> Anthropic Messages API (x-api-key)
+#    provider: aoai        -> Azure OpenAI chat-completions (api-key)
+#    Other values fall back to the anthropic translator with a warning.
 llm:
   enabled: false
   provider: anthropic
   model:    claude-opus-4-7
-  endpoint: https://api.anthropic.com
+  endpoint: https://api.anthropic.com/v1/messages
   api_key_path: /etc/trollbridge/llm.key
   send_body: false
   on_unavailable: ask_user

@@ -287,7 +287,7 @@ func applyAnswers(template string, ans initAnswers) string {
 		out = strings.Replace(out, "  model:    claude-opus-4-7", "  model:    "+ans.llmModel, 1)
 		out = strings.Replace(out, "  api_key_path: /etc/trollbridge/llm.key", "  api_key_path: "+ans.llmKeyPath, 1)
 		if ans.llmEndpoint != "" {
-			out = strings.Replace(out, "  endpoint: https://api.anthropic.com", "  endpoint: "+ans.llmEndpoint, 1)
+			out = strings.Replace(out, "  endpoint: https://api.anthropic.com/v1/messages", "  endpoint: "+ans.llmEndpoint, 1)
 		}
 	}
 	return out

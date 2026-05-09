@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -73,10 +74,22 @@ input. Each check prints a status line; non-zero exit on any FAIL.`,
 				return nil
 			}
 
-			scheme, schemeName := authSchemeFor(cfg.LLM.Provider)
+			endpoint := cfg.LLM.Endpoint
+			if strings.EqualFold(strings.TrimSpace(cfg.LLM.Provider), "aoai") {
+				canonical, hint, _ := advisor.NormalizeAOAIEndpoint(endpoint)
+				if hint != "" {
+					fmt.Fprintf(cmd.ErrOrStderr(), "note: %s\n", hint)
+				}
+				endpoint = canonical
+			}
+			translator, known := advisor.TranslatorFor(cfg.LLM.Provider, endpoint)
+			if !known {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: unrecognized llm.provider %q; falling back to anthropic translator\n", cfg.LLM.Provider)
+			}
+			authName := authNameFor(translator)
 			prov := doctorAdvisor
 			if prov == nil {
-				prov = buildDoctorProvider(cfg.LLM, scheme)
+				prov = buildDoctorProvider(cfg.LLM, translator, endpoint)
 			}
 
 			ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(cfg.LLM.TimeoutSeconds)*time.Second+2*time.Second)
@@ -94,9 +107,10 @@ input. Each check prints a status line; non-zero exit on any FAIL.`,
 			}
 			output, err := prov.Classify(ctx, input)
 			if err != nil {
+				layer := classifyAdvisorErr(err)
 				printDoctorLine(out, "llm",
-					fmt.Sprintf("FAIL: provider=%s endpoint=%s auth=%s err=%s",
-						providerName(cfg.LLM.Provider), cfg.LLM.Endpoint, schemeName, err.Error()))
+					fmt.Sprintf("FAIL: provider=%s endpoint=%s auth=%s layer=%s err=%s",
+						providerName(cfg.LLM.Provider), endpoint, authName, layer, err.Error()))
 				return &runtimeErr{err}
 			}
 			effect := strings.ToLower(strings.TrimSpace(output.Effect))
@@ -104,13 +118,13 @@ input. Each check prints a status line; non-zero exit on any FAIL.`,
 			if !validDoctorEffect(effect) || !validDoctorConfidence(confidence) {
 				err := fmt.Errorf("provider returned unrecognized shape: effect=%q confidence=%q", output.Effect, output.Confidence)
 				printDoctorLine(out, "llm",
-					fmt.Sprintf("FAIL: provider=%s endpoint=%s auth=%s err=%s",
-						providerName(cfg.LLM.Provider), cfg.LLM.Endpoint, schemeName, err.Error()))
+					fmt.Sprintf("FAIL: provider=%s endpoint=%s auth=%s layer=schema err=%s",
+						providerName(cfg.LLM.Provider), endpoint, authName, err.Error()))
 				return &runtimeErr{err}
 			}
 			printDoctorLine(out, "llm",
 				fmt.Sprintf("OK (provider=%s, endpoint=%s, auth=%s, effect=%s, confidence=%s)",
-					providerName(cfg.LLM.Provider), cfg.LLM.Endpoint, schemeName, effect, confidence))
+					providerName(cfg.LLM.Provider), endpoint, authName, effect, confidence))
 			return nil
 		},
 	}
@@ -130,15 +144,33 @@ func providerName(p string) string {
 	return v
 }
 
-func authSchemeFor(provider string) (advisor.AuthScheme, string) {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
+// authNameFor returns the operator-facing label for the auth header
+// the configured translator emits. Used in doctor's status line so
+// operators can see which header trollbridge actually sent.
+func authNameFor(t advisor.Translator) string {
+	switch t.Name() {
 	case "aoai":
-		return advisor.AuthAzureAPIKey, "api-key"
+		return "api-key"
+	case "anthropic":
+		return "x-api-key"
 	}
-	return advisor.AuthBearer, "bearer"
+	return t.Name()
 }
 
-func buildDoctorProvider(llm config.LLM, scheme advisor.AuthScheme) advisor.Provider {
+// classifyAdvisorErr returns "wire" for transport-layer failures
+// (4xx/5xx, network), "schema" for 200-with-bad-content, and
+// "unknown" for anything that didn't carry one of the sentinels.
+func classifyAdvisorErr(err error) string {
+	switch {
+	case errors.Is(err, advisor.ErrAdvisorWire):
+		return "wire"
+	case errors.Is(err, advisor.ErrAdvisorSchema):
+		return "schema"
+	}
+	return "unknown"
+}
+
+func buildDoctorProvider(llm config.LLM, t advisor.Translator, endpoint string) advisor.Provider {
 	apiKey := ""
 	if llm.APIKeyPath != "" {
 		if data, err := os.ReadFile(llm.APIKeyPath); err == nil {
@@ -146,9 +178,10 @@ func buildDoctorProvider(llm config.LLM, scheme advisor.AuthScheme) advisor.Prov
 		}
 	}
 	return &advisor.HTTPClassifier{
-		Endpoint:   llm.Endpoint,
+		Endpoint:   endpoint,
 		APIKey:     apiKey,
-		AuthScheme: scheme,
+		Model:      llm.Model,
+		Translator: t,
 		Client:     &http.Client{Timeout: time.Duration(llm.TimeoutSeconds) * time.Second},
 	}
 }

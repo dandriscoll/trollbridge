@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -343,68 +344,54 @@ func (c *cache) put(k string, v cacheValue) {
 	c.mu.Unlock()
 }
 
-// AuthScheme selects how HTTPClassifier authenticates with the
-// advisor endpoint. Trollbridge's wire shape (DESIGN.md §9) is fixed
-// across providers; only the auth header changes.
-type AuthScheme int
-
-const (
-	// AuthBearer sends `Authorization: Bearer <api_key>`. Used by
-	// `provider: anthropic` and as the generic default.
-	AuthBearer AuthScheme = iota
-	// AuthAzureAPIKey sends `api-key: <api_key>`. Used by
-	// `provider: aoai` (Azure OpenAI).
-	AuthAzureAPIKey
-)
-
-// HTTPClassifier is a generic JSON-over-HTTP advisor provider that
-// posts the Input to a configured endpoint and expects the
-// configured response shape. The DESIGN.md §9 schema is the
-// expected shape; HTTPClassifier is intentionally generic so
-// operators can wire any compatible endpoint.
+// HTTPClassifier is a Provider that translates the trollbridge
+// advisor Input into a provider-specific native API request (per
+// the configured Translator), POSTs it, and parses the response
+// back into the trollbridge Output.
+//
+// Construct via NewHTTPClassifier. The Translator is mandatory; nil
+// translator with non-empty endpoint is a configuration error
+// surfaced at first Classify.
 type HTTPClassifier struct {
 	Endpoint   string
 	APIKey     string
-	AuthScheme AuthScheme
-	Headers    map[string]string
+	Model      string
+	Translator Translator
 	Client     *http.Client
 }
 
-// Classify implements Provider.
+// Classify implements Provider. Translator builds the wire body
+// and headers; HTTPClassifier owns transport — POST, status
+// capture, body read, error wrapping with ErrAdvisorWire /
+// ErrAdvisorSchema for the caller to distinguish.
 func (h *HTTPClassifier) Classify(ctx context.Context, in Input) (Output, error) {
+	if h.Translator == nil {
+		return Output{}, fmt.Errorf("advisor: HTTPClassifier has no Translator configured")
+	}
 	if h.Client == nil {
 		h.Client = &http.Client{Timeout: 8 * time.Second}
 	}
-	body, _ := json.Marshal(in)
+	body, headers, err := h.Translator.BuildRequest(in, h.Model, h.APIKey)
+	if err != nil {
+		return Output{}, fmt.Errorf("advisor: build request: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, "POST", h.Endpoint, strings.NewReader(string(body)))
 	if err != nil {
-		return Output{}, err
+		return Output{}, fmt.Errorf("advisor: new request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range h.Headers {
+	for k, v := range headers {
 		req.Header.Set(k, v)
-	}
-	if h.APIKey != "" {
-		switch h.AuthScheme {
-		case AuthAzureAPIKey:
-			req.Header.Set("api-key", h.APIKey)
-		default:
-			req.Header.Set("Authorization", "Bearer "+h.APIKey)
-		}
 	}
 	resp, err := h.Client.Do(req)
 	if err != nil {
-		return Output{}, err
+		return Output{}, fmt.Errorf("%w: %v", ErrAdvisorWire, err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return Output{}, fmt.Errorf("advisor http %s", resp.Status)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return Output{}, fmt.Errorf("%w: read response: %v", ErrAdvisorWire, err)
 	}
-	var out Output
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return Output{}, fmt.Errorf("advisor json decode: %w", err)
-	}
-	return out, nil
+	return h.Translator.ParseResponse(resp.StatusCode, respBody)
 }
 
 // MockProvider supports tests; returns a fixed Output or error.

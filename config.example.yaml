@@ -51,16 +51,25 @@ lists:
     - metadata.azure.com
 
 # 3. LLM — the advisor consulted on ambiguous requests.
-#    provider: anthropic   -> Authorization: Bearer <key>     (default)
-#    provider: aoai        -> api-key: <key>                   (Azure OpenAI)
-#    Other strings fall back to generic Bearer with a startup warning.
-#    The wire schema posted to `endpoint` is fixed (DESIGN.md §9);
-#    point at a wrapper that speaks it.
+#    Trollbridge speaks each provider's native API directly, forcing
+#    a structured tool call (trollbridge_decision) so the model
+#    always returns a parseable advisor decision.
+#
+#    provider: anthropic   -> Anthropic Messages API
+#                             headers: x-api-key + anthropic-version
+#                             endpoint: https://api.anthropic.com/v1/messages
+#    provider: aoai        -> Azure OpenAI chat-completions API
+#                             header:  api-key
+#                             endpoint includes the deployment path
+#                             (the deployment name in the URL is what
+#                              picks the underlying model)
+#    Other strings fall back to the anthropic translator with a
+#    startup warning.
 llm:
   enabled: false
   provider: anthropic
   model:    claude-opus-4-7
-  endpoint: https://api.anthropic.com
+  endpoint: https://api.anthropic.com/v1/messages
   api_key_path: /etc/trollbridge/llm.key
   timeout_seconds: 8
   cache_ttl_seconds: 300
@@ -71,15 +80,18 @@ llm:
   # --- Azure OpenAI (AOAI) example -------------------------------
   # To use Azure OpenAI instead of Anthropic, replace the llm block
   # above with the one below. The endpoint is the deployment-scoped
-  # chat-completions URL; the api-version is the only Azure-specific
-  # query string. Trollbridge sends `api-key: <key>` (not Bearer)
-  # automatically when provider is `aoai`.
+  # chat-completions URL; the api-version query string is required.
+  # Trollbridge automatically:
+  #   - sends `api-key: <key>` (not Bearer)
+  #   - serializes the request as Azure chat-completions JSON
+  #   - forces a function-call to trollbridge_decision so the model's
+  #     reply carries a parseable advisor decision
   #
   # llm:
   #   enabled: true
   #   provider: aoai
   #   model:    <deployment-name>     # the Azure deployment, not the underlying model id
-  #   endpoint: https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-02-15-preview
+  #   endpoint: https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-10-21
   #   api_key_path: /etc/trollbridge/aoai.key
   #   timeout_seconds: 8
   #   cache_ttl_seconds: 300
