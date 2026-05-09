@@ -13,11 +13,14 @@ The proxy is implemented in Go: a single static binary, no runtime
 deps.
 
 - [`DESIGN.md`](DESIGN.md) — full design document.
-- [`AGENTS.md`](AGENTS.md) — instructions for an LLM coding agent
-  asked to set up trollbridge for you.
+- [`AGENTS.md`](AGENTS.md) — pointer to the two agent-facing
+  surfaces (configuring agent, proxied agent).
+- [`docs/configuring-agent.md`](docs/configuring-agent.md) —
+  long-form setup workflow for an agent installing trollbridge for
+  the user.
 - [`docs/proxied-agent.md`](docs/proxied-agent.md) — short
-  system-prompt fragment for an agent whose egress *goes through*
-  trollbridge (separate audience from `AGENTS.md`).
+  system-prompt fragment for an agent whose egress goes through
+  trollbridge.
 - [`docs/deploy.md`](docs/deploy.md) — deployment recipes.
 - [`config.example.yaml`](config.example.yaml) — annotated config;
   the simple authoring surface lives inline as `lists.allow` /
