@@ -15,6 +15,12 @@ import (
 // can swap this var rather than the whole stdin shape).
 var isTerminal = func(fd int) bool { return term.IsTerminal(fd) }
 
+// readPassword wraps term.ReadPassword for the same reason as
+// isTerminal: tests that emulate a TTY via os.Pipe() cannot run the
+// real termios syscalls (a pipe fd is not a terminal), so they stub
+// this var to feed scripted bytes through the same code path.
+var readPassword = func(fd int) ([]byte, error) { return term.ReadPassword(fd) }
+
 // initAnswers carries the result of the interactive `init` flow.
 // `applyAnswers` consumes this to render the final YAML; `init.go`
 // consumes it to decide whether to chain into ca.Init / write the
@@ -120,7 +126,7 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 			}
 			ans.llmEndpoint = ep
 		}
-		key, err := promptSecret(r, out, "   API key (paste; will not be echoed back)")
+		key, err := promptSecret(in, r, out, "   API key (paste; will not be echoed back)")
 		if err != nil {
 			return ans, err
 		}
@@ -220,19 +226,40 @@ func promptRequiredString(r *bufio.Reader, out io.Writer, label string) (string,
 // re-prompt is courteous; a second empty answer is an explicit
 // abort rather than silently writing an empty key file).
 //
-// We do not disable terminal echo here — that is the caller's
-// responsibility on a real TTY (today's design accepts terminal
-// echo for simplicity; future work can wrap term.ReadPassword).
-func promptSecret(r *bufio.Reader, out io.Writer, label string) (string, error) {
+// On a real TTY, terminal echo is suppressed via term.ReadPassword
+// so the operator's keystrokes do not appear on screen — the prompt
+// label promises that property and the implementation must deliver
+// it. On non-TTY input (piped, redirected) there is no terminal to
+// echo to; the existing bufio.Reader path runs, preserving any
+// already-buffered data the parent reader holds.
+func promptSecret(in io.Reader, r *bufio.Reader, out io.Writer, label string) (string, error) {
+	tty := false
+	var fd int
+	if f, ok := in.(*os.File); ok {
+		fd = int(f.Fd())
+		tty = isTerminal(fd)
+	}
 	for attempt := 0; attempt < 2; attempt++ {
 		fmt.Fprintf(out, "%s: ", label)
-		line, err := r.ReadString('\n')
-		v := strings.TrimSpace(line)
+		var v string
+		if tty {
+			b, err := readPassword(fd)
+			// term.ReadPassword swallows the operator's newline; print
+			// one so subsequent output starts on a fresh line.
+			fmt.Fprintln(out)
+			if err != nil {
+				return "", fmt.Errorf("read API key: %w", err)
+			}
+			v = strings.TrimSpace(string(b))
+		} else {
+			line, err := r.ReadString('\n')
+			v = strings.TrimSpace(line)
+			if v == "" && err != nil {
+				break
+			}
+		}
 		if v != "" {
 			return v, nil
-		}
-		if err != nil {
-			break
 		}
 		fmt.Fprintln(out, "   (the key cannot be empty)")
 	}

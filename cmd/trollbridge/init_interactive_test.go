@@ -204,18 +204,86 @@ func TestPromptChoice_RetriesOnUnknownChoice(t *testing.T) {
 
 func TestPromptSecret_RejectsEmpty(t *testing.T) {
 	var buf bytes.Buffer
-	// First answer empty, second answer empty too — abort.
-	_, err := promptSecret(newReader("\n\n"), &buf, "key")
+	// Non-TTY path: in is a strings.Reader (not *os.File), so the TTY
+	// branch is skipped and bufio drives the read. Echo is moot.
+	in1 := strings.NewReader("\n\n")
+	r1 := newReader("\n\n")
+	_, err := promptSecret(in1, r1, &buf, "key")
 	if err == nil {
 		t.Error("two empty inputs should produce an error")
 	}
-	// First answer empty, second answer non-empty — accept.
-	got, err := promptSecret(newReader("\nsk-test\n"), &buf, "key")
+	in2 := strings.NewReader("\nsk-test\n")
+	r2 := newReader("\nsk-test\n")
+	got, err := promptSecret(in2, r2, &buf, "key")
 	if err != nil {
 		t.Fatalf("non-empty after retry should succeed: %v", err)
 	}
 	if got != "sk-test" {
 		t.Errorf("got %q, want sk-test", got)
+	}
+}
+
+func TestPromptSecret_UsesReadPasswordOnTTY(t *testing.T) {
+	prevTerm := isTerminal
+	prevReadPw := readPassword
+	isTerminal = func(int) bool { return true }
+	calledFd := -1
+	readPassword = func(fd int) ([]byte, error) {
+		calledFd = fd
+		return []byte("sk-tty-secret"), nil
+	}
+	t.Cleanup(func() {
+		isTerminal = prevTerm
+		readPassword = prevReadPw
+	})
+
+	// We need an *os.File so the type assertion succeeds; a pipe
+	// gives us that without needing a real terminal.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = pr.Close() })
+	_ = pw.Close()
+
+	var buf bytes.Buffer
+	got, err := promptSecret(pr, bufio.NewReader(pr), &buf, "key")
+	if err != nil {
+		t.Fatalf("promptSecret: %v", err)
+	}
+	if got != "sk-tty-secret" {
+		t.Errorf("got %q, want sk-tty-secret", got)
+	}
+	if calledFd != int(pr.Fd()) {
+		t.Errorf("readPassword called with fd %d, want %d (pipe-read fd)", calledFd, pr.Fd())
+	}
+}
+
+func TestPromptSecret_FallsBackToBufioWhenNonTTY(t *testing.T) {
+	prevTerm := isTerminal
+	prevReadPw := readPassword
+	isTerminal = func(int) bool { return false }
+	called := false
+	readPassword = func(int) ([]byte, error) {
+		called = true
+		return nil, nil
+	}
+	t.Cleanup(func() {
+		isTerminal = prevTerm
+		readPassword = prevReadPw
+	})
+
+	in := strings.NewReader("scripted-key\n")
+	var buf bytes.Buffer
+	got, err := promptSecret(in, newReader("scripted-key\n"), &buf, "key")
+	if err != nil {
+		t.Fatalf("promptSecret: %v", err)
+	}
+	if got != "scripted-key" {
+		t.Errorf("got %q, want scripted-key", got)
+	}
+	if called {
+		t.Errorf("readPassword must NOT be called when isTerminal is false")
 	}
 }
 
@@ -404,7 +472,12 @@ func TestInit_InteractiveLLMKeyAlongsideYaml(t *testing.T) {
 
 	prev := isTerminal
 	isTerminal = func(int) bool { return true }
-	t.Cleanup(func() { isTerminal = prev })
+	prevPw := readPassword
+	readPassword = func(int) ([]byte, error) { return []byte(keyValue), nil }
+	t.Cleanup(func() {
+		isTerminal = prev
+		readPassword = prevPw
+	})
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -473,7 +546,12 @@ func TestInit_InteractiveAOAIWritesEndpointInYaml(t *testing.T) {
 
 	prev := isTerminal
 	isTerminal = func(int) bool { return true }
-	t.Cleanup(func() { isTerminal = prev })
+	prevPw := readPassword
+	readPassword = func(int) ([]byte, error) { return []byte(keyValue), nil }
+	t.Cleanup(func() {
+		isTerminal = prev
+		readPassword = prevPw
+	})
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
