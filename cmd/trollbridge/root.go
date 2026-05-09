@@ -46,15 +46,14 @@ func exitCodeFor(err error) int {
 	return 1
 }
 
+// defaultConfigPath returns the path used when no -c flag is given.
+// trollbridge is a deployed proxy, not a user application — its config
+// lives with the deployment (cwd) rather than under the operator's XDG
+// tree. TROLLBRIDGE_CONFIG remains an explicit operator override (used
+// by packaging units like packaging/systemd/trollbridge.service).
 func defaultConfigPath() string {
 	if v := os.Getenv("TROLLBRIDGE_CONFIG"); v != "" {
 		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return v + "/trollbridge/trollbridge.yaml"
-	}
-	if v := os.Getenv("HOME"); v != "" {
-		return v + "/.config/trollbridge/trollbridge.yaml"
 	}
 	return "trollbridge.yaml"
 }

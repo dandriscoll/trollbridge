@@ -99,9 +99,9 @@ func newInitCmd() *cobra.Command {
 		Long: `Create a trollbridge.yaml in the target directory.
 
 The default directory matches the location every other subcommand
-reads from (TROLLBRIDGE_CONFIG, then $XDG_CONFIG_HOME/trollbridge,
-then $HOME/.config/trollbridge). Pass -d <path> to write somewhere
-else.
+reads from: the directory portion of $TROLLBRIDGE_CONFIG when set,
+otherwise the current working directory. Pass -d <path> to write
+somewhere else.
 
 By default, when stdin is a TTY, init runs as a guided setup that
 asks about topology, policy mode, TLS interception, and LLM
@@ -202,10 +202,15 @@ is passed, init writes the static default config without prompting.
 			// rest of the CLI finds it without -c — print bare commands.
 			// Otherwise the operator chose a non-default location;
 			// thread the absolute path through every follow-on so the
-			// printed advice works from any cwd.
+			// printed advice works from any cwd. Compare absolutes on
+			// both sides because defaultConfigPath() may return either
+			// the cwd-relative "trollbridge.yaml" or the operator's
+			// $TROLLBRIDGE_CONFIG override.
 			cFlag := ""
-			if abs, err := filepath.Abs(yamlPath); err == nil && abs != defaultConfigPath() {
-				cFlag = " -c " + abs
+			absYaml, errA := filepath.Abs(yamlPath)
+			absDefault, errB := filepath.Abs(defaultConfigPath())
+			if errA == nil && errB == nil && absYaml != absDefault {
+				cFlag = " -c " + absYaml
 			}
 
 			fmt.Fprintln(out, "\nnext steps:")

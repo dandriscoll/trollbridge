@@ -94,15 +94,18 @@ For laptop use, just run:
 ./bin/trollbridge init
 ```
 
-`init` defaults its target directory to `$HOME/.config/trollbridge/`
-(or whatever `$TROLLBRIDGE_CONFIG` / `$XDG_CONFIG_HOME` resolves to)
-— the same path every other subcommand reads from by default.
-After this, `trollbridge doctor`, `trollbridge run`, etc., all
-find the config without `-c`.
+`init` defaults its target directory to the current working directory
+— `./trollbridge.yaml`. Every other subcommand reads from the same
+default, so `trollbridge doctor`, `trollbridge run`, etc., all find
+the config without `-c` when run from the same directory. trollbridge
+is a deployed proxy, not a user application; its config lives with
+the deployment, not under `~/.config`.
 
-For a system install, pass `-d <path>` to write the config (and the
-generated CA, when interception is chosen) to that directory; the
-systemd unit in `packaging/systemd/` reads `/etc/trollbridge/`.
+For a system install, set `TROLLBRIDGE_CONFIG=/etc/trollbridge/trollbridge.yaml`
+(an explicit operator override, used by the systemd unit in
+`packaging/systemd/`) and pass `-d /etc/trollbridge` to `init`. The
+env var continues to short-circuit the cwd default for every
+subcommand.
 
 When stdin is a TTY, `init` runs as a guided setup that asks the
 operator about topology, mode, TLS interception, and the LLM

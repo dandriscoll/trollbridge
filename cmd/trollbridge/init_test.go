@@ -75,20 +75,17 @@ func TestInitDefaultHasNoIdentitiesOrPolicy(t *testing.T) {
 	}
 }
 
-// TestInit_DefaultDirMatchesXDGConfigPath is the regression guard for
-// issue #8: `trollbridge init` (no -d) used to write to cwd while
-// every other subcommand reads from defaultConfigPath() — operators
-// who ran `init` then `doctor` without -c hit "no such file" because
-// the two halves disagreed. After the fix init's default -d matches
-// dirname(defaultConfigPath()).
-func TestInit_DefaultDirMatchesXDGConfigPath(t *testing.T) {
+// TestInit_DefaultDirIsCwd asserts that `trollbridge init` (no -d,
+// no env override) writes to the current working directory and does
+// NOT leak into the user's XDG/$HOME tree. trollbridge is a deployed
+// proxy, not a user application — its config lives with the
+// deployment, not under ~/.config.
+func TestInit_DefaultDirIsCwd(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("TROLLBRIDGE_CONFIG", "")
 
-	// Run init from a different cwd to prove the file does NOT land
-	// in cwd just because the operator was sitting there.
 	cwd := t.TempDir()
 	prev, err := os.Getwd()
 	if err != nil {
@@ -108,12 +105,17 @@ func TestInit_DefaultDirMatchesXDGConfigPath(t *testing.T) {
 		t.Fatalf("init: %v\n%s", err, out.String())
 	}
 
-	wantPath := filepath.Join(home, ".config", "trollbridge", "trollbridge.yaml")
-	if _, err := os.Stat(wantPath); err != nil {
-		t.Errorf("init should default to %s; not found: %v\noutput:\n%s", wantPath, err, out.String())
+	if _, err := os.Stat(filepath.Join(cwd, "trollbridge.yaml")); err != nil {
+		t.Errorf("init should default to ./trollbridge.yaml in cwd (%s); not found: %v\noutput:\n%s", cwd, err, out.String())
 	}
-	if _, err := os.Stat(filepath.Join(cwd, "trollbridge.yaml")); err == nil {
-		t.Errorf("init must not leak into cwd when -d is omitted")
+	// Negative assertions: the XDG/$HOME branches no longer participate.
+	if _, err := os.Stat(filepath.Join(home, ".config", "trollbridge", "trollbridge.yaml")); err == nil {
+		t.Errorf("init must not leak into $HOME/.config/trollbridge/")
+	}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		if _, err := os.Stat(filepath.Join(xdg, "trollbridge", "trollbridge.yaml")); err == nil {
+			t.Errorf("init must not leak into $XDG_CONFIG_HOME/trollbridge/")
+		}
 	}
 }
 
@@ -146,10 +148,19 @@ func TestInit_TROLLBRIDGE_CONFIG_OverridesDefaultDir(t *testing.T) {
 // at defaultConfigPath() — operators reading the printed advice
 // don't have to copy a redundant flag.
 func TestInit_NextStepsOmitsCWhenDefaultPath(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("TROLLBRIDGE_CONFIG", "")
+
+	cwd := t.TempDir()
+	prev, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prev) })
 
 	cmd := newInitCmd()
 	var out bytes.Buffer

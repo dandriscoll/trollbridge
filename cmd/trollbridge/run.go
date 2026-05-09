@@ -142,7 +142,7 @@ func newRunCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml (default: $TROLLBRIDGE_CONFIG, then $XDG_CONFIG_HOME/trollbridge/trollbridge.yaml)")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml (default: $TROLLBRIDGE_CONFIG, then ./trollbridge.yaml)")
 	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the interactive console even when stdin is a tty")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "alias for --log-level=debug; emits per-request lifecycle records on the operational log")
 	return cmd

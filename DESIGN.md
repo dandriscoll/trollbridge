@@ -570,11 +570,12 @@ intermediates).
   existing file to `<path>.<RFC3339-timestamp>.bak` before writing
   the new one. trollbridge MUST NEVER silently overwrite an existing
   CA private key file.
-- **Storage**: paths configurable; default
-  `$XDG_CONFIG_HOME/trollbridge/` for user installs and
-  `/etc/trollbridge/` for system installs. The private key MUST NOT
-  ever be packaged into a Docker image, written to a public-readable
-  path, or echoed to logs.
+- **Storage**: paths configurable; default `./` (the directory
+  trollbridge is run from) for ad-hoc installs and
+  `/etc/trollbridge/` for system installs (operator sets
+  `TROLLBRIDGE_CONFIG` or passes `-d /etc/trollbridge` to `init`).
+  The private key MUST NOT ever be packaged into a Docker image,
+  written to a public-readable path, or echoed to logs.
 - **Rotation**: `trollbridge ca rotate` generates a new CA, writes it
   alongside the old, and starts signing new leaf certs from the new
   CA after a configurable grace period. Operators MUST install the
@@ -1361,8 +1362,9 @@ silent startup-by-default is a footgun.
 
 ### 13.3 Flags common to all commands
 
-- `--config <path>` (default `$XDG_CONFIG_HOME/trollbridge/trollbridge.yaml`,
-  or `/etc/trollbridge/trollbridge.yaml` for system installs).
+- `--config <path>` (default `./trollbridge.yaml`, overridable via
+  `TROLLBRIDGE_CONFIG` — typically set to
+  `/etc/trollbridge/trollbridge.yaml` for system installs).
 - `--log-level <debug|info|warn|error>` (default `info`). Also
   `TROLLBRIDGE_LOG_LEVEL`. Persistent across all subcommands.
 - `--verbose, -v` is a `run`-subcommand-local alias for
