@@ -37,7 +37,7 @@ import (
 )
 
 // Version is set at build time via -ldflags="-X ...".
-var Version = "0.4.1-dev"
+var Version = "0.4.2-dev"
 
 // Server holds the long-lived state of a running trollbridge.
 type Server struct {
