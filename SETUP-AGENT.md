@@ -1,27 +1,38 @@
-# Configuring agent
+# Setup agent — instructions for an agent setting up trollbridge
 
-Instructions for an LLM-driven coding agent (Claude Code, Cursor,
-Aider, OpenAI Codex, or similar) that has been asked by its user
-to **set up and run** trollbridge.
+You are an LLM-driven coding agent (Claude Code, Cursor, Aider,
+OpenAI Codex, or similar) that has been asked by your user to
+**set up and run trollbridge**, an HTTP/HTTPS policy proxy.
 
-This is **one of two** agent-facing surfaces in this repo:
+This file is fully self-contained and copy-pasteable. If you need
+the spec, the trollbridge repo's `DESIGN.md` is authoritative; if
+you need topology recipes, see `docs/deploy.md`; if you need an
+annotated config, see `config.example.yaml`. None are required to
+follow this file end-to-end.
 
-| File | Audience |
-|---|---|
-| [`docs/configuring-agent.md`](./configuring-agent.md) (this file) | An agent **setting up** trollbridge for the user. Long-form workflow — Step 0 through Step 9. |
-| [`docs/proxied-agent.md`](./proxied-agent.md) | An agent whose own HTTP egress **goes through** trollbridge. Short copy-pasteable system-prompt fragment. |
+(If you are instead an agent whose own HTTP egress **goes through**
+trollbridge — i.e., your job is to call out to the network and
+trollbridge sits in front of you — the file you want is
+`PROXIED-AGENT.md`, not this one.)
 
-This file is **for the agent, not the human**. The human's quickstart
-is [`README.md`](../README.md). The full spec is [`DESIGN.md`](../DESIGN.md).
-Topology recipes are [`deploy.md`](./deploy.md). The annotated config
-reference is [`config.example.yaml`](../config.example.yaml).
+## What trollbridge is, in one paragraph
 
-## Two distinct hosts
+Trollbridge is an HTTP/HTTPS proxy that gates an agent's network
+egress against a deterministic policy, with an optional LLM-advisor
+classifying ambiguous requests. Each request reaches the proxy; the
+proxy decides allow / deny / hold-for-approval and writes every
+decision to a JSON-lines audit log. Trollbridge is only effective
+when the host firewall blocks every other network path — the proxy
+is the *only* way out. The wire contract: declined requests return
+HTTP **470**; held-for-approval requests return HTTP **471**; both
+carry a `Trollbridge-Request-Id: <uuid>` header that matches the
+audit log's `request_id` field.
+
+## Two distinct hosts — read this first
 
 Trollbridge has two distinct hosts in the general case. Conflating
-them was the root cause of three rounds of cert-path bugs (#14,
-#19); read this carefully before authoring config or running any
-command:
+them caused three rounds of cert-path bugs in the project's history;
+read this carefully before authoring config or running any command:
 
 - The **proxy host** runs `trollbridge run`. It owns the CA private
   key (`/etc/trollbridge/trollbridge-ca.{crt,key}`), the audit log,
@@ -37,17 +48,6 @@ In `local` topology these are the same machine; in `local-vm` and
 `remote` they are different. The Step-0 question below maps them
 explicitly. Do not assume the operator running `trollbridge init`
 is on the proxy host or has root.
-
-## What trollbridge is, in one paragraph
-
-Trollbridge is an HTTP/HTTPS proxy that gates an agent's network
-egress against a deterministic policy, with optional LLM-advisor
-classification on the gaps. The agent (you) sends requests through
-it; the proxy decides allow / deny / hold-for-approval and writes
-every decision to a JSON-lines audit log. Trollbridge is only
-effective when the host firewall blocks every other network path —
-the proxy is the *only* way out. See `docs/deploy.md` for the
-firewall posture per topology.
 
 ## Read this before configuring anything
 
