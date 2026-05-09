@@ -195,7 +195,8 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	s.engine.History().Record(req, decision, time.Now().UTC())
 
 	if !(decision.Effect == types.EffectAllow || decision.Effect == types.EffectAskUserResolvedAllow) {
-		// Refuse: 403 over the intercepted TLS connection.
+		// Refuse: emit a trollbridge-categorical status (470/471)
+		// over the intercepted TLS connection.
 		hdrs, body, contentType := denyResponse(decision, req.ID, r.Header.Get("Accept"))
 		respHeader := http.Header{
 			"Content-Type":   {contentType},
@@ -205,8 +206,9 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		for k, v := range hdrs {
 			respHeader.Set(k, v)
 		}
+		status := statusFromEffect(decision.Effect)
 		resp := &http.Response{
-			StatusCode: http.StatusForbidden,
+			StatusCode: status,
 			Proto:      "HTTP/1.1",
 			ProtoMajor: 1, ProtoMinor: 1,
 			Header:        respHeader,
@@ -214,7 +216,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 			ContentLength: int64(len(body)),
 		}
 		_ = resp.Write(tlsConn)
-		s.writeAuditWithBody(req, decision, bodyBuf, http.StatusForbidden, 0, time.Since(start), "")
+		s.writeAuditWithBody(req, decision, bodyBuf, status, 0, time.Since(start), "")
 		return nil
 	}
 

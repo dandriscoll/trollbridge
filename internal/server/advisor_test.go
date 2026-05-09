@@ -155,8 +155,8 @@ func TestAdvisor_DeniesViaAskLLMRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d, want 403", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 }
 
@@ -200,8 +200,8 @@ func TestAdvisor_DoesNotElevateAskUser(t *testing.T) {
 	// Wait for timeout (5s in cfg) → 403.
 	select {
 	case resp := <-respCh:
-		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("status: got %d, want 403 after operator timeout", resp.StatusCode)
+		if resp.StatusCode != StatusTrollbridgeDeclined {
+			t.Errorf("status: got %d, want %d after operator timeout", resp.StatusCode, StatusTrollbridgeDeclined)
 		}
 		resp.Body.Close()
 	case err := <-errCh:

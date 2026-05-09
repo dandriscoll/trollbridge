@@ -201,8 +201,8 @@ func TestDenyList_BeatsEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d, want 403", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 	if prov.Calls != 0 {
 		t.Errorf("advisor was called %d times; expected 0 (denylist short-circuits)", prov.Calls)

@@ -234,8 +234,8 @@ func TestApproval_DeniedRequestRefused(t *testing.T) {
 
 	select {
 	case resp := <-respCh:
-		if resp.StatusCode != http.StatusForbidden {
-			t.Errorf("status: got %d, want 403", resp.StatusCode)
+		if resp.StatusCode != StatusTrollbridgeDeclined {
+			t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 		}
 		resp.Body.Close()
 	case err := <-errCh:
@@ -266,8 +266,8 @@ func TestApproval_TimesOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d, want 403 after timeout", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d after timeout", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 }
 

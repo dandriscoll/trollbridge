@@ -282,11 +282,11 @@ func TestIntercept_DeniesPathAndAuditsCleanly(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d, want 403; body=%s", resp.StatusCode, string(body))
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d; body=%s", resp.StatusCode, StatusTrollbridgeDeclined, string(body))
 	}
-	if reason := resp.Header.Get("Trollbridge-Reason"); reason == "" {
-		t.Error("missing Trollbridge-Reason header on intercepted deny")
+	if reason := resp.Header.Get("Trollbridge-Reason"); reason != "declined" {
+		t.Errorf("Trollbridge-Reason on intercepted deny: got %q, want %q", reason, "declined")
 	}
 	rid := resp.Header.Get(HeaderRequestID)
 	if rid == "" {
@@ -395,7 +395,7 @@ func TestEngine_FailsClosedOnBodyRequiredButMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d, want 403 (fail-closed on body-required rule)", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d (fail-closed on body-required rule)", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 }

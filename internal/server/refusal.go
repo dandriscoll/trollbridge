@@ -14,62 +14,90 @@ import (
 // response — allow forwarding, deny refusal, CONNECT establishment.
 const HeaderRequestID = "Trollbridge-Request-Id"
 
-// HeaderReason is the long-standing custom header set on deny.
-// Preserved alongside Proxy-Status for backwards compatibility.
+// HeaderReason is the long-standing custom header on deny / pending
+// responses. Per the wire contract (issue #11), the value is the
+// CATEGORICAL effect token only ("declined" or "pending"). The
+// underlying reason text is in the audit log, keyed by request_id —
+// not on the wire.
 const HeaderReason = "Trollbridge-Reason"
 
 // HeaderProxyStatus is the standardized RFC 9209 response header.
 const HeaderProxyStatus = "Proxy-Status"
 
+// StatusTrollbridgeDeclined is the wire status code for a request the
+// proxy has actively declined (deny effect). 470 is unassigned in the
+// IANA HTTP Status Code registry; per RFC 9110 §15 a client that does
+// not recognize it falls back to 400-class semantics. The choice is
+// deliberate: an agent's HTTP client surfacing "470" cannot confuse
+// the response with an upstream 403 for unrelated reasons.
+const StatusTrollbridgeDeclined = 470
+
+// StatusTrollbridgePending is the wire status code for a request the
+// proxy has held for human or LLM-advisor approval (ask_user / ask_llm
+// effects, or their resolved-deny / timed-out variants when surfaced
+// before resolution). 471 is unassigned in IANA's registry and pairs
+// with 470 as the trollbridge-specific decline / pending pair.
+const StatusTrollbridgePending = 471
+
 // refusalBody is the JSON shape returned when the client signaled
-// `Accept: application/json` on a denied request. Keys mirror the
-// audit log's field names so an operator who has the response can
-// grep the audit log on any of them.
+// `Accept: application/json` on a declined or pending request. Per
+// the wire contract (issue #11), the body MUST NOT carry the reason
+// text or the rule id — those live in the audit log only. Operators
+// retrieve them via the `request_id`.
 type refusalBody struct {
 	Effect    string `json:"effect"`
-	Reason    string `json:"reason"`
-	RuleID    string `json:"rule_id"`
 	RequestID string `json:"request_id"`
 }
 
 // denyResponse builds the deny-side response shape. Pure: no I/O,
 // no mutable state. Returns the headers to set, the body bytes to
 // write, and the Content-Type.
+//
+// Per the wire contract (issue #11), the response carries no reason
+// text and no rule id — only categorical effect + request_id, plus
+// the RFC 9209 Proxy-Status error token. Operators with audit-log
+// access retrieve the reason via the request_id.
 func denyResponse(d types.Decision, requestID, accept string) (headers map[string]string, body []byte, contentType string) {
 	if requestID == "" {
 		requestID = "unknown"
 	}
 	token := proxyStatusToken(d.Effect)
-	details := proxyStatusDetails(d)
+	category := categoricalEffect(d.Effect)
 
 	headers = map[string]string{
 		HeaderRequestID:   requestID,
-		HeaderReason:      string(d.Effect) + ": " + d.Reason,
-		HeaderProxyStatus: formatProxyStatus(token, details, requestID),
+		HeaderReason:      category,
+		HeaderProxyStatus: formatProxyStatus(token, requestID),
 	}
 
 	if acceptsJSON(accept) {
 		b, err := json.Marshal(refusalBody{
-			Effect:    string(d.Effect),
-			Reason:    d.Reason,
-			RuleID:    d.RuleID,
+			Effect:    category,
 			RequestID: requestID,
 		})
 		if err == nil {
 			return headers, b, "application/json"
 		}
 	}
-	plain := plainTextBody(d)
+	plain := plainTextBody(category, requestID)
 	return headers, []byte(plain), "text/plain; charset=utf-8"
 }
 
-func plainTextBody(d types.Decision) string {
-	switch d.Effect {
+// categoricalEffect maps an internal Effect to the wire-side
+// categorical token. Two values escape this function: "declined" for
+// any deny variant, and "pending" for any ask variant. Reason text
+// is intentionally omitted — agents see only what category fired.
+func categoricalEffect(e types.Effect) string {
+	switch e {
 	case types.EffectAskUser, types.EffectAskLLM:
-		return "trollbridge: request requires approval"
+		return "pending"
 	default:
-		return "trollbridge: request denied: " + d.Reason
+		return "declined"
 	}
+}
+
+func plainTextBody(category, requestID string) string {
+	return "trollbridge: request " + category + " (request_id=" + requestID + ")"
 }
 
 // proxyStatusToken maps a Decision's effect to an RFC 9209 §2.5
@@ -86,28 +114,21 @@ func proxyStatusToken(e types.Effect) string {
 	}
 }
 
-// proxyStatusDetails composes the human-readable details string.
-// When a structured rule fired, the rule id is prefixed so
-// operators can correlate without consulting the audit log first.
-func proxyStatusDetails(d types.Decision) string {
-	if d.RuleID != "" && d.Source == types.SourceRule {
-		return "rule " + d.RuleID + ": " + d.Reason
-	}
-	return d.Reason
-}
-
 // formatProxyStatus emits an RFC 9209 / RFC 8941 structured-fields
 // response header value:
 //
-//	trollbridge; error=<token>; details="<escaped>"; request-id="<uuid>"
+//	trollbridge; error=<token>; request-id="<uuid>"
 //
 // The intermediary identifier (`trollbridge`) is required by the
-// spec; `error` is a Token; `details` and `request-id` are quoted
-// strings (RFC 8941 §3.3.3 escaping: backslash + double-quote).
-func formatProxyStatus(token, details, requestID string) string {
+// spec; `error` is a Token; `request-id` is a quoted string (RFC
+// 8941 §3.3.3 escaping: backslash + double-quote). Per the wire
+// contract (issue #11), the `details` parameter is intentionally
+// omitted — disclosing the reason on the wire is what the contract
+// is preventing.
+func formatProxyStatus(token, requestID string) string {
 	return fmt.Sprintf(
-		`trollbridge; error=%s; details=%s; request-id=%s`,
-		token, sfQuotedString(details), sfQuotedString(requestID),
+		`trollbridge; error=%s; request-id=%s`,
+		token, sfQuotedString(requestID),
 	)
 }
 

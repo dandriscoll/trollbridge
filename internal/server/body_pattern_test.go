@@ -60,7 +60,7 @@ func TestBodyPattern_AppliesWhenSampleMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("secret body: got status=%d, want 403", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("secret body: got status=%d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 }

@@ -36,15 +36,17 @@ func TestDenySignal_HTTPCarriesAllHeaders(t *testing.T) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d, want 403", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 	rid := resp.Header.Get(HeaderRequestID)
 	if rid == "" {
 		t.Error("missing Trollbridge-Request-Id header")
 	}
-	if reason := resp.Header.Get(HeaderReason); !strings.HasPrefix(reason, "deny:") {
-		t.Errorf("Trollbridge-Reason: got %q", reason)
+	// Per the wire contract (issue #11), Trollbridge-Reason is the
+	// categorical effect token only — no reason text on the wire.
+	if reason := resp.Header.Get(HeaderReason); reason != "declined" {
+		t.Errorf("Trollbridge-Reason: got %q, want %q", reason, "declined")
 	}
 	ps := resp.Header.Get(HeaderProxyStatus)
 	if !strings.HasPrefix(ps, "trollbridge;") {
@@ -56,18 +58,21 @@ func TestDenySignal_HTTPCarriesAllHeaders(t *testing.T) {
 	if !strings.Contains(ps, `request-id="`+rid+`"`) {
 		t.Errorf("Proxy-Status request-id mismatch: header=%q want %q", ps, rid)
 	}
-	if !strings.Contains(ps, `details="rule deny-origin:`) {
-		t.Errorf("Proxy-Status details should prefix rule id when SourceRule: %q", ps)
+	if strings.Contains(ps, "details=") {
+		t.Errorf("Proxy-Status MUST NOT carry details= field: %q", ps)
 	}
-	// Default Accept (Go's http.Client sends none unless set) gets plain text.
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
 		t.Errorf("Content-Type: got %q want text/plain*", ct)
 	}
-	if !strings.Contains(string(body), "request denied") {
+	if !strings.Contains(string(body), "request declined") {
 		t.Errorf("plain body unexpected: %q", body)
 	}
+	if strings.Contains(string(body), "deny-origin") {
+		t.Errorf("plain body leaks rule id: %q", body)
+	}
 
-	// Audit must carry the same request_id.
+	// Audit must carry the same request_id AND the full reason / rule
+	// id (which are precisely what's omitted from the wire).
 	entries := h.auditEntries()
 	if len(entries) == 0 {
 		t.Fatal("no audit entries")
@@ -78,6 +83,9 @@ func TestDenySignal_HTTPCarriesAllHeaders(t *testing.T) {
 	}
 	if last.RuleID != "deny-origin" {
 		t.Errorf("audit rule_id: got %q want deny-origin", last.RuleID)
+	}
+	if last.Reason == "" {
+		t.Error("audit reason is empty — operator has no path to diagnose since wire reason is scrubbed")
 	}
 }
 
@@ -104,8 +112,8 @@ func TestDenySignal_HTTPJSONBodyOnAcceptHeader(t *testing.T) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
 		t.Errorf("Content-Type: got %q want application/json", ct)
@@ -114,19 +122,19 @@ func TestDenySignal_HTTPJSONBodyOnAcceptHeader(t *testing.T) {
 	if err := json.Unmarshal(body, &rb); err != nil {
 		t.Fatalf("body not JSON: %v: %s", err, body)
 	}
-	if rb.Effect != "deny" {
-		t.Errorf("effect: got %q", rb.Effect)
-	}
-	if rb.RuleID != "deny-origin-json" {
-		t.Errorf("rule_id: got %q", rb.RuleID)
+	if rb.Effect != "declined" {
+		t.Errorf("effect: got %q want %q", rb.Effect, "declined")
 	}
 	if rb.RequestID != resp.Header.Get(HeaderRequestID) {
 		t.Errorf("request_id mismatch: body=%s header=%s", rb.RequestID, resp.Header.Get(HeaderRequestID))
 	}
-	if rb.Reason == "" {
-		t.Error("reason should not be empty")
+	// Per wire contract (issue #11), JSON body has no rule_id, no reason.
+	if strings.Contains(string(body), "rule_id") {
+		t.Errorf("JSON body leaks rule_id key: %s", body)
 	}
-	// Headers must still be present alongside JSON body.
+	if strings.Contains(string(body), "reason") {
+		t.Errorf("JSON body leaks reason key: %s", body)
+	}
 	if resp.Header.Get(HeaderRequestID) == "" {
 		t.Error("Trollbridge-Request-Id missing on JSON deny")
 	}
@@ -197,8 +205,8 @@ func TestDenySignal_CONNECTRawWireFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d, want 403", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 	if rid := resp.Header.Get(HeaderRequestID); rid == "" {
 		t.Error("Trollbridge-Request-Id missing on CONNECT-deny")
@@ -241,14 +249,14 @@ func TestDenySignal_InlineListNoRulePrefix(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 	ps := resp.Header.Get(HeaderProxyStatus)
-	// Inline-list deny goes through SourceDenyList, not SourceRule —
-	// the details field MUST NOT carry a "rule X:" prefix.
-	if strings.Contains(ps, "details=\"rule ") {
-		t.Errorf("inline-list deny should not have rule prefix in details: %q", ps)
+	// Per wire contract (issue #11), Proxy-Status MUST NOT carry the
+	// details= field on any deny — neither rule-sourced nor list-sourced.
+	if strings.Contains(ps, "details=") {
+		t.Errorf("Proxy-Status MUST NOT carry details= field: %q", ps)
 	}
 	if !strings.Contains(ps, "error=http_request_denied") {
 		t.Errorf("error token: %q", ps)

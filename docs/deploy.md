@@ -35,7 +35,7 @@ In another shell:
 ```sh
 export HTTP_PROXY=http://127.0.0.1:8080
 export HTTPS_PROXY=http://127.0.0.1:8080
-curl http://example.com    # if denied by default-deny, expect 403
+curl http://example.com    # if declined by default-deny, expect HTTP 470
 ```
 
 ## Incus VM with host-side proxy (recommended)

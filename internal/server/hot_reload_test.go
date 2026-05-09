@@ -128,14 +128,14 @@ func TestHotReload_FileEditTakesEffectWithoutRestart(t *testing.T) {
 	pURL, _ := url.Parse("http://" + addr)
 	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pURL)}, Timeout: 5 * time.Second}
 
-	// Pre-reload: empty list, default-deny → 403.
+	// Pre-reload: empty list, default-deny → 470 (StatusTrollbridgeDeclined).
 	resp, err := c.Get(origin.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("pre-reload: status %d, want 403", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Fatalf("pre-reload: status %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 
 	// Edit allow.txt out-of-band. Sleep past mtime granularity.

@@ -64,9 +64,12 @@ automatically trusts the configured trollbridge CA. With interception
 disabled, the proxy is a transparent CONNECT tunnel and the test
 client must already trust the upstream's certificate.
 
-Held requests (under default-ask) return HTTP 511 with a
-Trollbridge-Reason header; this command surfaces the hold and
-the operator command needed to approve it.
+Held requests (under default-ask) return HTTP 471 (Trollbridge
+pending approval); declined requests return HTTP 470 (Trollbridge
+declined). Both statuses are intentionally non-standard so the
+caller can distinguish a proxy decision from any upstream code.
+This command surfaces the hold and the operator command needed
+to approve it.
 
 Decision correlation reads the audit log named by trollbridge.yaml's
 logging.audit_path. Under heavy concurrent traffic the matched
@@ -444,7 +447,7 @@ func renderResult(out io.Writer, req *http.Request, proxyAddr string, resp *http
 		}
 	}
 
-	if resp.StatusCode == http.StatusNetworkAuthenticationRequired {
+	if resp.StatusCode == 471 { // StatusTrollbridgePending — see internal/server/refusal.go
 		holdID := extractHoldID(dec)
 		if holdID != "" {
 			w("  hint:       held — approve via `trollbridge approve %s`\n", holdID)

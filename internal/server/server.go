@@ -566,14 +566,10 @@ func (s *Server) refuseHTTP(w http.ResponseWriter, r *http.Request, req *types.R
 		w.Header().Set(k, v)
 	}
 	w.Header().Set("Content-Type", contentType)
-	status := http.StatusForbidden
-	if d.Effect == types.EffectAskUser || d.Effect == types.EffectAskLLM {
-		// Should not reach here; holdAndWait converts these.
-		status = http.StatusNetworkAuthenticationRequired
-	}
+	status := statusFromEffect(d.Effect)
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
-	s.writeAudit(req, d, "", 0, statusFromEffect(d.Effect), 0, time.Since(start), "")
+	s.writeAudit(req, d, "", 0, status, 0, time.Since(start), "")
 }
 
 func (s *Server) buildOutbound(r *http.Request) (*http.Request, error) {
@@ -673,9 +669,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Connection", "close")
-		w.WriteHeader(http.StatusForbidden)
+		status := statusFromEffect(decision.Effect)
+		w.WriteHeader(status)
 		_, _ = w.Write(body)
-		s.writeAudit(req, decision, "", 0, http.StatusForbidden, 0, time.Since(start), "")
+		s.writeAudit(req, decision, "", 0, status, 0, time.Since(start), "")
 		return
 	}
 
@@ -868,10 +865,10 @@ func splitHostPort(hostport, defaultPort string) (string, int) {
 
 func statusFromEffect(e types.Effect) int {
 	switch e {
-	case types.EffectDeny:
-		return http.StatusForbidden
+	case types.EffectDeny, types.EffectAskUserResolvedDeny, types.EffectAskUserTimedOut:
+		return StatusTrollbridgeDeclined
 	case types.EffectAskUser, types.EffectAskLLM:
-		return http.StatusNetworkAuthenticationRequired
+		return StatusTrollbridgePending
 	}
 	return http.StatusOK
 }

@@ -335,33 +335,42 @@ host, and reason. If they don't, the proxy is not seeing the
 request — re-check the client's HTTPS_PROXY env var and the host
 firewall.
 
-## What the client sees on a deny
+## What the client sees on a refusal
 
-Every response from trollbridge — allow forwarding, deny refusal,
-CONNECT establishment — carries `Trollbridge-Request-Id: <uuid>`,
-which matches the audit log's `request_id`. On deny, the response
-also carries:
+Every response from trollbridge — allow forwarding, decline, hold
+for approval, CONNECT establishment — carries
+`Trollbridge-Request-Id: <uuid>`, which matches the audit log's
+`request_id`. On a refusal, the response also carries:
 
-- `Proxy-Status: trollbridge; error=http_request_denied; details="<reason>"; request-id="<uuid>"` (RFC 9209).
-- `Trollbridge-Reason: deny: <reason>` (legacy, preserved for
-  backwards compatibility — operators with existing scrapers do
-  not need to migrate).
-- A plain-text body, or a JSON body `{effect, reason, rule_id, request_id}`
-  when the client sent `Accept: application/json`.
+- **Status code 470** when the proxy actively declined the request,
+  or **471** when the request is held for approval. Both codes are
+  unassigned in the IANA HTTP Status Code registry, by design: a
+  caller that sees 470 or 471 — even through an HTTP library that
+  hides the response body — can infer the response came from
+  trollbridge, not the upstream service. Trollbridge never emits
+  `403` or `511` for a policy outcome.
+- `Proxy-Status: trollbridge; error=http_request_denied; request-id="<uuid>"`
+  (RFC 9209). The `details=` parameter is intentionally absent — the
+  reason text is not on the wire.
+- `Trollbridge-Reason: declined` (or `pending`). The header value is
+  always the categorical effect token; reason text is not on the
+  wire.
+- A plain-text body
+  `trollbridge: request <declined|pending> (request_id=<uuid>)`, or
+  a JSON body `{effect, request_id}` when the client sent
+  `Accept: application/json`.
 
-If a structured rule fired the deny, `rule_id` is set; if the inline
-allow/deny list or default-mode fired it, `rule_id` is empty.
-Because the client's response header and the audit-log entry carry
-the same `request_id`, an operator handed a request id by an agent
-can grep the audit log directly:
+The reason and rule id are deliberately **not** disclosed on the
+wire. They live in the audit log, keyed by `request_id`. An operator
+handed a request id by an agent can grep the audit log directly:
 
 ```sh
 grep '<uuid>' ~/.trollbridge/trollbridge.audit.jsonl | jq .
 ```
 
-**CONNECT-deny opacity.** When the proxy denies a CONNECT (the
+**CONNECT-decline opacity.** When the proxy declines a CONNECT (the
 common case for HTTPS without TLS interception), trollbridge writes
-the 403 + headers + body to the wire — but most HTTP client
+the 470 status + headers + body to the wire — but most HTTP client
 libraries (curl's libcurl, Python `httpx`/`urllib3`/`requests`,
 Node `https`) discard the proxy's response shape on tunnel failure
 and surface a generic "tunnel connect failed" error to the

@@ -201,8 +201,8 @@ func TestProxy_DeniesUnmatchedHTTPInDefaultDeny(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d, want 403", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 	if reason := resp.Header.Get("Trollbridge-Reason"); reason == "" {
 		t.Error("missing Trollbridge-Reason header")
@@ -239,8 +239,8 @@ func TestProxy_RejectsExplicitDenyRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Errorf("status: got %d, want 403", resp.StatusCode)
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 
 	entries := h.auditEntries()

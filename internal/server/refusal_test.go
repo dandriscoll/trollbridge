@@ -11,8 +11,10 @@ import (
 
 // proxyStatusRe is a structural sanity check for the Proxy-Status
 // header value. Asserts the intermediary identifier, error token,
-// quoted details, and quoted request-id parameter all appear.
-var proxyStatusRe = regexp.MustCompile(`^trollbridge; error=[a-z_]+; details="[^"]*"; request-id="[^"]+"$`)
+// and quoted request-id parameter all appear. Per the wire contract
+// (issue #11), the `details` field MUST NOT appear — its absence is
+// asserted separately in TestDenyResponse_NoReasonOnTheWire.
+var proxyStatusRe = regexp.MustCompile(`^trollbridge; error=[a-z_]+; request-id="[^"]+"$`)
 
 func TestDenyResponse_PlainText_DefaultAccept(t *testing.T) {
 	d := types.Decision{
@@ -27,15 +29,45 @@ func TestDenyResponse_PlainText_DefaultAccept(t *testing.T) {
 	if hdrs[HeaderRequestID] != "req-123" {
 		t.Errorf("missing/wrong request-id header: %q", hdrs[HeaderRequestID])
 	}
-	want := "deny: matched deny list: 169.254.169.254"
-	if hdrs[HeaderReason] != want {
-		t.Errorf("Trollbridge-Reason: got %q want %q", hdrs[HeaderReason], want)
+	if hdrs[HeaderReason] != "declined" {
+		t.Errorf("Trollbridge-Reason: got %q want %q", hdrs[HeaderReason], "declined")
 	}
 	if !proxyStatusRe.MatchString(hdrs[HeaderProxyStatus]) {
 		t.Errorf("Proxy-Status format off: %q", hdrs[HeaderProxyStatus])
 	}
-	if !strings.Contains(string(body), "matched deny list") {
-		t.Errorf("plain body missing reason: %q", body)
+	if want := "trollbridge: request declined (request_id=req-123)"; string(body) != want {
+		t.Errorf("plain body: got %q, want %q", body, want)
+	}
+}
+
+// TestDenyResponse_NoReasonOnTheWire is the contract-level guard for
+// issue #11: deny responses must not disclose the reason text on the
+// wire, in any field. Audit-log access is the only path to reason.
+func TestDenyResponse_NoReasonOnTheWire(t *testing.T) {
+	d := types.Decision{
+		Effect: types.EffectDeny,
+		Source: types.SourceRule,
+		RuleID: "deny-cloud-metadata",
+		Reason: "matched cloud metadata: 169.254.169.254",
+	}
+	hdrs, body, _ := denyResponse(d, "req-x", "application/json")
+	for _, h := range []string{HeaderRequestID, HeaderReason, HeaderProxyStatus} {
+		v := hdrs[h]
+		if strings.Contains(v, d.Reason) || strings.Contains(v, "169.254") {
+			t.Errorf("header %q leaks reason: %q", h, v)
+		}
+		if strings.Contains(v, d.RuleID) {
+			t.Errorf("header %q leaks rule id: %q", h, v)
+		}
+		if strings.Contains(v, "details=") {
+			t.Errorf("header %q has details= field which is removed by contract: %q", h, v)
+		}
+	}
+	if strings.Contains(string(body), d.Reason) || strings.Contains(string(body), "169.254") {
+		t.Errorf("body leaks reason: %s", body)
+	}
+	if strings.Contains(string(body), d.RuleID) {
+		t.Errorf("body leaks rule id: %s", body)
 	}
 }
 
@@ -62,16 +94,28 @@ func TestDenyResponse_JSONWhenAccepted(t *testing.T) {
 	if err := json.Unmarshal(body, &rb); err != nil {
 		t.Fatalf("body is not JSON: %v\n%s", err, body)
 	}
-	if rb.Effect != "deny" || rb.RequestID != "req-42" || rb.RuleID != "deny-cloud-metadata" || rb.Reason != "matched rule" {
+	if rb.Effect != "declined" || rb.RequestID != "req-42" {
 		t.Errorf("JSON body fields off: %+v", rb)
 	}
-	// Headers should still match the plain-text path.
 	if hdrs[HeaderRequestID] != "req-42" {
 		t.Errorf("request-id header: %q", hdrs[HeaderRequestID])
 	}
-	// details should include the rule prefix when source=rule.
-	if !strings.Contains(hdrs[HeaderProxyStatus], `details="rule deny-cloud-metadata: matched rule"`) {
-		t.Errorf("Proxy-Status details should prefix rule id: %q", hdrs[HeaderProxyStatus])
+}
+
+func TestDenyResponse_PendingEffect_CategoricalToken(t *testing.T) {
+	for _, e := range []types.Effect{types.EffectAskUser, types.EffectAskLLM} {
+		d := types.Decision{Effect: e, Reason: "needs review"}
+		hdrs, body, _ := denyResponse(d, "req-p", "application/json")
+		if hdrs[HeaderReason] != "pending" {
+			t.Errorf("effect=%s: Trollbridge-Reason got %q want %q", e, hdrs[HeaderReason], "pending")
+		}
+		var rb refusalBody
+		if err := json.Unmarshal(body, &rb); err != nil {
+			t.Fatalf("body not JSON: %v", err)
+		}
+		if rb.Effect != "pending" {
+			t.Errorf("effect=%s: body effect got %q want %q", e, rb.Effect, "pending")
+		}
 	}
 }
 
@@ -117,21 +161,6 @@ func TestProxyStatusToken_Effects(t *testing.T) {
 		if got := proxyStatusToken(e); got != want {
 			t.Errorf("effect=%s: got token %q, want %q", e, got, want)
 		}
-	}
-}
-
-func TestProxyStatusDetails_RulePrefixOnlyForRuleSource(t *testing.T) {
-	d := types.Decision{Source: types.SourceRule, RuleID: "r1", Reason: "x"}
-	if got := proxyStatusDetails(d); got != "rule r1: x" {
-		t.Errorf("rule source: got %q", got)
-	}
-	d2 := types.Decision{Source: types.SourceDenyList, RuleID: "host=foo", Reason: "y"}
-	if got := proxyStatusDetails(d2); got != "y" {
-		t.Errorf("non-rule source should not prefix: got %q", got)
-	}
-	d3 := types.Decision{Source: types.SourceRule, RuleID: "", Reason: "z"}
-	if got := proxyStatusDetails(d3); got != "z" {
-		t.Errorf("empty rule id should not prefix: got %q", got)
 	}
 }
 

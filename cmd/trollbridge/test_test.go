@@ -215,9 +215,10 @@ func TestRunTest_AllowPath_RendersDecisionAndResponse(t *testing.T) {
 
 func TestRunTest_DenyPath_RendersTrollbridgeReason(t *testing.T) {
 	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Trollbridge-Reason", "deny: blocked by allowlist")
-		w.WriteHeader(http.StatusForbidden)
-		fmt.Fprint(w, "denied")
+		// New wire contract (issue #11): 470, categorical Trollbridge-Reason.
+		w.Header().Set("Trollbridge-Reason", "declined")
+		w.WriteHeader(470)
+		fmt.Fprint(w, "trollbridge: request declined")
 	})
 	defer srv.Close()
 	host, port := splitHostPort(t, srv.URL)
@@ -231,7 +232,7 @@ func TestRunTest_DenyPath_RendersTrollbridgeReason(t *testing.T) {
 	appendAuditEntry(t, auditPath, audit.Entry{
 		Method: "GET", Host: "forbidden.example", Path: "/",
 		Decision: "deny", DecisionSource: "allowlist", Reason: "not in allow",
-		ResponseStatus: 403,
+		ResponseStatus: 470,
 	})
 	var buf bytes.Buffer
 	if err := runTest(context.Background(), &buf, cfg, req, testOpts{ShowBody: 4096}); err != nil {
@@ -239,8 +240,8 @@ func TestRunTest_DenyPath_RendersTrollbridgeReason(t *testing.T) {
 	}
 	out := buf.String()
 	for _, want := range []string{
-		"status:     403",
-		"trollbridge: deny: blocked by allowlist",
+		"status:     470",
+		"trollbridge: declined",
 		"decision:   deny (source=allowlist rule=-)",
 	} {
 		if !strings.Contains(out, want) {
@@ -249,11 +250,12 @@ func TestRunTest_DenyPath_RendersTrollbridgeReason(t *testing.T) {
 	}
 }
 
-func TestRunTest_HoldPath_511_SurfacesApproveHint(t *testing.T) {
+func TestRunTest_HoldPath_471_SurfacesApproveHint(t *testing.T) {
 	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Trollbridge-Reason", "ask_user: needs approval")
-		w.WriteHeader(http.StatusNetworkAuthenticationRequired)
-		fmt.Fprint(w, "held")
+		// New wire contract (issue #11): 471, categorical Trollbridge-Reason.
+		w.Header().Set("Trollbridge-Reason", "pending")
+		w.WriteHeader(471)
+		fmt.Fprint(w, "trollbridge: request pending approval")
 	})
 	defer srv.Close()
 	host, port := splitHostPort(t, srv.URL)
@@ -267,7 +269,7 @@ func TestRunTest_HoldPath_511_SurfacesApproveHint(t *testing.T) {
 	appendAuditEntry(t, auditPath, audit.Entry{
 		RequestID: "hold-abc", Method: "GET", Host: "held.example", Path: "/x",
 		Decision: "ask_user", DecisionSource: "default", Reason: "default-ask",
-		ResponseStatus: 511,
+		ResponseStatus: 471,
 	})
 	var buf bytes.Buffer
 	if err := runTest(context.Background(), &buf, cfg, req, testOpts{ShowBody: 4096}); err != nil {

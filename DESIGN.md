@@ -276,9 +276,9 @@ structured `Decision` candidate, validated against the schema, OR
 
 **Approval queue** owns held requests. Inputs: `RequestEvent` flagged
 ASK_USER. Outputs: a hold ID returned to the dispatcher (which holds
-the client connection open or returns a 511 with retry information,
-per config). Approvals/denials arrive via the CLI or HTTP control API
-and are matched to held requests by hold ID.
+the client connection open or returns 471 — Trollbridge pending —
+with retry information, per config). Approvals/denials arrive via the
+CLI or HTTP control API and are matched to held requests by hold ID.
 
 **Forwarder** owns the upstream call. Inputs: a `RequestEvent` plus
 an `allow` `Decision`. Outputs: the upstream response back to the
@@ -342,9 +342,10 @@ trollbridge:
    response back to the client. Streaming MUST NOT buffer the entire
    response body before forwarding (this would break SSE and large
    downloads).
-6. If `deny`, MUST return `403 Forbidden` with the deny-response
-   headers and body specified in §5.6.
-7. If `ask_user`, MUST hold the request as defined in §8.5.
+6. If `deny`, MUST return `470` with the refusal-response headers and
+   body specified in §5.6.
+7. If `ask_user`, MUST hold the request as defined in §8.5 (and, when
+   the dispatcher returns instead of holding, MUST emit `471`).
 
 ### 5.2 Headers added or modified
 
@@ -390,40 +391,50 @@ do not share an authenticated upstream connection.
 
 ### 5.6 Deny response shape
 
-A denied request MUST receive the following response shape, on every
-deny path (plain HTTP, CONNECT pre-tunnel, and intercepted HTTPS):
+A request that the proxy actively declines or holds for approval MUST
+receive the following response shape, on every refusal path (plain
+HTTP, CONNECT pre-tunnel, and intercepted HTTPS):
 
-- **Status.** `403 Forbidden`. (`511 Network Authentication Required`
-  for the unreachable case where an unresolved-ask falls through to
-  the refusal path; ask states that should never have escaped
-  `holdAndWait`.)
+- **Status.** `470` for declined requests, `471` for requests held
+  for approval. Both codes are unassigned in the IANA HTTP Status
+  Code registry; per RFC 9110 §15 a client that does not recognize
+  them falls back to 400-class semantics. The choice is deliberate:
+  these codes do not collide with any common upstream code, so a
+  caller — even one whose HTTP library hides the response shape —
+  can infer that the proxy itself produced the response, not the
+  upstream service. Trollbridge does not emit `403 Forbidden` or
+  `511 Network Authentication Required` for any policy outcome.
 - **`Trollbridge-Request-Id`** header: the request's uuid (same as
-  §5.2; required on every response, not just deny).
-- **`Proxy-Status`** header per RFC 9209: `trollbridge; error=<token>; details="<reason>"; request-id="<uuid>"`.
+  §5.2; required on every response, not just refusal).
+- **`Proxy-Status`** header per RFC 9209:
+  `trollbridge; error=<token>; request-id="<uuid>"`.
   - `error` is `http_request_denied` for policy-driven denials (rule
     deny, default-deny, inline-list deny, advisor deny, resolved
     deny). `error` is `proxy_internal_response` for proxy-generated
-    denials (advisor-unavailable fallback, approval timeout).
-  - When a structured rule fired the deny, `details` is prefixed
-    `"rule <id>: <reason>"`. When the inline list, default-mode, or
-    advisor fired it, `details` is the reason without prefix.
-  - `details` and `request-id` are quoted strings per RFC 8941;
-    backslash and double-quote inside `details` MUST be escaped.
-- **`Trollbridge-Reason`** header: `<effect>: <reason>`. Preserved
-  for backwards compatibility with operators who scrape it; new
-  consumers SHOULD prefer `Proxy-Status`.
+    states (advisor-unavailable fallback, approval timeout, ask
+    states).
+  - The `details=` parameter is intentionally **not** included.
+    Operators retrieve the reason and rule id from the audit log by
+    `request_id`. Disclosing reason on the wire would let a caller
+    enumerate policy structure.
+- **`Trollbridge-Reason`** header: the categorical effect token —
+  `declined` or `pending` — and nothing else. Reason text is in the
+  audit log only.
 - **Body, content-negotiated:**
   - When the request `Accept` header contains a media range matching
     `application/json` (other than `*/*`), the body is
     `Content-Type: application/json` with shape
-    `{"effect", "reason", "rule_id", "request_id"}`. JSON keys
-    mirror the audit-log field names. `rule_id` is the empty string
-    when no structured rule fired.
+    `{"effect", "request_id"}`. `effect` is the categorical token
+    (`declined` or `pending`); `request_id` matches the header. The
+    body MUST NOT carry the reason or rule id — those live in the
+    audit log only.
   - Otherwise the body is `Content-Type: text/plain; charset=utf-8`
-    with the human-readable refusal text. This is the default for
-    `Accept: */*`, missing `Accept`, and any non-JSON `Accept`.
+    with the human-readable refusal text
+    `trollbridge: request <effect> (request_id=<uuid>)`. This is the
+    default for `Accept: */*`, missing `Accept`, and any non-JSON
+    `Accept`.
 
-A denied CONNECT MUST additionally set `Connection: close` so the
+A declined CONNECT MUST additionally set `Connection: close` so the
 proxy connection terminates cleanly; clients that intend to retry
 must open a new connection.
 
@@ -461,8 +472,8 @@ Host: example.com:443
 ```
 
 trollbridge MUST respond with `200 Connection Established` (on allow)
-or `403 Forbidden` (on deny). After 200, the client and origin
-exchange TLS bytes through the tunnel.
+or `470` (on decline). After 200, the client and origin exchange TLS
+bytes through the tunnel.
 
 ### 6.2 What trollbridge can see WITHOUT interception
 
@@ -691,7 +702,7 @@ The policy engine produces exactly one `Decision` per request. The
 `Decision`'s `Effect` is one of:
 
 - `allow` — request is forwarded.
-- `deny` — request is refused with 403 (or CONNECT-rejected).
+- `deny` — request is refused with 470 (or CONNECT-rejected).
 - `ask_user` — request is held; an operator approves or denies via
   the CLI / control API.
 - `ask_llm` — engine has no deterministic answer; the LLM advisor is
@@ -790,9 +801,9 @@ match anonymous requests.
 When effect is `ask_user`, trollbridge:
 
 1. Generates a `hold_id`.
-2. Holds the client connection, OR returns `511 Network Authentication
-   Required` with `Trollbridge-Hold-Id: <id>` and a `Retry-After:
-   <seconds>` header (configurable per-rule).
+2. Holds the client connection, OR returns `471` (Trollbridge
+   pending approval) with `Trollbridge-Hold-Id: <id>` and a
+   `Retry-After: <seconds>` header (configurable per-rule).
 3. Surfaces the held request to the operator via:
    - `trollbridge decisions --pending` (CLI)
    - HTTP control API on a separate port (`/v1/holds`)
@@ -2020,11 +2031,11 @@ suggestion box.
 - **Plain HTTP allow**: real `net/http` client with
   `HTTP_PROXY=http://127.0.0.1:<port>`; reach a stub origin; assert
   body returned.
-- **Plain HTTP deny**: same, but with a deny rule; assert 403 +
-  reason header.
+- **Plain HTTP deny**: same, but with a deny rule; assert 470 +
+  Trollbridge-Reason: declined.
 - **CONNECT allow**: real client doing CONNECT; assert tunnel
   established.
-- **CONNECT deny**: assert 403 to CONNECT.
+- **CONNECT deny**: assert 470 to CONNECT.
 - **CONNECT then HTTPS to stub**: full HTTPS-tunneled round trip.
 - **TLS interception** (Phase 3): client with test CA installed;
   trollbridge intercepts; assert body modifier applied and audit log
