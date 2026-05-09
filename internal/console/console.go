@@ -39,6 +39,18 @@ type Config struct {
 
 	// Prompt is the line shown at each iteration.
 	Prompt string
+
+	// OnTest, when non-nil, is invoked when the operator types
+	// `test <url>` at the prompt. Issue #31. The console hands
+	// `urlArg` (everything after the command) to the callback;
+	// `out` is the same writer the rest of the REPL prints to.
+	// The callback is responsible for formatting and printing
+	// its result; returned errors are surfaced as `test: <err>`.
+	OnTest func(out io.Writer, urlArg string) error
+
+	// OnDoctor, when non-nil, is invoked when the operator types
+	// `doctor` at the prompt. Issue #31. Same conventions as OnTest.
+	OnDoctor func(out io.Writer) error
 }
 
 // Run starts the REPL. Returns when stdin closes (EOF) or ctx is
@@ -114,6 +126,10 @@ func (c *repl) handle(line string) bool {
 		c.listEntries(arg)
 	case "reload":
 		c.triggerReload()
+	case "test":
+		c.runTestSafely(arg)
+	case "doctor":
+		c.runDoctorSafely()
 	case "help", "?":
 		c.printHelp()
 	case "quit", "exit":
@@ -122,6 +138,47 @@ func (c *repl) handle(line string) bool {
 		c.printf("unknown command %q — type `help` for the list\n", cmd)
 	}
 	return false
+}
+
+// runTestSafely invokes the OnTest callback and recovers from a
+// panic so a network bug in the test path cannot kill the REPL
+// goroutine. The callback is supplied by `cmd run` and bridges to
+// the same `runTest` body the CLI uses.
+func (c *repl) runTestSafely(arg string) {
+	if c.cfg.OnTest == nil {
+		c.printf("test: not wired — start the daemon with `trollbridge run` to enable\n")
+		return
+	}
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		c.printf("usage: test <url> — sends one request through this proxy and prints the response\n")
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			c.printf("test: panic: %v\n", r)
+		}
+	}()
+	if err := c.cfg.OnTest(c.cfg.Out, arg); err != nil {
+		c.printf("test: %s\n", err)
+	}
+}
+
+// runDoctorSafely invokes the OnDoctor callback with the same
+// recover semantics as runTestSafely.
+func (c *repl) runDoctorSafely() {
+	if c.cfg.OnDoctor == nil {
+		c.printf("doctor: not wired — start the daemon with `trollbridge run` to enable\n")
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			c.printf("doctor: panic: %v\n", r)
+		}
+	}()
+	if err := c.cfg.OnDoctor(c.cfg.Out); err != nil {
+		c.printf("doctor: %s\n", err)
+	}
 }
 
 func (c *repl) addPattern(label, pattern string) {
@@ -265,6 +322,8 @@ func (c *repl) printHelp() {
   remove <pattern>   remove from either list
   list [allow|deny]  show current patterns
   reload             re-parse trollbridge.yaml into the running matcher
+  test <url>         send one request through this proxy and print result
+  doctor             run the same checks as `+"`trollbridge doctor`"+`
   help               this text
   quit | exit        leave the console (the proxy keeps running)
 `)

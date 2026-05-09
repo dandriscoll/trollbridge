@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/audit"
 	"github.com/dandriscoll/trollbridge/internal/config"
@@ -121,6 +123,8 @@ func newRunCmd() *cobra.Command {
 							}
 							_ = srv.ReloadListsFromConfig(freshCfg)
 						},
+						OnTest:   replTestFn(configPath),
+						OnDoctor: replDoctorFn(configPath),
 					})
 				}()
 			}
@@ -153,6 +157,67 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the interactive console even when stdin is a tty")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "alias for --log-level=debug; emits per-request lifecycle records on the operational log")
 	return cmd
+}
+
+// replTestFn returns a closure that the console REPL invokes for
+// `test <url>` (issue #31). Mirrors the CLI's runTest pipeline,
+// minus the audit-log decision correlation: the REPL is in-process
+// with the same daemon writing the audit log, so racing the polling
+// reader against the just-written entry would be flaky and add zero
+// information versus the response. Body is bounded to a friendly
+// snippet so a chatty endpoint does not flood the prompt.
+func replTestFn(configPath string) func(io.Writer, string) error {
+	return func(out io.Writer, urlArg string) error {
+		cfg, err := config.Load(configPath)
+		if err != nil {
+			return err
+		}
+		// Allow `[METHOD] <url>` for symmetry with the CLI's most
+		// common forms, while staying minimal.
+		method := "GET"
+		urlStr := strings.TrimSpace(urlArg)
+		if i := strings.IndexAny(urlStr, " \t"); i > 0 {
+			head := urlStr[:i]
+			rest := strings.TrimSpace(urlStr[i:])
+			if isHTTPMethod(head) {
+				method = strings.ToUpper(head)
+				urlStr = rest
+			}
+		}
+		req, err := buildTestRequest(urlStr, method, nil, "", "")
+		if err != nil {
+			return err
+		}
+		return runTest(context.Background(), out, cfg, req, testOpts{
+			ShowBody:   1024,
+			Timeout:    15 * time.Second,
+			NoDecision: true,
+			ConfigPath: configPath,
+		})
+	}
+}
+
+// replDoctorFn returns the closure invoked for the REPL's `doctor`
+// command. It re-uses the CLI doctor implementation by spinning up
+// a fresh cobra command and binding its stdout/stderr to the REPL
+// writer — keeps the implementation single-source and lets the user
+// see the same status lines the CLI prints.
+func replDoctorFn(configPath string) func(io.Writer) error {
+	return func(out io.Writer) error {
+		cmd := newDoctorCmd()
+		cmd.SetOut(out)
+		cmd.SetErr(out)
+		cmd.SetArgs([]string{"-c", configPath})
+		return cmd.Execute()
+	}
+}
+
+func isHTTPMethod(s string) bool {
+	switch strings.ToUpper(s) {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+		return true
+	}
+	return false
 }
 
 // isStdoutTTY reports whether the process's stdout is a terminal.

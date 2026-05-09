@@ -58,6 +58,28 @@ func runWith(t *testing.T, configPath, input string) string {
 	return out.String()
 }
 
+// runWithCallbacks is like runWith but lets the test inject the
+// new OnTest / OnDoctor callbacks (issue #31). Returns captured stdout.
+func runWithCallbacks(t *testing.T, configPath, input string,
+	onTest func(io.Writer, string) error, onDoctor func(io.Writer) error) string {
+	t.Helper()
+	var out bytes.Buffer
+	cfg := Config{
+		ConfigPath: configPath,
+		In:         strings.NewReader(input),
+		Out:        &out,
+		Prompt:     "> ",
+		OnTest:     onTest,
+		OnDoctor:   onDoctor,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := Run(ctx, cfg); err != nil && err != io.EOF {
+		t.Fatalf("Run: %v", err)
+	}
+	return out.String()
+}
+
 // listsOf reads the yaml back and returns its allow/deny entries.
 func listsOf(t *testing.T, path string) (allow, deny []string) {
 	t.Helper()
@@ -195,6 +217,81 @@ func TestConsole_QuitExitsCleanly(t *testing.T) {
 	defer cancel()
 	if err := Run(ctx, Config{ConfigPath: cfgPath, In: in, Out: &out}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestREPL_TestCommand_DispatchesToCallback closes issue #31:
+// `test <url>` at the prompt should hand off to OnTest with the
+// URL argument. The callback's output appears in the same stream.
+func TestREPL_TestCommand_DispatchesToCallback(t *testing.T) {
+	cfgPath := minimalV2Yaml(t, nil, nil)
+	called := ""
+	onTest := func(out io.Writer, urlArg string) error {
+		called = urlArg
+		_, _ = out.Write([]byte("(callback ran)\n"))
+		return nil
+	}
+	out := runWithCallbacks(t, cfgPath, "test https://example.com\nquit\n", onTest, nil)
+	if called != "https://example.com" {
+		t.Errorf("OnTest got urlArg=%q, want %q", called, "https://example.com")
+	}
+	if !strings.Contains(out, "(callback ran)") {
+		t.Errorf("expected callback output in REPL stream:\n%s", out)
+	}
+}
+
+// TestREPL_TestCommand_NoArg_PrintsUsage covers the empty-arg branch.
+func TestREPL_TestCommand_NoArg_PrintsUsage(t *testing.T) {
+	cfgPath := minimalV2Yaml(t, nil, nil)
+	onTest := func(out io.Writer, urlArg string) error {
+		t.Fatalf("OnTest should not fire for empty URL; got %q", urlArg)
+		return nil
+	}
+	out := runWithCallbacks(t, cfgPath, "test\nquit\n", onTest, nil)
+	if !strings.Contains(out, "usage: test") {
+		t.Errorf("expected usage hint for `test` with no arg:\n%s", out)
+	}
+}
+
+// TestREPL_TestCommand_NotWired hits the path where OnTest is nil.
+func TestREPL_TestCommand_NotWired(t *testing.T) {
+	cfgPath := minimalV2Yaml(t, nil, nil)
+	out := runWithCallbacks(t, cfgPath, "test https://x/\nquit\n", nil, nil)
+	if !strings.Contains(out, "test: not wired") {
+		t.Errorf("expected 'not wired' message; got:\n%s", out)
+	}
+}
+
+// TestREPL_DoctorCommand_DispatchesToCallback covers the doctor branch
+// (per the user's follow-up comment on #31).
+func TestREPL_DoctorCommand_DispatchesToCallback(t *testing.T) {
+	cfgPath := minimalV2Yaml(t, nil, nil)
+	called := false
+	onDoctor := func(out io.Writer) error {
+		called = true
+		_, _ = out.Write([]byte("(doctor ran)\n"))
+		return nil
+	}
+	out := runWithCallbacks(t, cfgPath, "doctor\nquit\n", nil, onDoctor)
+	if !called {
+		t.Errorf("OnDoctor never fired; out:\n%s", out)
+	}
+	if !strings.Contains(out, "(doctor ran)") {
+		t.Errorf("expected doctor output:\n%s", out)
+	}
+}
+
+// TestREPL_TestCommand_PanicRecovers proves the recover() path keeps
+// the REPL alive after a callback panic — we get the panic banner
+// printed and the prompt comes back.
+func TestREPL_TestCommand_PanicRecovers(t *testing.T) {
+	cfgPath := minimalV2Yaml(t, nil, nil)
+	onTest := func(out io.Writer, urlArg string) error {
+		panic("boom")
+	}
+	out := runWithCallbacks(t, cfgPath, "test https://x/\nquit\n", onTest, nil)
+	if !strings.Contains(out, "test: panic: boom") {
+		t.Errorf("expected panic banner; got:\n%s", out)
 	}
 }
 
