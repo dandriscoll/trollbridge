@@ -268,7 +268,7 @@ func TestAnthropicTranslator_BuildRequestUsesDefaultModelWhenEmpty(t *testing.T)
 	if err != nil {
 		t.Fatalf("BuildRequest: %v", err)
 	}
-	if !strings.Contains(string(body), `"model":"`+anthropicDefaultModel+`"`) {
+	if !strings.Contains(string(body), `"model":"`+AnthropicDefaultModel+`"`) {
 		t.Errorf("default model not used: %s", string(body))
 	}
 	if hdr["x-api-key"] != "k" {

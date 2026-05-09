@@ -19,10 +19,12 @@ type anthropicTranslator struct{}
 // change the response shape.
 const anthropicVersion = "2023-06-01"
 
-// anthropicDefaultModel is used when llm.model is empty. Operators
+// AnthropicDefaultModel is used when llm.model is empty. Operators
 // should set llm.model explicitly; this default is "good enough for
 // pre-flight" so doctor doesn't error before the request even leaves.
-const anthropicDefaultModel = "claude-3-5-sonnet-latest"
+// Exported so server.go can name it in the advisor_model_default
+// startup warning (issue #24).
+const AnthropicDefaultModel = "claude-3-5-sonnet-latest"
 
 // anthropicMaxTokens caps the assistant response. The advisor only
 // needs to emit one tool_use block, so we keep this small.
@@ -57,7 +59,7 @@ type anthropicRequest struct {
 
 func (anthropicTranslator) BuildRequest(in Input, model, apiKey string) ([]byte, map[string]string, error) {
 	if model == "" {
-		model = anthropicDefaultModel
+		model = AnthropicDefaultModel
 	}
 	serialized, err := json.Marshal(in)
 	if err != nil {

@@ -891,6 +891,19 @@ func buildAdvisorProvider(llm config.LLM, opLog *slog.Logger) advisor.Provider {
 		}
 	}
 	endpoint := llm.Endpoint
+	provider := strings.ToLower(strings.TrimSpace(llm.Provider))
+
+	// Issue #24: when an operator opts into the anthropic provider
+	// without setting llm.model, the translator silently falls back
+	// to AnthropicDefaultModel. Emit a one-time Warn so the implicit
+	// choice is visible in the operational log.
+	if (provider == "" || provider == "anthropic") && strings.TrimSpace(llm.Model) == "" && opLog != nil {
+		opLog.Warn("llm.model empty; advisor will use the anthropic default model",
+			"event", "advisor_model_default",
+			"provider", "anthropic",
+			"fallback_model", advisor.AnthropicDefaultModel)
+	}
+
 	if strings.EqualFold(strings.TrimSpace(llm.Provider), "aoai") {
 		canonical, hint, _ := advisor.NormalizeAOAIEndpoint(endpoint)
 		if hint != "" && opLog != nil {
