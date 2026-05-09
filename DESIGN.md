@@ -613,8 +613,24 @@ Node (`NODE_EXTRA_CA_CERTS`), Python (`SSL_CERT_FILE`,
 `REQUESTS_CA_BUNDLE`), Go on Linux (`SSL_CERT_FILE`), curl
 (`CURL_CA_BUNDLE`), and the Java `keytool` one-shot import.
 
-`trollbridge ca install` MUST NOT execute system commands. It
-prints; the operator runs.
+`trollbridge ca install` is print-only by default. It MAY execute
+the system-trust-store install commands itself when invoked with
+`--apply`, subject to the following constraints:
+
+- `--apply` requires elevated privileges (root on Linux/macOS).
+  When the calling process is not root, the subcommand MUST refuse
+  with a message naming `sudo` rather than spawning sudo itself.
+- `--apply` is not supported on Windows or unrecognized Linux
+  distributions; the subcommand MUST refuse with a message
+  pointing the operator at the printed commands.
+- `--apply` MUST prompt the operator with the resolved argv list
+  and `Proceed? [y/N]:` before running anything, unless `--yes`
+  was passed. Empty input or EOF MUST be treated as decline.
+- `--apply` MUST NOT modify shell rc files, environment, or any
+  per-runtime trust bundle (`NODE_EXTRA_CA_CERTS` etc.). Those
+  remain print-only regardless of `--apply`.
+- Step failure aborts the sequence and exits non-zero with the
+  underlying tool's stderr surfaced to the operator.
 
 ### 7.6 Inside an Incus VM
 
@@ -1323,7 +1339,7 @@ A single binary, Cobra-style subcommands.
 | `trollbridge run` | Start the proxy in the foreground. Reads config from `--config` or `TROLLBRIDGE_CONFIG`. |
 | `trollbridge ca init` | Generate a new CA. Refuses if one exists unless `--force`. |
 | `trollbridge ca export` | Print the CA cert (public) to stdout, or write to `--out <file>`. |
-| `trollbridge ca install` | Print copy-pasteable commands to install the CA into the OS trust store (and per-runtime trust-bundle env vars). Detects the host OS; `--all-platforms` prints every variant. Does NOT execute system commands. |
+| `trollbridge ca install` | Print copy-pasteable commands to install the CA into the OS trust store (and per-runtime trust-bundle env vars). Detects the host OS; `--all-platforms` prints every variant. With `--apply` (and root), executes the system-trust-store steps after a `[y/N]` confirmation; `--yes` skips the prompt. Runtime env-var advice stays print-only. |
 | `trollbridge ca rotate` | Roll the CA. New CA is generated; old is kept until `--retire` is passed. |
 | `trollbridge ca flush-cache` | Drop cached leaf certs. Useful during rotation or after a rule change. |
 | `trollbridge decisions [--since <duration>] [--pending]` | Stream recent decisions; `--pending` shows held requests. |

@@ -205,16 +205,26 @@ func certFingerprint(certPath string) (string, error) {
 
 func newCAInstallCmd() *cobra.Command {
 	var configPath, certPath string
-	var allPlatformsFlag bool
+	var allPlatformsFlag, applyFlag, yesFlag bool
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Print the commands to install the trollbridge CA into a client trust store.",
+		Short: "Print (or, with --apply, run) the commands to install the trollbridge CA.",
 		Long: `Print the OS-tailored commands needed to install the trollbridge
 CA into a system trust store (or a per-runtime trust bundle).
 
-This subcommand does NOT execute system commands; it prints them
-so an operator can review and copy. Re-run with --all-platforms
-to dump every supported platform.
+By default this subcommand does NOT execute system commands; it
+prints them so an operator can review and copy. Re-run with
+--all-platforms to dump every supported platform.
+
+With --apply, trollbridge will run the system-trust-store install
+commands itself. --apply requires elevated privileges (root on
+Linux/macOS); if not elevated, --apply refuses with a clear
+message instead of invoking sudo. --apply is not supported on
+Windows or unrecognized Linux distributions — copy the printed
+commands instead. The runtime-specific options (NODE_EXTRA_CA_CERTS
+etc.) stay print-only regardless of --apply.
+
+By default --apply prompts for confirmation; pass --yes to skip.
 
 The cert path is resolved from --config <trollbridge.yaml> (the
 ` + "`interception.ca.cert_path`" + ` field), --cert <path>, or the default
@@ -224,14 +234,26 @@ The cert path is resolved from --config <trollbridge.yaml> (the
 			if err != nil {
 				return &configErr{err}
 			}
-			out := cmd.OutOrStdout()
-			printInstallHelp(out, cp, allPlatformsFlag, detectPlatform())
+			if applyFlag {
+				return applyInstall(
+					cmd.OutOrStdout(),
+					cmd.InOrStdin(),
+					detectPlatform(),
+					cp,
+					yesFlag,
+					execStepRunner{},
+					func() bool { return os.Geteuid() == 0 },
+				)
+			}
+			printInstallHelp(cmd.OutOrStdout(), cp, allPlatformsFlag, detectPlatform())
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")
 	cmd.Flags().StringVar(&certPath, "cert", "", "explicit cert path (overrides config)")
 	cmd.Flags().BoolVar(&allPlatformsFlag, "all-platforms", false, "print install commands for every supported platform")
+	cmd.Flags().BoolVar(&applyFlag, "apply", false, "execute the system trust-store install (requires root)")
+	cmd.Flags().BoolVar(&yesFlag, "yes", false, "with --apply: skip the confirmation prompt")
 	return cmd
 }
 
