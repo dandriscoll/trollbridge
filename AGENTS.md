@@ -93,14 +93,23 @@ laptop use:
 For a system install, use a path the daemon will read (the systemd
 unit in `packaging/systemd/` reads `/etc/trollbridge/`).
 
-`init` writes a single annotated `trollbridge.yaml` (a copy of
-`config.example.yaml` with sensible defaults; every key is annotated).
-Allow / deny patterns live inline under `lists:` and are mutated in
-place when the operator types `allow X` / `deny X` in the console.
-Advanced features — `identities:` and structured rule files via
-`policy.include:` — are not in the default; add them when you need
-time windows, identity scoping, body patterns, or `ask_user` /
-`ask_llm` effects.
+When stdin is a TTY, `init` runs as a guided setup that asks the
+operator about topology, mode, TLS interception, and the LLM
+advisor — and (when interception is chosen) generates the CA in
+the same invocation. The questions match the Step-0 list above;
+the user does not need to repeat themselves to you. Sit on the
+side and let `init` collect the answers directly.
+
+When stdin is not a TTY (CI, redirected input) or the operator
+passes `--non-interactive`, `init` writes the static default
+config without prompting. The default config is a single annotated
+`trollbridge.yaml` (a copy of `config.example.yaml`; every key is
+annotated). Allow / deny patterns live inline under `lists:` and
+are mutated in place when the operator types `allow X` / `deny X`
+in the console. Advanced features — `identities:` and structured
+rule files via `policy.include:` — are not in the default; add
+them when you need time windows, identity scoping, body patterns,
+or `ask_user` / `ask_llm` effects.
 
 ## Step 3 — Set policy posture
 

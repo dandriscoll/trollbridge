@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/dandriscoll/trollbridge/internal/ca"
 	"github.com/spf13/cobra"
 )
 
@@ -90,10 +91,20 @@ approvals:
 
 func newInitCmd() *cobra.Command {
 	var dir string
-	var force bool
+	var force, nonInteractive bool
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create a default trollbridge.yaml.",
+		Short: "Create a trollbridge.yaml. Interactive when stdin is a TTY; static defaults otherwise.",
+		Long: `Create a trollbridge.yaml in the target directory.
+
+By default, when stdin is a TTY, init runs as a guided setup that
+asks about topology, policy mode, TLS interception, and LLM
+advisor — and (when interception is chosen) generates the CA in
+the same invocation.
+
+When stdin is not a TTY (CI, redirected input) or --non-interactive
+is passed, init writes the static default config without prompting.
+`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				dir = "."
@@ -101,42 +112,97 @@ func newInitCmd() *cobra.Command {
 			if err := os.MkdirAll(dir, 0o750); err != nil {
 				return &runtimeErr{err}
 			}
-			files := map[string]string{
-				filepath.Join(dir, "trollbridge.yaml"): defaultConfigYAML,
-			}
-			created := []string{}
-			for path, content := range files {
-				if _, err := os.Stat(path); err == nil && !force {
-					return &configErr{fmt.Errorf("init: file %s already exists; use --force to archive and replace", path)}
-				} else if err == nil && force {
-					backup := path + ".bak"
-					if err := os.Rename(path, backup); err != nil {
-						return &runtimeErr{err}
-					}
-					fmt.Fprintf(cmd.OutOrStdout(), "  archived: %s -> %s\n", path, backup)
-				}
-				if err := os.WriteFile(path, []byte(content), 0o640); err != nil {
+			out := cmd.OutOrStdout()
+			interactive := !nonInteractive && stdinIsTTY(cmd.InOrStdin())
+
+			yamlPath := filepath.Join(dir, "trollbridge.yaml")
+			if _, err := os.Stat(yamlPath); err == nil && !force {
+				return &configErr{fmt.Errorf("init: file %s already exists; use --force to archive and replace", yamlPath)}
+			} else if err == nil && force {
+				backup := yamlPath + ".bak"
+				if err := os.Rename(yamlPath, backup); err != nil {
 					return &runtimeErr{err}
 				}
-				created = append(created, path)
+				fmt.Fprintf(out, "  archived: %s -> %s\n", yamlPath, backup)
 			}
-			out := cmd.OutOrStdout()
+
+			content := defaultConfigYAML
+			var ans initAnswers
+			if interactive {
+				a, err := runInteractiveInit(cmd.InOrStdin(), out)
+				if err != nil {
+					return &configErr{err}
+				}
+				ans = a
+				content = applyAnswers(defaultConfigYAML, ans)
+
+				// LLM key first — if this fails, the YAML wouldn't
+				// reflect a real installation.
+				if ans.llmEnabled {
+					if err := writeLLMKey(ans.llmKeyPath, ans.llmKey); err != nil {
+						return &runtimeErr{fmt.Errorf("write LLM key: %w", err)}
+					}
+					fmt.Fprintf(out, "  wrote LLM API key: %s (mode 0600)\n", ans.llmKeyPath)
+				}
+			}
+
+			if err := os.WriteFile(yamlPath, []byte(content), 0o640); err != nil {
+				return &runtimeErr{err}
+			}
 			fmt.Fprintln(out, "trollbridge init: created files:")
-			for _, p := range created {
-				fmt.Fprintln(out, "  ", p)
+			fmt.Fprintln(out, "  ", yamlPath)
+
+			caGenerated := false
+			if interactive && ans.interception {
+				certPath := filepath.Join(dir, "trollbridge-ca.crt")
+				keyPath := filepath.Join(dir, "trollbridge-ca.key")
+				caObj, err := bootstrapCA(certPath, keyPath, force)
+				if err != nil {
+					return &runtimeErr{fmt.Errorf("bootstrap CA: %w", err)}
+				}
+				fmt.Fprintln(out, "   generated CA:")
+				fmt.Fprintln(out, "     cert:", certPath)
+				fmt.Fprintln(out, "     key: ", keyPath, "(mode 0600)")
+				fmt.Fprintln(out, "     fingerprint (sha-256):", caObj.SHA256Fingerprint())
+				caGenerated = true
 			}
+
 			fmt.Fprintln(out, "\nnext steps:")
-			fmt.Fprintln(out, "  trollbridge ca init                              # generate the CA")
+			if !caGenerated {
+				fmt.Fprintln(out, "  trollbridge ca init                              # generate the CA")
+			} else {
+				fmt.Fprintln(out, "  trollbridge ca install -c "+yamlPath+"     # show OS-tailored trust-store install commands")
+			}
 			fmt.Fprintln(out, "  trollbridge ca client-cert <op>                  # issue your operator client cert")
 			fmt.Fprintln(out, "  install <op>.{crt,key} at ~/.trollbridge/controller-client.{crt,key}")
-			fmt.Fprintln(out, "  trollbridge validate -c", filepath.Join(dir, "trollbridge.yaml"))
-			fmt.Fprintln(out, "  trollbridge doctor   -c", filepath.Join(dir, "trollbridge.yaml"), "  # check yaml + LLM connection")
-			fmt.Fprintln(out, "  trollbridge run      -c", filepath.Join(dir, "trollbridge.yaml"))
-			fmt.Fprintln(out, "  eval \"$(trollbridge env -c "+filepath.Join(dir, "trollbridge.yaml")+")\"   # wire client env")
+			fmt.Fprintln(out, "  trollbridge validate -c", yamlPath)
+			fmt.Fprintln(out, "  trollbridge doctor   -c", yamlPath, "  # check yaml + LLM connection")
+			fmt.Fprintln(out, "  trollbridge run      -c", yamlPath)
+			fmt.Fprintln(out, "  eval \"$(trollbridge env -c "+yamlPath+")\"   # wire client env")
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&dir, "dir", "d", ".", "directory to write the config to")
 	cmd.Flags().BoolVar(&force, "force", false, "archive existing files (.bak) and replace")
+	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "skip the guided setup; write the static default config")
 	return cmd
+}
+
+// writeLLMKey writes the API key to path with mode 0600. Creates
+// the parent directory if it does not already exist (we already
+// asked the operator for the path; we trust their choice).
+func writeLLMKey(path, key string) error {
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, []byte(key), 0o600)
+}
+
+// bootstrapCA wraps ca.Init for the interactive interception path.
+// Exposed as a package-level var so tests can stub it without
+// running RSA-4096 keygen.
+var bootstrapCA = func(certPath, keyPath string, force bool) (*ca.CA, error) {
+	return ca.Init(certPath, keyPath, ca.KeyTypeRSA4096, force)
 }
