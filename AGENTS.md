@@ -260,16 +260,35 @@ exit, instead of being a silent degradation at runtime.
 
 ## Step 6 — TLS interception (optional)
 
-Skip if the user did not opt in. Otherwise:
+Skip if the user did not opt in.
+
+**Hosts.** This step has two distinct hosts in the general case:
+
+- The **proxy host** runs `trollbridge run`. It owns the CA private
+  key and the cert at `/etc/trollbridge/trollbridge-ca.{crt,key}`.
+  CA generation happens here, and only here.
+- The **consumer host** is any machine running apps whose egress
+  goes through the proxy. It needs the CA's *public* cert installed
+  in its system trust store. Cert installation happens on each
+  consumer.
+
+In `local` topology these are the same machine; in `local-vm` and
+`remote` they are different. Do not assume the operator running
+`init` is on the proxy host — they may be authoring config for a
+machine they have not provisioned yet.
+
+**On the proxy host (as root):**
 
 ```sh
-sudo ./bin/trollbridge ca init           # writes /etc/trollbridge/trollbridge-ca.{crt,key}
-sudo ./bin/trollbridge ca export --out /etc/trollbridge/trollbridge-ca.crt
+sudo trollbridge ca init                 # writes /etc/trollbridge/trollbridge-ca.{crt,key}
 ```
 
 The canonical path `/etc/trollbridge/` is required for
 cross-machine validity — every host that loads the same
-`trollbridge.yaml` will look there. The CA write requires root.
+`trollbridge.yaml` looks there. The CA write requires root.
+`trollbridge init` does NOT generate the CA; it writes only the
+yaml. CA generation is a separate, root-only step on the proxy
+host (issue #19).
 
 Then **the user** installs `trollbridge-ca.crt` into the client's
 trust store (OS-level, language runtime, browser — depends on what

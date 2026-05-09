@@ -116,8 +116,25 @@ loads the config, parses the rules and lists, and (when LLM is
 enabled) issues a real classification call so misconfigured
 endpoints / keys / providers fail loud before `trollbridge run`.
 
+### Hosts
+
+trollbridge has two distinct hosts in the general case:
+
+- **proxy host** — runs `trollbridge run`. Owns the CA private key,
+  the audit log, and `/etc/trollbridge/trollbridge-ca.{crt,key}`.
+- **consumer host** — any machine running apps whose egress goes
+  through the proxy. Owns a copy of the CA's *public* cert in its
+  system trust store.
+
+In `local` topology these are the same machine; in `local-vm` and
+`remote` they are different. `trollbridge init` writes a yaml
+(no privilege required) regardless of which host runs it; CA
+generation and daemon launch are explicitly proxy-host steps.
+
+### First-run ritual (on the proxy host, as root)
+
 The control plane requires mTLS, signed by the same CA used for
-TLS interception. First-run ritual:
+TLS interception:
 
 ```sh
 sudo trollbridge ca init                          # generates /etc/trollbridge/trollbridge-ca.{crt,key}
@@ -129,6 +146,11 @@ sudo mv <op-name>.key ~/.trollbridge/controller-client.key
 The CA always lives at `/etc/trollbridge/trollbridge-ca.{crt,key}` —
 the canonical path is the same on every machine, so a config
 shared across hosts works without per-host edits.
+
+`trollbridge init` does not generate the CA. CA generation is the
+separate `trollbridge ca init` step above; it requires root because
+it writes to `/etc/trollbridge/`. The operator running `init` may
+not be on the proxy host or may not own that directory.
 
 The CLI auto-loads the cert/key from `~/.trollbridge/`; override with
 `TROLLBRIDGE_CONTROLLER_CERT` / `TROLLBRIDGE_CONTROLLER_KEY`.

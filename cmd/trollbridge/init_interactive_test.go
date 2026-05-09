@@ -7,39 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/dandriscoll/trollbridge/internal/ca"
 )
-
-// withStubbedBootstrapCA replaces the package-level bootstrapCA
-// var with a recorder for the duration of the test. Returns a
-// pointer the test can read to confirm the stub was called with
-// the expected paths.
-type bootstrapCall struct {
-	certPath, keyPath string
-	force             bool
-	called            bool
-}
-
-func withStubbedBootstrapCA(t *testing.T) *bootstrapCall {
-	t.Helper()
-	rec := &bootstrapCall{}
-	// Production paths default to /etc/trollbridge/ for cross-
-	// machine stability — unwritable in a unit-test runner. The
-	// stub records the requested paths but materializes the cert
-	// in a per-test temp dir so ca.Init succeeds without root.
-	tmp := t.TempDir()
-	prev := bootstrapCA
-	bootstrapCA = func(certPath, keyPath string, force bool) (*ca.CA, error) {
-		rec.certPath = certPath
-		rec.keyPath = keyPath
-		rec.force = force
-		rec.called = true
-		return ca.Init(filepath.Join(tmp, "ca.crt"), filepath.Join(tmp, "ca.key"), ca.KeyTypeECDSAP256, force)
-	}
-	t.Cleanup(func() { bootstrapCA = prev })
-	return rec
-}
 
 func TestApplyAnswers_LocalDefaults(t *testing.T) {
 	out := applyAnswers(defaultConfigYAML, initAnswers{
@@ -413,18 +381,25 @@ func TestInit_NonInteractiveFlagForcesStaticPath(t *testing.T) {
 	}
 }
 
-func TestInit_InteractiveInterceptionTriggersCABootstrap(t *testing.T) {
-	rec := withStubbedBootstrapCA(t)
+// TestInit_InteractiveInterception_DoesNotBootstrapCA closes
+// issue #19: `trollbridge init` must NOT generate the CA inline.
+// The operator running `init` may not be on the proxy host, may not
+// own /etc/trollbridge/, and may not need the CA on this machine
+// at all. CA generation is a separate `trollbridge ca init` step
+// the operator runs on the proxy host.
+//
+// The test's load-bearing assertions are: (a) the YAML still
+// reflects interception=on, (b) NO files appear at the canonical
+// /etc/ paths during init (we cannot write there in CI anyway,
+// which is the point), and (c) the next-steps output names the
+// proxy host and the deferred `sudo trollbridge ca init` step.
+func TestInit_InteractiveInterception_DoesNotBootstrapCA(t *testing.T) {
 	dir := t.TempDir()
 
-	// Use the stdinIsTTY seam: replace the global isTerminal var to
-	// claim the test reader is a TTY. Restore on cleanup.
 	prev := isTerminal
 	isTerminal = func(int) bool { return true }
 	t.Cleanup(func() { isTerminal = prev })
 
-	// We need cmd.InOrStdin() to return an *os.File (so stdinIsTTY's
-	// type assertion succeeds). A pipe gives us that.
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
@@ -446,20 +421,10 @@ func TestInit_InteractiveInterceptionTriggersCABootstrap(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
 	cmd.SetArgs([]string{"-d", dir})
+	// Should NOT fail, even though the test runs as a non-root user
+	// and /etc/trollbridge is not writable.
 	if err := cmd.Execute(); err != nil {
-		t.Fatalf("init interactive: %v\n%s", err, out.String())
-	}
-
-	if !rec.called {
-		t.Fatalf("bootstrapCA was not called; output:\n%s", out.String())
-	}
-	// Cross-machine stable canonical path — see ca.go DefaultCACertPath.
-	// The cert location is intentionally NOT under the init dir; it
-	// is the same on every host (issue #14).
-	wantCert := DefaultCACertPath
-	wantKey := DefaultCAKeyPath
-	if rec.certPath != wantCert || rec.keyPath != wantKey {
-		t.Errorf("bootstrapCA called with %q/%q, want %q/%q", rec.certPath, rec.keyPath, wantCert, wantKey)
+		t.Fatalf("init interactive should not require root; got err: %v\n%s", err, out.String())
 	}
 
 	body, err := os.ReadFile(filepath.Join(dir, "trollbridge.yaml"))
@@ -471,6 +436,71 @@ func TestInit_InteractiveInterceptionTriggersCABootstrap(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "mode: default-deny") {
 		t.Errorf("mode=default-deny should appear in YAML; got:\n%s", body)
+	}
+
+	// The next-steps output must name the deferred ca init step
+	// and label it as a proxy-host operation.
+	for _, want := range []string{
+		"proxy host",
+		"sudo trollbridge ca init",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("next-steps missing %q in:\n%s", want, out.String())
+		}
+	}
+	// Defense-in-depth: the output must not contain old "generated CA:"
+	// lines that imply init created cert files locally.
+	if strings.Contains(out.String(), "generated CA:") {
+		t.Errorf("init must not report 'generated CA:' — CA generation is now a separate step (issue #19); got:\n%s", out.String())
+	}
+}
+
+// TestInit_NextSteps_RemoteTopology_NamesCertDistribution closes
+// the topology-awareness half of the fix: when the operator chose
+// remote topology, the next-steps call out the cert-transfer step
+// and frame the proxy host as "a different machine."
+func TestInit_NextSteps_RemoteTopology_NamesCertDistribution(t *testing.T) {
+	dir := t.TempDir()
+
+	prev := isTerminal
+	isTerminal = func(int) bool { return true }
+	t.Cleanup(func() { isTerminal = prev })
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = pr.Close() })
+	go func() {
+		defer pw.Close()
+		_, _ = pw.WriteString(strings.Join([]string{
+			"remote",
+			"default-deny",
+			"y", // interception=on
+			"n", // advisor=off
+		}, "\n") + "\n")
+	}()
+
+	cmd := newInitCmd()
+	var out bytes.Buffer
+	cmd.SetIn(pr)
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"-d", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+
+	for _, want := range []string{
+		"the proxy host",
+		"scp",
+		"trollbridge-ca.crt",
+		"sudo trollbridge ca install --apply",
+		"every consumer host",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("remote-topology next-steps missing %q in:\n%s", want, out.String())
+		}
 	}
 }
 

@@ -2,10 +2,10 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
-	"github.com/dandriscoll/trollbridge/internal/ca"
 	"github.com/spf13/cobra"
 )
 
@@ -181,23 +181,6 @@ is passed, init writes the static default config without prompting.
 			fmt.Fprintln(out, "trollbridge init: created files:")
 			fmt.Fprintln(out, "  ", yamlPath)
 
-			caGenerated := false
-			if interactive && ans.interception {
-				certPath := DefaultCACertPath
-				keyPath := DefaultCAKeyPath
-				caObj, err := bootstrapCA(certPath, keyPath, force)
-				if err != nil {
-					return &runtimeErr{fmt.Errorf(
-						"bootstrap CA at %s: %w. Rerun as: sudo trollbridge init  (the canonical location is required for cross-machine validity; pass --cert / --key on a separate `trollbridge ca init` to use a custom location)",
-						DefaultCADir, err)}
-				}
-				fmt.Fprintln(out, "   generated CA:")
-				fmt.Fprintln(out, "     cert:", certPath)
-				fmt.Fprintln(out, "     key: ", keyPath, "(mode 0600)")
-				fmt.Fprintln(out, "     fingerprint (sha-256):", caObj.SHA256Fingerprint())
-				caGenerated = true
-			}
-
 			// When the resolved file matches defaultConfigPath(), the
 			// rest of the CLI finds it without -c — print bare commands.
 			// Otherwise the operator chose a non-default location;
@@ -213,18 +196,7 @@ is passed, init writes the static default config without prompting.
 				cFlag = " -c " + absYaml
 			}
 
-			fmt.Fprintln(out, "\nnext steps:")
-			if !caGenerated {
-				fmt.Fprintln(out, "  trollbridge ca init"+cFlag+"                              # generate the CA")
-			} else {
-				fmt.Fprintln(out, "  trollbridge ca install"+cFlag+"     # show OS-tailored trust-store install commands")
-			}
-			fmt.Fprintln(out, "  trollbridge ca client-cert <op>                  # issue your operator client cert")
-			fmt.Fprintln(out, "  install <op>.{crt,key} at ~/.trollbridge/controller-client.{crt,key}")
-			fmt.Fprintln(out, "  trollbridge validate"+cFlag)
-			fmt.Fprintln(out, "  trollbridge doctor"+cFlag+"   # check yaml + LLM connection")
-			fmt.Fprintln(out, "  trollbridge run"+cFlag)
-			fmt.Fprintln(out, "  eval \"$(trollbridge env"+cFlag+")\"   # wire client env")
+			printNextSteps(out, ans, interactive, cFlag)
 			return nil
 		},
 	}
@@ -232,6 +204,79 @@ is passed, init writes the static default config without prompting.
 	cmd.Flags().BoolVar(&force, "force", false, "archive existing files (.bak) and replace")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "skip the guided setup; write the static default config")
 	return cmd
+}
+
+// printNextSteps emits an operator-facing block describing the
+// commands they should run after `trollbridge init`. The output is
+// topology-aware: when the operator chose `remote`, the steps name
+// "the proxy host (a different machine than this one)" so the
+// operator does not assume the next commands run locally. CA
+// generation is always a separate `trollbridge ca init` step,
+// **never** inlined into `init` — `init` produces a yaml at no
+// privilege; CA generation needs root on the proxy host. (Issue
+// #19; v0.4.6/v0.4.7 attempts conflated the two.)
+func printNextSteps(out io.Writer, ans initAnswers, interactive bool, cFlag string) {
+	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
+	w("\nnext steps:\n")
+
+	// In non-interactive mode we don't know the topology or whether
+	// interception is on, so fall back to a generic flow.
+	if !interactive {
+		w("  trollbridge ca init%s            # on the proxy host: generates the CA at /etc/trollbridge/\n", cFlag)
+		w("  trollbridge ca client-cert <op>%s # on the proxy host: issue an operator client cert\n", cFlag)
+		w("  trollbridge run%s                # on the proxy host: start the daemon\n", cFlag)
+		w("  trollbridge test https://example.com%s   # from a consumer host: probe one request\n", cFlag)
+		return
+	}
+
+	remote := ans.topology == "remote"
+	proxyHost := "the proxy host"
+	if !remote {
+		proxyHost = "this host (the proxy host)"
+	}
+
+	if ans.interception {
+		w("  # CA generation is a separate, root-only step. Trollbridge does not\n")
+		w("  # generate the CA inside `init` because the operator running `init`\n")
+		w("  # may not be on the proxy host or may not own /etc/trollbridge.\n")
+		w("\n")
+		w("  On %s, as root:\n", proxyHost)
+		w("    sudo trollbridge ca init%s              # generates /etc/trollbridge/trollbridge-ca.{crt,key}\n", cFlag)
+		w("    sudo trollbridge ca client-cert <op>%s   # issue an operator client cert\n", cFlag)
+		w("\n")
+		if remote {
+			w("  Then transfer trollbridge-ca.crt to every consumer host:\n")
+			w("    scp <proxy-host>:/etc/trollbridge/trollbridge-ca.crt \\\n")
+			w("        <consumer-host>:/etc/trollbridge/trollbridge-ca.crt\n")
+			w("\n")
+			w("  On each consumer host:\n")
+			w("    sudo trollbridge ca install --apply        # installs the cert into the system trust store\n")
+		} else {
+			w("  On the same host (the consumer also runs here):\n")
+			w("    sudo trollbridge ca install --apply        # installs the cert into the system trust store\n")
+		}
+		w("\n")
+		w("  On %s, run the daemon:\n", proxyHost)
+		w("    trollbridge run%s\n", cFlag)
+		w("\n")
+		w("  From a consumer (set HTTP(S)_PROXY first):\n")
+		w("    eval \"$(trollbridge env%s)\"\n", cFlag)
+		w("    trollbridge test https://example.com%s\n", cFlag)
+		return
+	}
+
+	// Interception off → no CA distribution flow, but we still need
+	// to name where the daemon will run.
+	w("  On %s, as root (the controller still uses an mTLS CA):\n", proxyHost)
+	w("    sudo trollbridge ca init%s              # generates /etc/trollbridge/trollbridge-ca.{crt,key}\n", cFlag)
+	w("    sudo trollbridge ca client-cert <op>%s   # issue an operator client cert\n", cFlag)
+	w("\n")
+	w("  On %s, run the daemon:\n", proxyHost)
+	w("    trollbridge run%s\n", cFlag)
+	w("\n")
+	w("  From a consumer:\n")
+	w("    eval \"$(trollbridge env%s)\"\n", cFlag)
+	w("    trollbridge test https://example.com%s\n", cFlag)
 }
 
 // writeLLMKey writes the API key to path with mode 0600. Creates
@@ -246,16 +291,3 @@ func writeLLMKey(path, key string) error {
 	return os.WriteFile(path, []byte(key), 0o600)
 }
 
-// bootstrapCA wraps ca.Init for the interactive interception path.
-// Exposed as a package-level var so tests can stub it without
-// running RSA-4096 keygen and without writing to /etc/trollbridge/.
-//
-// The production version also ensures the parent directory exists
-// — required when the canonical path is /etc/trollbridge/ on a
-// fresh host.
-var bootstrapCA = func(certPath, keyPath string, force bool) (*ca.CA, error) {
-	if err := os.MkdirAll(filepath.Dir(certPath), 0o755); err != nil {
-		return nil, err
-	}
-	return ca.Init(certPath, keyPath, ca.KeyTypeRSA4096, force)
-}

@@ -211,7 +211,7 @@ func TestInit_NextStepsOmitsCWhenDefaultPath(t *testing.T) {
 	if strings.Contains(out.String(), "-c ") {
 		t.Errorf("next-steps should not include `-c` when the file lives at defaultConfigPath; got:\n%s", out.String())
 	}
-	for _, want := range []string{"trollbridge doctor", "trollbridge run", "trollbridge validate"} {
+	for _, want := range []string{"trollbridge ca init", "trollbridge run", "trollbridge test"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("next-steps missing %q in:\n%s", want, out.String())
 		}
