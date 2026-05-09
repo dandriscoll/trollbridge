@@ -46,17 +46,22 @@ firewall posture per topology.
 Before running any command, get answers to these. Skipping any of
 them produces a configuration the user did not ask for.
 
-1. **Where will trollbridge run?** Local laptop, an Incus VM with a
-   firewall, a sidecar container, or a system-wide host daemon. See
-   `docs/deploy.md` §1 for trade-offs.
+1. **Where will the agent run relative to trollbridge?** `local`
+   (same host as the proxy), `local-vm` (a VM on the same host;
+   reaches the proxy across a bridge), or `remote` (a different
+   machine). The choice drives the proxy's bind address. See
+   `docs/deploy.md` for the per-environment recipes (laptop, Incus
+   VM, sidecar, system daemon) that map onto these presets.
 2. **What is the agent's goal?** Pick one or more from the catalog
    in *Goal mapping* below. The user's words ("block exfiltration",
    "let CI fetch npm and nothing else", "I want to review every new
    destination") map to specific knobs.
 3. **Should the LLM advisor be on?** It only fires on `ask_llm` rules
    or in `default-ask` mode. It cannot elevate above the
-   deterministic policy. If on, get the provider, the model string,
-   and the path the API key file will live at.
+   deterministic policy. If on, get the provider and the model
+   string. For `aoai` or `other` providers, also get the endpoint
+   URL (`init` will ask). The API key file is written next to
+   `trollbridge.yaml` (`<config-dir>/llm.key`, mode 0600).
 4. **Should TLS be intercepted?** Without interception, trollbridge
    sees only `host:port` for HTTPS — path, method, header, and body
    rules cannot fire. Default off; turn on only if the user accepts

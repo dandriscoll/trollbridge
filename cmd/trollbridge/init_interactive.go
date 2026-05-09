@@ -19,8 +19,13 @@ var isTerminal = func(fd int) bool { return term.IsTerminal(fd) }
 // `applyAnswers` consumes this to render the final YAML; `init.go`
 // consumes it to decide whether to chain into ca.Init / write the
 // LLM key file.
+//
+// Topology presets are framed by where the agent runs relative to
+// the proxy: `local` (same host, shares loopback), `local-vm` (a VM
+// on the same host, reaches the proxy across a bridge), `remote`
+// (a different machine).
 type initAnswers struct {
-	topology     string // "laptop" | "incus-vm" | "sidecar" | "host-daemon"
+	topology     string // "local" | "local-vm" | "remote"
 	mode         string // "default-deny" | "default-allow" | "default-ask"
 	interception bool
 	caCertPath   string // absolute path to the CA cert when interception=on; empty otherwise
@@ -28,17 +33,19 @@ type initAnswers struct {
 	llmEnabled   bool
 	llmProvider  string // "anthropic" | "aoai" | <other string>
 	llmModel     string
-	llmKeyPath   string
+	llmEndpoint  string // operator-supplied URL when provider != "anthropic"; empty preserves the template default
+	llmKeyPath   string // set by the caller from <config-dir>/llm.key, not by a prompt
 	llmKey       string // present only if llmEnabled; the file gets written separately
 }
 
 // proxyBindFor maps a topology choice to the proxy bind string.
-// Laptop and sidecar share-loopback share lo:8080; VM and daemon
-// need to listen on all interfaces because the client is in a
-// separate network namespace.
+// `local` shares the host's loopback; `local-vm` and `remote` reach
+// the proxy across a routable interface, so the daemon must bind on
+// all interfaces (operators can tighten to a specific bridge IP by
+// editing the rendered yaml).
 func proxyBindFor(topology string) string {
 	switch topology {
-	case "incus-vm", "host-daemon":
+	case "local-vm", "remote":
 		return "all:8080"
 	default:
 		return "lo:8080"
@@ -53,21 +60,23 @@ func proxyBindFor(topology string) string {
 func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 	r := bufio.NewReader(in)
 	ans := initAnswers{
-		topology:    "laptop",
+		topology:    "local",
 		mode:        "default-ask",
 		llmProvider: "anthropic",
 		llmModel:    "claude-opus-4-7",
-		llmKeyPath:  "/etc/trollbridge/llm.key",
 	}
 
 	fmt.Fprintln(out, "trollbridge init: guided setup. Press return to accept defaults shown in [brackets].")
 	fmt.Fprintln(out)
 
-	// 1. Topology
-	fmt.Fprintln(out, "1) Where will trollbridge run?")
+	// 1. Topology — keyed on where the agent runs relative to the proxy.
+	fmt.Fprintln(out, "1) Where will the agent run?")
+	fmt.Fprintln(out, "   local     — agent on this host (shares loopback with the proxy).")
+	fmt.Fprintln(out, "   local-vm  — agent in a VM on this host (reaches the proxy via a bridge).")
+	fmt.Fprintln(out, "   remote    — agent on a different machine.")
 	ans.topology = promptChoice(r, out,
 		"   topology",
-		[]string{"laptop", "incus-vm", "sidecar", "host-daemon"},
+		[]string{"local", "local-vm", "remote"},
 		ans.topology,
 	)
 	fmt.Fprintf(out, "   → proxy bind: %s\n\n", proxyBindFor(ans.topology))
@@ -102,7 +111,15 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 			ans.llmProvider,
 		)
 		ans.llmModel = promptString(r, out, "   model", ans.llmModel)
-		ans.llmKeyPath = promptString(r, out, "   API key path (will be written with mode 0600)", ans.llmKeyPath)
+		// Endpoint: anthropic uses the template default; aoai/other
+		// have no useful default and must be supplied.
+		if ans.llmProvider != "anthropic" {
+			ep, err := promptRequiredString(r, out, "   endpoint URL")
+			if err != nil {
+				return ans, err
+			}
+			ans.llmEndpoint = ep
+		}
 		key, err := promptSecret(r, out, "   API key (paste; will not be echoed back)")
 		if err != nil {
 			return ans, err
@@ -178,6 +195,26 @@ func promptString(r *bufio.Reader, out io.Writer, label, def string) string {
 	return v
 }
 
+// promptRequiredString reads one line and rejects empty input. Two
+// empty answers in a row return an error rather than looping forever
+// — same shape as promptSecret, used for fields that have no useful
+// default (e.g., the LLM endpoint URL for non-anthropic providers).
+func promptRequiredString(r *bufio.Reader, out io.Writer, label string) (string, error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		fmt.Fprintf(out, "%s: ", label)
+		line, err := r.ReadString('\n')
+		v := strings.TrimSpace(line)
+		if v != "" {
+			return v, nil
+		}
+		if err != nil {
+			break
+		}
+		fmt.Fprintf(out, "   (%s cannot be empty)\n", strings.TrimSpace(label))
+	}
+	return "", fmt.Errorf("%s was empty; aborting init", strings.TrimSpace(label))
+}
+
 // promptSecret reads one line for a credential. The same prompt
 // shape as promptString but rejects empty input twice (the first
 // re-prompt is courteous; a second empty answer is an explicit
@@ -222,6 +259,9 @@ func applyAnswers(template string, ans initAnswers) string {
 		out = strings.Replace(out, "  enabled: false\n  provider: anthropic", "  enabled: true\n  provider: "+ans.llmProvider, 1)
 		out = strings.Replace(out, "  model:    claude-opus-4-7", "  model:    "+ans.llmModel, 1)
 		out = strings.Replace(out, "  api_key_path: /etc/trollbridge/llm.key", "  api_key_path: "+ans.llmKeyPath, 1)
+		if ans.llmEndpoint != "" {
+			out = strings.Replace(out, "  endpoint: https://api.anthropic.com", "  endpoint: "+ans.llmEndpoint, 1)
+		}
 	}
 	return out
 }

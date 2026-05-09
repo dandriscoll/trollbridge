@@ -38,36 +38,36 @@ func withStubbedBootstrapCA(t *testing.T) *bootstrapCall {
 	return rec
 }
 
-func TestApplyAnswers_LaptopDefaults(t *testing.T) {
+func TestApplyAnswers_LocalDefaults(t *testing.T) {
 	out := applyAnswers(defaultConfigYAML, initAnswers{
-		topology: "laptop",
+		topology: "local",
 		mode:     "default-ask",
 	})
 	if out != defaultConfigYAML {
-		t.Errorf("laptop + default-ask + no overrides should produce the static template byte-for-byte")
+		t.Errorf("local + default-ask + no overrides should produce the static template byte-for-byte")
 	}
 }
 
-func TestApplyAnswers_VMTopologyAllBind(t *testing.T) {
+func TestApplyAnswers_LocalVMTopologyAllBind(t *testing.T) {
 	out := applyAnswers(defaultConfigYAML, initAnswers{
-		topology: "incus-vm",
+		topology: "local-vm",
 		mode:     "default-ask",
 	})
 	if !strings.Contains(out, "proxy:   all:8080") {
-		t.Errorf("VM topology should bind on all:8080; got:\n%s", out)
+		t.Errorf("local-vm topology should bind on all:8080; got:\n%s", out)
 	}
 	if strings.Contains(out, "proxy:   lo:8080") {
-		t.Errorf("VM topology must replace the lo:8080 default; got it still present")
+		t.Errorf("local-vm topology must replace the lo:8080 default; got it still present")
 	}
 }
 
-func TestApplyAnswers_HostDaemonAllBind(t *testing.T) {
+func TestApplyAnswers_RemoteTopologyAllBind(t *testing.T) {
 	out := applyAnswers(defaultConfigYAML, initAnswers{
-		topology: "host-daemon",
+		topology: "remote",
 		mode:     "default-deny",
 	})
 	if !strings.Contains(out, "proxy:   all:8080") {
-		t.Errorf("host-daemon topology should bind on all:8080; got:\n%s", out)
+		t.Errorf("remote topology should bind on all:8080; got:\n%s", out)
 	}
 	if !strings.Contains(out, "mode: default-deny") {
 		t.Errorf("mode substitution missing; got:\n%s", out)
@@ -76,7 +76,7 @@ func TestApplyAnswers_HostDaemonAllBind(t *testing.T) {
 
 func TestApplyAnswers_InterceptionEnabled(t *testing.T) {
 	out := applyAnswers(defaultConfigYAML, initAnswers{
-		topology:     "laptop",
+		topology:     "local",
 		mode:         "default-ask",
 		interception: true,
 	})
@@ -98,7 +98,7 @@ func TestApplyAnswers_InterceptionEnabled(t *testing.T) {
 // daemon (started from a different cwd) would not find the CA.
 func TestApplyAnswers_InterceptionAbsoluteCAPaths(t *testing.T) {
 	out := applyAnswers(defaultConfigYAML, initAnswers{
-		topology:     "laptop",
+		topology:     "local",
 		mode:         "default-ask",
 		interception: true,
 		caCertPath:   "/var/lib/trollbridge/ca.crt",
@@ -117,21 +117,40 @@ func TestApplyAnswers_InterceptionAbsoluteCAPaths(t *testing.T) {
 
 func TestApplyAnswers_LLMEnabledWithProvider(t *testing.T) {
 	out := applyAnswers(defaultConfigYAML, initAnswers{
-		topology:    "laptop",
+		topology:    "local",
 		mode:        "default-ask",
 		llmEnabled:  true,
 		llmProvider: "aoai",
 		llmModel:    "gpt-4o",
+		llmEndpoint: "https://example.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-15-preview",
 		llmKeyPath:  "/var/secrets/aoai.key",
 	})
 	for _, want := range []string{
 		"  enabled: true\n  provider: aoai",
 		"  model:    gpt-4o",
 		"  api_key_path: /var/secrets/aoai.key",
+		"  endpoint: https://example.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-02-15-preview",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("LLM substitution missing %q in output:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "  endpoint: https://api.anthropic.com") {
+		t.Errorf("aoai endpoint substitution should have replaced the anthropic default; got:\n%s", out)
+	}
+}
+
+func TestApplyAnswers_LLMEnabledAnthropicKeepsDefaultEndpoint(t *testing.T) {
+	out := applyAnswers(defaultConfigYAML, initAnswers{
+		topology:    "local",
+		mode:        "default-ask",
+		llmEnabled:  true,
+		llmProvider: "anthropic",
+		llmModel:    "claude-opus-4-7",
+		llmKeyPath:  "/home/op/.config/trollbridge/llm.key",
+	})
+	if !strings.Contains(out, "  endpoint: https://api.anthropic.com") {
+		t.Errorf("anthropic provider should preserve the default endpoint; got:\n%s", out)
 	}
 }
 
@@ -202,7 +221,7 @@ func TestPromptSecret_RejectsEmpty(t *testing.T) {
 
 func TestRunInteractiveInit_HappyPathAllOff(t *testing.T) {
 	in := newReader(strings.Join([]string{
-		"laptop",       // topology
+		"local",        // topology
 		"default-deny", // mode
 		"n",            // interception
 		"n",            // advisor
@@ -213,8 +232,83 @@ func TestRunInteractiveInit_HappyPathAllOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runInteractiveInit: %v\n%s", err, out.String())
 	}
-	if ans.topology != "laptop" || ans.mode != "default-deny" || ans.interception || ans.llmEnabled {
+	if ans.topology != "local" || ans.mode != "default-deny" || ans.interception || ans.llmEnabled {
 		t.Errorf("answers mis-collected: %+v", ans)
+	}
+}
+
+func TestRunInteractiveInit_AOAIPromptsForEndpoint(t *testing.T) {
+	endpoint := "https://contoso.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-02-15-preview"
+	in := newReader(strings.Join([]string{
+		"local",
+		"default-ask",
+		"n", // interception
+		"y", // advisor
+		"aoai",
+		"gpt-4o",
+		endpoint,
+		"sk-azure-test",
+	}, "\n") + "\n")
+	var out bytes.Buffer
+	ans, err := runInteractiveInit(in, &out)
+	if err != nil {
+		t.Fatalf("runInteractiveInit: %v\n%s", err, out.String())
+	}
+	if ans.llmEndpoint != endpoint {
+		t.Errorf("llmEndpoint = %q, want %q", ans.llmEndpoint, endpoint)
+	}
+	if !strings.Contains(out.String(), "endpoint URL") {
+		t.Errorf("AOAI flow should prompt for endpoint URL; transcript:\n%s", out.String())
+	}
+}
+
+func TestRunInteractiveInit_AnthropicSkipsEndpointPrompt(t *testing.T) {
+	in := newReader(strings.Join([]string{
+		"local",
+		"default-ask",
+		"n", // interception
+		"y", // advisor
+		"anthropic",
+		"claude-opus-4-7",
+		"sk-anthropic-test",
+	}, "\n") + "\n")
+	var out bytes.Buffer
+	ans, err := runInteractiveInit(in, &out)
+	if err != nil {
+		t.Fatalf("runInteractiveInit: %v\n%s", err, out.String())
+	}
+	if ans.llmEndpoint != "" {
+		t.Errorf("anthropic provider must not collect an endpoint; got %q", ans.llmEndpoint)
+	}
+	if strings.Contains(out.String(), "endpoint URL") {
+		t.Errorf("anthropic flow should NOT prompt for endpoint URL; transcript:\n%s", out.String())
+	}
+}
+
+func TestPromptRequiredString_RejectsEmptyThenAccepts(t *testing.T) {
+	var buf bytes.Buffer
+	_, err := promptRequiredString(newReader("\n\n"), &buf, "x")
+	if err == nil {
+		t.Error("two empty inputs should produce an error")
+	}
+	got, err := promptRequiredString(newReader("\nvalue\n"), &buf, "x")
+	if err != nil {
+		t.Fatalf("non-empty after retry should succeed: %v", err)
+	}
+	if got != "value" {
+		t.Errorf("got %q, want %q", got, "value")
+	}
+}
+
+func TestPromptChoice_RejectsOldPresetName(t *testing.T) {
+	var buf bytes.Buffer
+	got := promptChoice(newReader("laptop\nlocal\n"), &buf, "topology",
+		[]string{"local", "local-vm", "remote"}, "local")
+	if got != "local" {
+		t.Errorf("retry after rejected old name should yield 'local'; got %q", got)
+	}
+	if !strings.Contains(buf.String(), "unknown choice") {
+		t.Errorf("old preset name should produce 'unknown choice' notice; got:\n%s", buf.String())
 	}
 }
 
@@ -262,7 +356,7 @@ func TestInit_InteractiveInterceptionTriggersCABootstrap(t *testing.T) {
 	go func() {
 		defer pw.Close()
 		_, _ = pw.WriteString(strings.Join([]string{
-			"laptop",
+			"local",
 			"default-deny",
 			"y", // interception=on
 			"n", // advisor=off
@@ -300,10 +394,13 @@ func TestInit_InteractiveInterceptionTriggersCABootstrap(t *testing.T) {
 	}
 }
 
-func TestInit_InteractiveLLMWritesKeyFile(t *testing.T) {
+func TestInit_InteractiveLLMKeyAlongsideYaml(t *testing.T) {
 	dir := t.TempDir()
-	keyPath := filepath.Join(dir, "secrets", "llm.key") // includes a non-existent subdir
 	keyValue := "sk-test-12345"
+	wantKeyPath, err := filepath.Abs(filepath.Join(dir, "llm.key"))
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
 
 	prev := isTerminal
 	isTerminal = func(int) bool { return true }
@@ -317,13 +414,12 @@ func TestInit_InteractiveLLMWritesKeyFile(t *testing.T) {
 	go func() {
 		defer pw.Close()
 		_, _ = pw.WriteString(strings.Join([]string{
-			"laptop",
+			"local",
 			"default-ask",
 			"n", // interception=off
 			"y", // advisor=on
 			"anthropic",
 			"claude-opus-4-7",
-			keyPath,
 			keyValue,
 		}, "\n") + "\n")
 	}()
@@ -338,14 +434,14 @@ func TestInit_InteractiveLLMWritesKeyFile(t *testing.T) {
 		t.Fatalf("init interactive llm: %v\n%s", err, out.String())
 	}
 
-	info, err := os.Stat(keyPath)
+	info, err := os.Stat(wantKeyPath)
 	if err != nil {
-		t.Fatalf("LLM key file not written at %s: %v", keyPath, err)
+		t.Fatalf("LLM key file not written at %s: %v", wantKeyPath, err)
 	}
 	if mode := info.Mode().Perm(); mode != 0o600 {
 		t.Errorf("LLM key mode = %o, want 0600", mode)
 	}
-	got, err := os.ReadFile(keyPath)
+	got, err := os.ReadFile(wantKeyPath)
 	if err != nil {
 		t.Fatalf("read key: %v", err)
 	}
@@ -357,11 +453,79 @@ func TestInit_InteractiveLLMWritesKeyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read yaml: %v", err)
 	}
-	if !strings.Contains(string(body), "api_key_path: "+keyPath) {
-		t.Errorf("YAML should reference the chosen key path; got:\n%s", body)
+	if !strings.Contains(string(body), "api_key_path: "+wantKeyPath) {
+		t.Errorf("YAML should reference <dir>/llm.key (%s); got:\n%s", wantKeyPath, body)
 	}
 	if !strings.Contains(string(body), "  enabled: true\n  provider: anthropic") {
 		t.Errorf("YAML should reflect llm.enabled=true; got:\n%s", body)
+	}
+	// The flow must not have asked for a path: the transcript's
+	// prompt labels should not mention "API key path".
+	if strings.Contains(out.String(), "API key path") {
+		t.Errorf("init should not prompt for the API key path anymore; transcript:\n%s", out.String())
+	}
+}
+
+func TestInit_InteractiveAOAIWritesEndpointInYaml(t *testing.T) {
+	dir := t.TempDir()
+	keyValue := "sk-azure-test"
+	endpoint := "https://contoso.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-02-15-preview"
+
+	prev := isTerminal
+	isTerminal = func(int) bool { return true }
+	t.Cleanup(func() { isTerminal = prev })
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = pr.Close() })
+	go func() {
+		defer pw.Close()
+		_, _ = pw.WriteString(strings.Join([]string{
+			"local",
+			"default-ask",
+			"n", // interception=off
+			"y", // advisor=on
+			"aoai",
+			"gpt-4o",
+			endpoint,
+			keyValue,
+		}, "\n") + "\n")
+	}()
+
+	cmd := newInitCmd()
+	var out bytes.Buffer
+	cmd.SetIn(pr)
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"-d", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init interactive aoai: %v\n%s", err, out.String())
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, "trollbridge.yaml"))
+	if err != nil {
+		t.Fatalf("read yaml: %v", err)
+	}
+	if !strings.Contains(string(body), "  endpoint: "+endpoint) {
+		t.Errorf("YAML should carry the operator-supplied endpoint; got:\n%s", body)
+	}
+	if strings.Contains(string(body), "  endpoint: https://api.anthropic.com") {
+		t.Errorf("anthropic default endpoint should have been replaced for aoai")
+	}
+	if !strings.Contains(string(body), "  enabled: true\n  provider: aoai") {
+		t.Errorf("YAML should reflect provider=aoai; got:\n%s", body)
+	}
+	wantKeyPath, err := filepath.Abs(filepath.Join(dir, "llm.key"))
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	if !strings.Contains(string(body), "api_key_path: "+wantKeyPath) {
+		t.Errorf("AOAI flow should still place the key at <dir>/llm.key; got:\n%s", body)
+	}
+	if _, err := os.Stat(wantKeyPath); err != nil {
+		t.Errorf("AOAI key file not written at %s: %v", wantKeyPath, err)
 	}
 }
 

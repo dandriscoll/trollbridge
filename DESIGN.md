@@ -1558,7 +1558,15 @@ load-bearing security state.
 
 ## 14. Deployment topologies
 
+`init` collapses these recipes onto three preset values keyed by
+where the agent runs relative to the proxy: `local` (same host),
+`local-vm` (a VM on the same host), and `remote` (a different
+machine). Each subsection below names which preset its recipe maps
+to.
+
 ### 14.1 Local (developer laptop)
+
+*Init preset: `local`.*
 
 trollbridge runs as a user process on `127.0.0.1:8080`. The developer
 sets `HTTP_PROXY` / `HTTPS_PROXY` in their shell. The CA is installed
@@ -1569,6 +1577,8 @@ developer can simply unset `HTTPS_PROXY` to bypass. It is appropriate
 for honest dev workflows where the audit log is the primary control.
 
 ### 14.2 Host-side daemon for an Incus VM (recommended)
+
+*Init preset: `local-vm`.*
 
 trollbridge runs on the Incus host, listening on the host's bridge IP
 (`192.168.x.y:8080`). The agent runs in an Incus VM. The VM's network
@@ -1584,6 +1594,11 @@ the proxy, which is the property the proxy depends on.
 
 ### 14.3 Sidecar container
 
+*Init preset: `local` when the sidecar shares the agent container's
+network namespace (compose `network_mode: "service:..."`, k8s pod
+networking); otherwise `local-vm` and bind on the compose-network
+interface.*
+
 trollbridge runs as a sidecar in a container pod or compose stack.
 The agent container's egress is constrained by network policies to
 the sidecar IP only. The CA is mounted into the agent container's
@@ -1593,6 +1608,10 @@ This topology fits CI runners, GitHub Actions, and other ephemeral
 agent environments.
 
 ### 14.4 System-wide host daemon
+
+*Init preset: `local` when consumers are local processes only;
+`local-vm` when consumers include VMs/containers reaching across a
+bridge; `remote` when consumers are on other machines.*
 
 trollbridge runs as a systemd service on a shared host where multiple
 agents (or multiple developers) connect. Each agent's identity is

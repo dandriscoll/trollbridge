@@ -153,6 +153,18 @@ is passed, init writes the static default config without prompting.
 						ans.caKeyPath = abs
 					}
 				}
+				if ans.llmEnabled {
+					// LLM key lives next to the yaml. The interactive
+					// flow does not ask the operator for a path — every
+					// other init artifact lands in <dir>, and the prior
+					// default (/etc/trollbridge/llm.key) was a system
+					// path most operators could not write to.
+					if abs, err := filepath.Abs(filepath.Join(dir, "llm.key")); err == nil {
+						ans.llmKeyPath = abs
+					} else {
+						ans.llmKeyPath = filepath.Join(dir, "llm.key")
+					}
+				}
 				content = applyAnswers(defaultConfigYAML, ans)
 
 				// LLM key first — if this fails, the YAML wouldn't
