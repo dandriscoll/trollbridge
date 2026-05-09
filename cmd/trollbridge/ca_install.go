@@ -173,15 +173,70 @@ func installCommandsFor(p platform, certPath string) []string {
 // that work without modifying the system trust store. Useful when
 // (a) the operator can't sudo, (b) only one process needs to trust
 // the CA, or (c) the language runtime ignores the system store.
-func runtimeOptionsBlock(certPath string) []string {
+//
+// The path embedded in each env-var line is the post-install
+// destination on the detected platform (the path the `cp` commands
+// above place the cert at), NOT the source path where `ca install`
+// happened to find the cert. Source paths are not cross-machine
+// stable: when an operator copy-pastes from a daemon host into a
+// consumer-host shell, /etc/trollbridge/trollbridge-ca.crt may not
+// exist on the consumer, and ./trollbridge-ca.crt is cwd-relative.
+// The system-trust destination DOES exist on the consumer once the
+// install commands above have run, so an operator pasting the whole
+// block end-to-end gets a working result. Issue #14 (recurrence).
+//
+// On macOS and Windows the system trust store is not a file path
+// (keychain / cert store), so we fall back to the source path with
+// an explicit note that the cert must remain at that path on the
+// consumer for the env-vars to work.
+func runtimeOptionsBlock(p platform, certPath string) []string {
+	dest, ok := runtimeDestPath(p)
+	if !ok {
+		return []string{
+			"# Per-runtime, no sudo required. Set in the env where the client runs.",
+			"# (note: " + p.friendly() + "'s system trust store is not a file path,",
+			"#  so these env-vars reference the cert's current location — " + certPath + ".",
+			"#  Keep the file at that path on the host running the client, or substitute",
+			"#  with an absolute path that exists there.)",
+			"export NODE_EXTRA_CA_CERTS=" + certPath + "      # Node.js",
+			"export SSL_CERT_FILE=" + certPath + "             # Python (httpx, ssl), Go (Linux)",
+			"export REQUESTS_CA_BUNDLE=" + certPath + "        # Python `requests`",
+			"export CURL_CA_BUNDLE=" + certPath + "            # curl",
+			"# Java (no env var; one-shot import into the truststore):",
+			"#   sudo keytool -importcert -trustcacerts -alias trollbridge -file " + certPath + ` -keystore $JAVA_HOME/lib/security/cacerts -storepass changeit`,
+		}
+	}
 	return []string{
-		"# Per-runtime, no sudo required. Set in the env where the client runs:",
-		"export NODE_EXTRA_CA_CERTS=" + certPath + "      # Node.js",
-		"export SSL_CERT_FILE=" + certPath + "             # Python (httpx, ssl), Go (Linux)",
-		"export REQUESTS_CA_BUNDLE=" + certPath + "        # Python `requests`",
-		"export CURL_CA_BUNDLE=" + certPath + "            # curl",
+		"# Per-runtime, no sudo required. Set in the env where the client runs.",
+		"# Paths reference the post-install destination on " + p.friendly() + " — the file",
+		"# the system-trust commands above place there. Identical on every host of this",
+		"# family, so this block pastes cleanly into any consumer shell after the install runs.",
+		"export NODE_EXTRA_CA_CERTS=" + dest + "      # Node.js",
+		"export SSL_CERT_FILE=" + dest + "             # Python (httpx, ssl), Go (Linux)",
+		"export REQUESTS_CA_BUNDLE=" + dest + "        # Python `requests`",
+		"export CURL_CA_BUNDLE=" + dest + "            # curl",
 		"# Java (no env var; one-shot import into the truststore):",
-		"#   sudo keytool -importcert -trustcacerts -alias trollbridge -file " + certPath + ` -keystore $JAVA_HOME/lib/security/cacerts -storepass changeit`,
+		"#   sudo keytool -importcert -trustcacerts -alias trollbridge -file " + dest + ` -keystore $JAVA_HOME/lib/security/cacerts -storepass changeit`,
+	}
+}
+
+// runtimeDestPath returns the post-install path the system-trust
+// install commands deposit the cert at on the given platform, plus
+// true. Returns ("", false) for platforms whose trust store is not a
+// file path — macOS keychain, Windows cert store — so the caller
+// falls back to the source path with a note. The returned path
+// matches the destination used by `installCommandsFor` and by
+// `applyInstall`.
+func runtimeDestPath(p platform) (string, bool) {
+	switch p {
+	case platformLinuxDebian, platformLinuxAlpine, platformLinuxUnknown:
+		return "/usr/local/share/ca-certificates/trollbridge-ca.crt", true
+	case platformLinuxFedora:
+		return "/etc/pki/ca-trust/source/anchors/trollbridge-ca.crt", true
+	case platformLinuxArch:
+		return "/etc/ca-certificates/trust-source/anchors/trollbridge-ca.crt", true
+	default:
+		return "", false
 	}
 }
 
@@ -370,8 +425,21 @@ func printInstallHelp(out io.Writer, certPath string, allPlatformsFlag bool, det
 		fmt.Fprintln(out)
 	}
 
+	// For runtime-options, default to the detected platform's
+	// destination. Under --all-platforms, pick the Debian destination
+	// (the most common Linux family on consumer hosts); the heading
+	// names that explicitly so an operator on Fedora / Arch / macOS
+	// can substitute the right path.
+	rtPlatform := detected
+	if allPlatformsFlag {
+		rtPlatform = platformLinuxDebian
+	}
 	fmt.Fprintln(out, "== Runtime-specific options (alternative to system trust store) ==")
-	for _, line := range runtimeOptionsBlock(certPath) {
+	if allPlatformsFlag {
+		fmt.Fprintln(out, "# Showing paths for "+rtPlatform.friendly()+"; substitute the dest path matching")
+		fmt.Fprintln(out, "# the system-trust install you ran above.")
+	}
+	for _, line := range runtimeOptionsBlock(rtPlatform, certPath) {
 		fmt.Fprintln(out, line)
 	}
 	if !allPlatformsFlag {

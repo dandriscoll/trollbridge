@@ -269,6 +269,76 @@ func TestPrintInstallHelp_AllPlatforms(t *testing.T) {
 	}
 }
 
+// TestRuntimeOptionsBlock_DestinationStable closes the recurrence
+// gap on issue #14: when the platform is a Linux family with a
+// well-known system-trust file destination, every env-var line in
+// the runtime-options block must reference that destination — not
+// the source path passed in. Source paths are not cross-machine
+// stable; destinations are. Sweep test, not spot-check, because the
+// failure shape "missed one occurrence" is the one this rule exists
+// to catch.
+func TestRuntimeOptionsBlock_DestinationStable(t *testing.T) {
+	const sourcePath = "/home/operator/scratch/trollbridge-ca.crt"
+	cases := []struct {
+		p       platform
+		mustHit string
+	}{
+		{platformLinuxDebian, "/usr/local/share/ca-certificates/trollbridge-ca.crt"},
+		{platformLinuxAlpine, "/usr/local/share/ca-certificates/trollbridge-ca.crt"},
+		{platformLinuxFedora, "/etc/pki/ca-trust/source/anchors/trollbridge-ca.crt"},
+		{platformLinuxArch, "/etc/ca-certificates/trust-source/anchors/trollbridge-ca.crt"},
+		{platformLinuxUnknown, "/usr/local/share/ca-certificates/trollbridge-ca.crt"},
+	}
+	for _, c := range cases {
+		t.Run(string(c.p), func(t *testing.T) {
+			lines := runtimeOptionsBlock(c.p, sourcePath)
+			joined := strings.Join(lines, "\n")
+			if !strings.Contains(joined, c.mustHit) {
+				t.Errorf("expected %q in runtime block for %s, got:\n%s", c.mustHit, c.p, joined)
+			}
+			// Sweep: every uncommented `export FOO=...` line MUST end
+			// at the destination path, not the source.
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if !strings.HasPrefix(trimmed, "export ") {
+					continue
+				}
+				if strings.Contains(line, sourcePath) {
+					t.Errorf("env-var line still references the source path %q on %s — must use the cross-machine-stable destination %q. Line: %s",
+						sourcePath, c.p, c.mustHit, line)
+				}
+				if !strings.Contains(line, c.mustHit) {
+					t.Errorf("env-var line on %s does not reference the destination %q. Line: %s",
+						c.p, c.mustHit, line)
+				}
+			}
+		})
+	}
+}
+
+// TestRuntimeOptionsBlock_NonLinuxKeepsSourceWithNote: macOS and
+// Windows have no canonical file destination (keychain / cert store
+// are not file paths). The block must keep the source path AND
+// surface an explicit note so the operator knows what the env-vars
+// reference. Also #14.
+func TestRuntimeOptionsBlock_NonLinuxKeepsSourceWithNote(t *testing.T) {
+	const sourcePath = "/some/abs/trollbridge-ca.crt"
+	for _, p := range []platform{platformDarwin, platformWindows} {
+		t.Run(string(p), func(t *testing.T) {
+			lines := runtimeOptionsBlock(p, sourcePath)
+			joined := strings.Join(lines, "\n")
+			if !strings.Contains(joined, sourcePath) {
+				t.Errorf("on %s the block should still reference the source path %q (no canonical file destination); got:\n%s",
+					p, sourcePath, joined)
+			}
+			lower := strings.ToLower(joined)
+			if !strings.Contains(lower, "current location") && !strings.Contains(lower, "absolute path") {
+				t.Errorf("on %s the block must include a note explaining the source-path reference; got:\n%s", p, joined)
+			}
+		})
+	}
+}
+
 func TestPrintInstallHelp_SinglePlatformShowsHint(t *testing.T) {
 	var buf bytes.Buffer
 	printInstallHelp(&buf, "/x.crt", false, platformLinuxDebian)
