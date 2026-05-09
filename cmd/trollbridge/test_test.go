@@ -530,17 +530,9 @@ func TestRunTest_FailedDial_PrintsPreambleAndHint(t *testing.T) {
 	}
 }
 
-func TestAnnotateConfigLoadErr_FileMissing_AddsHint(t *testing.T) {
-	err := annotateConfigLoadErr("/nope/trollbridge.yaml", os.ErrNotExist)
-	if err == nil {
-		t.Fatal("nil error")
-	}
-	for _, want := range []string{"trollbridge.yaml not found", "/nope/trollbridge.yaml", "trollbridge init"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("missing %q in: %s", want, err.Error())
-		}
-	}
-}
+// (annotateConfigLoadErr was inlined into internal/config.Load —
+// issue #27 — so all callers benefit. The contract test now lives
+// at internal/config TestLoad_FileNotFound_NamesInitCommand.)
 
 func TestTestCmd_HelpListsFlags(t *testing.T) {
 	cmd := newTestCmd()

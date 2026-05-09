@@ -305,3 +305,23 @@ lists:
 		t.Errorf("Lists.Deny len = %d, want 1: %v", len(cfg.Lists.Deny), cfg.Lists.Deny)
 	}
 }
+
+// TestLoad_FileNotFound_NamesInitCommand closes issue #27: when
+// the config file does not exist, the error names `trollbridge
+// init` (and `trollbridge quickstart`) inline so the operator's
+// next step is well-defined without reading source.
+func TestLoad_FileNotFound_NamesInitCommand(t *testing.T) {
+	_, err := Load("/nonexistent/trollbridge.yaml")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	for _, want := range []string{
+		"/nonexistent/trollbridge.yaml",
+		"trollbridge init",
+		"trollbridge quickstart",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in error: %v", want, err)
+		}
+	}
+}

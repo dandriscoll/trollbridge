@@ -5,6 +5,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -312,6 +313,12 @@ type DecisionCache struct {
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		// Issue #27: when the file is missing, name the well-known
+		// next step (`trollbridge init`) inline. The advertised CLI
+		// surface gives an unfriendly bare ENOENT otherwise.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("config file not found at %s. Run `trollbridge init` to create one (or `trollbridge quickstart` to write a minimal default and start the proxy in one step)", path)
+		}
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var probe struct {

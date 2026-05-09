@@ -90,7 +90,7 @@ network reachability with the daemon.`,
 			}
 			cfg, err := config.Load(configPath)
 			if err != nil {
-				return &configErr{annotateConfigLoadErr(configPath, err)}
+				return &configErr{err}
 			}
 			req, err := buildTestRequest(args[0], method, headers, body, bodyFile)
 			if err != nil {
@@ -362,16 +362,6 @@ func testFailureHints(err error, proxyAddr string, interceptionOn bool, scheme s
 	return []string{
 		fmt.Sprintf("re-run with --no-decision to skip the audit-log read; if that succeeds the failure is not in the request path itself"),
 	}
-}
-
-// annotateConfigLoadErr wraps config.Load failures with a hint when
-// the cause is "file not found at the resolved path" — by far the
-// most common first-run failure for `trollbridge test`.
-func annotateConfigLoadErr(path string, err error) error {
-	if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
-		return fmt.Errorf("trollbridge.yaml not found at %s: %w; run `trollbridge init` to scaffold one, or pass -c <path>", path, err)
-	}
-	return err
 }
 
 func onOff(b bool) string {
