@@ -504,22 +504,20 @@ func TestInit_NextSteps_RemoteTopology_NamesCertDistribution(t *testing.T) {
 	}
 }
 
-func TestInit_InteractiveLLMKeyAlongsideYaml(t *testing.T) {
+// TestInit_InteractiveLLM_DoesNotWriteKey closes issue #21: the
+// interactive LLM flow used to write the API key to <init dir>/llm.key
+// (an init-dir-relative path). That broke when the proxy host was a
+// different machine than the init dir. New contract: init does NOT
+// write the key file. The yaml records the canonical proxy-host
+// path /etc/trollbridge/llm.key and the operator writes the key on
+// the proxy host as a separate root-only step. Same separation as
+// CA generation in #19.
+func TestInit_InteractiveLLM_DoesNotWriteKey(t *testing.T) {
 	dir := t.TempDir()
-	keyValue := "sk-test-12345"
-	wantKeyPath, err := filepath.Abs(filepath.Join(dir, "llm.key"))
-	if err != nil {
-		t.Fatalf("abs: %v", err)
-	}
 
 	prev := isTerminal
 	isTerminal = func(int) bool { return true }
-	prevPw := readPassword
-	readPassword = func(int) ([]byte, error) { return []byte(keyValue), nil }
-	t.Cleanup(func() {
-		isTerminal = prev
-		readPassword = prevPw
-	})
+	t.Cleanup(func() { isTerminal = prev })
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -535,7 +533,6 @@ func TestInit_InteractiveLLMKeyAlongsideYaml(t *testing.T) {
 			"y", // advisor=on
 			"anthropic",
 			"claude-opus-4-7",
-			keyValue,
 		}, "\n") + "\n")
 	}()
 
@@ -549,51 +546,37 @@ func TestInit_InteractiveLLMKeyAlongsideYaml(t *testing.T) {
 		t.Fatalf("init interactive llm: %v\n%s", err, out.String())
 	}
 
-	info, err := os.Stat(wantKeyPath)
-	if err != nil {
-		t.Fatalf("LLM key file not written at %s: %v", wantKeyPath, err)
-	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("LLM key mode = %o, want 0600", mode)
-	}
-	got, err := os.ReadFile(wantKeyPath)
-	if err != nil {
-		t.Fatalf("read key: %v", err)
-	}
-	if string(got) != keyValue {
-		t.Errorf("LLM key contents = %q, want %q", string(got), keyValue)
+	// init must not have written a key file in the init dir.
+	if _, err := os.Stat(filepath.Join(dir, "llm.key")); err == nil {
+		t.Errorf("init must not write llm.key into the init dir (issue #21)")
 	}
 
 	body, err := os.ReadFile(filepath.Join(dir, "trollbridge.yaml"))
 	if err != nil {
 		t.Fatalf("read yaml: %v", err)
 	}
-	if !strings.Contains(string(body), "api_key_path: "+wantKeyPath) {
-		t.Errorf("YAML should reference <dir>/llm.key (%s); got:\n%s", wantKeyPath, body)
+	// YAML must record the canonical proxy-host path.
+	if !strings.Contains(string(body), "api_key_path: /etc/trollbridge/llm.key") {
+		t.Errorf("YAML should record canonical /etc/trollbridge/llm.key; got:\n%s", body)
 	}
 	if !strings.Contains(string(body), "  enabled: true\n  provider: anthropic") {
 		t.Errorf("YAML should reflect llm.enabled=true; got:\n%s", body)
 	}
-	// The flow must not have asked for a path: the transcript's
-	// prompt labels should not mention "API key path".
-	if strings.Contains(out.String(), "API key path") {
-		t.Errorf("init should not prompt for the API key path anymore; transcript:\n%s", out.String())
+	// Next-steps must instruct the operator to write the key on the proxy host.
+	for _, want := range []string{"/etc/trollbridge/llm.key", "proxy host"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("transcript missing %q (operator needs to know where to put the key); got:\n%s", want, out.String())
+		}
 	}
 }
 
 func TestInit_InteractiveAOAIWritesEndpointInYaml(t *testing.T) {
 	dir := t.TempDir()
-	keyValue := "sk-azure-test"
 	endpoint := "https://contoso.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-02-15-preview"
 
 	prev := isTerminal
 	isTerminal = func(int) bool { return true }
-	prevPw := readPassword
-	readPassword = func(int) ([]byte, error) { return []byte(keyValue), nil }
-	t.Cleanup(func() {
-		isTerminal = prev
-		readPassword = prevPw
-	})
+	t.Cleanup(func() { isTerminal = prev })
 
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -610,7 +593,6 @@ func TestInit_InteractiveAOAIWritesEndpointInYaml(t *testing.T) {
 			"aoai",
 			"gpt-4o",
 			endpoint,
-			keyValue,
 		}, "\n") + "\n")
 	}()
 
@@ -637,15 +619,14 @@ func TestInit_InteractiveAOAIWritesEndpointInYaml(t *testing.T) {
 	if !strings.Contains(string(body), "  enabled: true\n  provider: aoai") {
 		t.Errorf("YAML should reflect provider=aoai; got:\n%s", body)
 	}
-	wantKeyPath, err := filepath.Abs(filepath.Join(dir, "llm.key"))
-	if err != nil {
-		t.Fatalf("abs: %v", err)
+	// Per #21: yaml records the canonical /etc/trollbridge/llm.key path;
+	// init does not write the key file (operator handles that on the
+	// proxy host as root).
+	if !strings.Contains(string(body), "api_key_path: /etc/trollbridge/llm.key") {
+		t.Errorf("AOAI flow should record canonical /etc/trollbridge/llm.key path; got:\n%s", body)
 	}
-	if !strings.Contains(string(body), "api_key_path: "+wantKeyPath) {
-		t.Errorf("AOAI flow should still place the key at <dir>/llm.key; got:\n%s", body)
-	}
-	if _, err := os.Stat(wantKeyPath); err != nil {
-		t.Errorf("AOAI key file not written at %s: %v", wantKeyPath, err)
+	if _, err := os.Stat(filepath.Join(dir, "llm.key")); err == nil {
+		t.Errorf("init must not write llm.key into the init dir (issue #21)")
 	}
 }
 

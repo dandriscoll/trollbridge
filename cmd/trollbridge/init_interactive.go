@@ -128,11 +128,15 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 			}
 			ans.llmEndpoint = ep
 		}
-		key, err := promptSecret(in, r, out, "   API key (paste; will not be echoed back)")
-		if err != nil {
-			return ans, err
-		}
-		ans.llmKey = key
+		// We deliberately do NOT prompt for the API key here. The
+		// key file lives on the proxy host (which may not be the
+		// machine running `init`), at /etc/trollbridge/llm.key. The
+		// operator writes it themselves as a separate root-only step
+		// — see the next-steps output. Keeping the prompt and then
+		// failing on writeLLMKey when /etc/trollbridge is not
+		// writable was the v0.4.7 bug shape (issues #19, #21).
+		fmt.Fprintln(out, "   → on the proxy host (as root) you'll write the API key separately")
+		fmt.Fprintln(out, "     to /etc/trollbridge/llm.key (mode 0600). The yaml records that path.")
 	}
 	fmt.Fprintln(out)
 

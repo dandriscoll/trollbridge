@@ -78,9 +78,11 @@ interception:
     key_path:  /etc/trollbridge/trollbridge-ca.key
   leaf_key_type: rsa-4096
 
-# Logging.
+# Logging. Paths are absolute so they remain valid regardless of
+# the proxy daemon's cwd at startup. Operators who deploy under
+# systemd / containers can override per-environment.
 logging:
-  audit_path:        ./trollbridge.audit.jsonl
+  audit_path:        /var/log/trollbridge/audit.jsonl
   audit_overflow:    deny
   operational_path:  stderr
 
@@ -152,27 +154,16 @@ is passed, init writes the static default config without prompting.
 					ans.caKeyPath = DefaultCAKeyPath
 				}
 				if ans.llmEnabled {
-					// LLM key lives next to the yaml. The interactive
-					// flow does not ask the operator for a path — every
-					// other init artifact lands in <dir>, and the prior
-					// default (/etc/trollbridge/llm.key) was a system
-					// path most operators could not write to.
-					if abs, err := filepath.Abs(filepath.Join(dir, "llm.key")); err == nil {
-						ans.llmKeyPath = abs
-					} else {
-						ans.llmKeyPath = filepath.Join(dir, "llm.key")
-					}
+					// LLM key path is a *proxy-host* path. The yaml
+					// records where the daemon will read it from
+					// (/etc/trollbridge/llm.key by template default).
+					// `init` does NOT write the key file — that step
+					// belongs on the proxy host as root, so init runs
+					// without privilege regardless of where the proxy
+					// will eventually live (issues #19, #21).
+					ans.llmKeyPath = "/etc/trollbridge/llm.key"
 				}
 				content = applyAnswers(defaultConfigYAML, ans)
-
-				// LLM key first — if this fails, the YAML wouldn't
-				// reflect a real installation.
-				if ans.llmEnabled {
-					if err := writeLLMKey(ans.llmKeyPath, ans.llmKey); err != nil {
-						return &runtimeErr{fmt.Errorf("write LLM key: %w", err)}
-					}
-					fmt.Fprintf(out, "  wrote LLM API key: %s (mode 0600)\n", ans.llmKeyPath)
-				}
 			}
 
 			if err := os.WriteFile(yamlPath, []byte(content), 0o640); err != nil {
@@ -236,13 +227,17 @@ func printNextSteps(out io.Writer, ans initAnswers, interactive bool, cFlag stri
 	}
 
 	if ans.interception {
-		w("  # CA generation is a separate, root-only step. Trollbridge does not\n")
-		w("  # generate the CA inside `init` because the operator running `init`\n")
+		w("  # CA generation and API key writes are separate, root-only steps.\n")
+		w("  # `trollbridge init` writes only the yaml — the operator running it\n")
 		w("  # may not be on the proxy host or may not own /etc/trollbridge.\n")
 		w("\n")
 		w("  On %s, as root:\n", proxyHost)
 		w("    sudo trollbridge ca init%s              # generates /etc/trollbridge/trollbridge-ca.{crt,key}\n", cFlag)
 		w("    sudo trollbridge ca client-cert <op>%s   # issue an operator client cert\n", cFlag)
+		if ans.llmEnabled {
+			w("    # write your LLM API key (paste, then Ctrl-D):\n")
+			w("    sudo install -m 600 /dev/stdin /etc/trollbridge/llm.key\n")
+		}
 		w("\n")
 		if remote {
 			w("  Then transfer trollbridge-ca.crt to every consumer host:\n")
@@ -266,10 +261,15 @@ func printNextSteps(out io.Writer, ans initAnswers, interactive bool, cFlag stri
 	}
 
 	// Interception off → no CA distribution flow, but we still need
-	// to name where the daemon will run.
+	// to name where the daemon will run, and the controller still
+	// uses an mTLS CA so ca init is still required.
 	w("  On %s, as root (the controller still uses an mTLS CA):\n", proxyHost)
 	w("    sudo trollbridge ca init%s              # generates /etc/trollbridge/trollbridge-ca.{crt,key}\n", cFlag)
 	w("    sudo trollbridge ca client-cert <op>%s   # issue an operator client cert\n", cFlag)
+	if ans.llmEnabled {
+		w("    # write your LLM API key (paste, then Ctrl-D):\n")
+		w("    sudo install -m 600 /dev/stdin /etc/trollbridge/llm.key\n")
+	}
 	w("\n")
 	w("  On %s, run the daemon:\n", proxyHost)
 	w("    trollbridge run%s\n", cFlag)
