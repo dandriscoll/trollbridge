@@ -132,7 +132,14 @@ func newCAInitCmd() *cobra.Command {
 			fmt.Fprintln(out, "")
 			fmt.Fprintln(out, "next steps:")
 			fmt.Fprintln(out, "  trollbridge ca install -c <config>     # show OS-tailored trust-store install commands")
-			fmt.Fprintln(out, "  set `interception.enabled: true` in your trollbridge.yaml")
+			// Suppress the "set interception.enabled: true" hint when the
+			// config we'd reload already has it on — typical after the
+			// interactive `trollbridge init` flow that flipped the flag
+			// (issue #30). Best-effort load: missing/unreadable yaml
+			// falls back to printing the line.
+			if !interceptionAlreadyEnabled(configPath) {
+				fmt.Fprintln(out, "  set `interception.enabled: true` in your trollbridge.yaml")
+			}
 			fmt.Fprintln(out, "  trollbridge run -c <config>")
 			return nil
 		},
@@ -232,6 +239,22 @@ func newCAFlushCacheCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")
 	return cmd
+}
+
+// interceptionAlreadyEnabled reports whether the trollbridge.yaml at
+// configPath (or the default path when blank) has interception.enabled
+// set to true. Errors load-quietly to false so the caller defaults to
+// printing the hint — there is no benefit to surfacing yaml-parse
+// errors in `ca init`'s next-steps block.
+func interceptionAlreadyEnabled(configPath string) bool {
+	if configPath == "" {
+		configPath = defaultConfigPath()
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return false
+	}
+	return cfg.Interception.Enabled
 }
 
 // resolveCAArgs picks the CA paths from flags or from trollbridge.yaml,

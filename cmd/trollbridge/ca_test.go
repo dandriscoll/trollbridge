@@ -108,6 +108,83 @@ func TestCAInit_NextStepsMentionsCAInstall(t *testing.T) {
 	}
 }
 
+// TestCAInit_QuietWhenInterceptionAlreadyEnabled closes issue #30:
+// the user just enabled interception via the interactive init flow,
+// so re-asserting "set interception.enabled: true" in the post-init
+// next-steps block is noise.
+func TestCAInit_QuietWhenInterceptionAlreadyEnabled(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+
+	cfgPath := filepath.Join(dir, "trollbridge.yaml")
+	body := strings.Join([]string{
+		"trollbridge_version: 3",
+		"proxy: lo:8080",
+		"control: 0",
+		"mode: default-deny",
+		"controller: {auth: mtls}",
+		"approvals: {timeout_seconds: 60, on_timeout: deny, max_pending: 16}",
+		"interception:",
+		"  enabled: true",
+		"  ca:",
+		"    cert_path: " + certPath,
+		"    key_path: " + keyPath,
+		"logging:",
+		"  audit_path: " + filepath.Join(dir, "audit.log"),
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newCAInitCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"-c", cfgPath,
+		"--cert-out", certPath,
+		"--key-out", keyPath,
+		"--key-type", "ecdsa-p256",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("ca init: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if strings.Contains(out, "set `interception.enabled: true`") {
+		t.Errorf("ca init must NOT tell the operator to enable interception when the configured yaml already has it on (issue #30):\n%s", out)
+	}
+}
+
+// TestCAInit_HintsWhenInterceptionDisabled is the negative — the hint
+// should still surface when the config doesn't have interception on.
+func TestCAInit_HintsWhenInterceptionDisabled(t *testing.T) {
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+
+	// Config exists with interception.enabled: false (the default).
+	cfgPath := caConfigYAML(t, dir, certPath, keyPath)
+
+	cmd := newCAInitCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{
+		"-c", cfgPath,
+		"--cert-out", certPath,
+		"--key-out", keyPath,
+		"--key-type", "ecdsa-p256",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("ca init: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "set `interception.enabled: true`") {
+		t.Errorf("ca init should still print the enable-interception hint when the yaml does not have it on:\n%s", buf.String())
+	}
+}
+
 func TestCAInit_RefusesWhenFilesExist(t *testing.T) {
 	dir := t.TempDir()
 	certPath := filepath.Join(dir, "ca.crt")
