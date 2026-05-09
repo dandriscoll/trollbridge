@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
@@ -46,6 +48,49 @@ func exitCodeFor(err error) int {
 	return 1
 }
 
+// drawbridgeRenamedEnvVars maps every legacy DRAWBRIDGE_* env name
+// to the trollbridge replacement. The drawbridge → trollbridge
+// rename (commit f068448) shipped without a compat shim by intent;
+// this list exists only so warnLegacyDrawbridgeEnv can tell an
+// operator which legacy var they have set and what to set instead.
+var drawbridgeRenamedEnvVars = []struct {
+	old, new string
+}{
+	{"DRAWBRIDGE_LOG_LEVEL", "TROLLBRIDGE_LOG_LEVEL"},
+	{"DRAWBRIDGE_CONFIG", "TROLLBRIDGE_CONFIG"},
+	{"DRAWBRIDGE_CONTROLLER_CERT", "TROLLBRIDGE_CONTROLLER_CERT"},
+	{"DRAWBRIDGE_CONTROLLER_KEY", "TROLLBRIDGE_CONTROLLER_KEY"},
+	{"DRAWBRIDGE_CONTROLLER_CA", "TROLLBRIDGE_CONTROLLER_CA"},
+}
+
+// warnLegacyDrawbridgeEnv emits a one-shot stderr warning for any
+// legacy DRAWBRIDGE_* env var the operator still has set (where the
+// corresponding TROLLBRIDGE_* is unset). The legacy vars are NOT
+// honored — silent fall-through to defaults is the failure shape the
+// warning prevents (issue #26). lookup is injected for testability.
+func warnLegacyDrawbridgeEnv(out io.Writer, lookup func(string) (string, bool)) {
+	var legacy []struct{ old, new string }
+	for _, p := range drawbridgeRenamedEnvVars {
+		if _, set := lookup(p.old); !set {
+			continue
+		}
+		if _, newSet := lookup(p.new); newSet {
+			// Operator already set the new name; assume the legacy
+			// var is leftover and don't nag about it.
+			continue
+		}
+		legacy = append(legacy, p)
+	}
+	if len(legacy) == 0 {
+		return
+	}
+	fmt.Fprintln(out, "warning: legacy DRAWBRIDGE_* environment variables detected; trollbridge does not honor them.")
+	fmt.Fprintln(out, "         the drawbridge → trollbridge rename did not ship a compat shim. unset or rename:")
+	for _, p := range legacy {
+		fmt.Fprintf(out, "           %s → %s\n", p.old, p.new)
+	}
+}
+
 // defaultConfigPath returns the path used when no -c flag is given.
 // trollbridge is a deployed proxy, not a user application — its config
 // lives with the deployment (cwd) rather than under the operator's XDG
@@ -69,6 +114,8 @@ conditions. See DESIGN.md for the full specification.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(c *cobra.Command, _ []string) error {
+			warnLegacyDrawbridgeEnv(c.ErrOrStderr(), os.LookupEnv)
+
 			// Precedence: --log-level flag > TROLLBRIDGE_LOG_LEVEL env > nil
 			// (let the config / default decide downstream).
 			resolvedLogLevel = nil
