@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="trollbridge_icon.png" alt="trollbridge logo" width="160">
+</p>
+
 # trollbridge
+
+![trollbridge — LLM-Powered Proxy & Security Gateway for AI Agents](trollbridge_infographic.png)
 
 An LLM-powered HTTP/HTTPS proxy that lets LLM agents reach network
 resources under controlled, inspectable, policy-governed conditions.
