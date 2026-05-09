@@ -273,6 +273,32 @@ will run through the proxy). You cannot do this from inside the
 agent. Tell the user the exact path and ask them to confirm before
 flipping the switch.
 
+**Local-host install (proxy and consumer apps run on the same
+machine).** From the same directory `ca init` was run in, point
+the user at:
+
+```sh
+./bin/trollbridge ca install            # prints the OS-tailored install commands
+./bin/trollbridge ca install --apply    # runs them (requires root)
+```
+
+**Remote-mode install (proxy and consumer apps on different hosts).**
+The CA was created on the trollbridge host; the consumer host must
+trust it.
+
+1. From the trollbridge host: `scp trollbridge-ca.crt
+   <consumer-host>:/usr/local/share/ca-certificates/trollbridge-ca.crt`
+   (or to `/etc/trollbridge/trollbridge-ca.crt` if the operator
+   prefers).
+2. From the consumer host: `sudo trollbridge ca install --apply`
+   — the install command searches canonical paths and will find
+   the cert without `--cert`.
+
+`trollbridge ca install` searches, in priority order:
+`/etc/trollbridge/trollbridge-ca.crt`,
+`/usr/local/share/ca-certificates/trollbridge-ca.crt`, then
+`./trollbridge-ca.crt`. Pass `--cert <path>` to override.
+
 In `trollbridge.yaml`:
 
 ```yaml

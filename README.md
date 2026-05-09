@@ -137,9 +137,24 @@ The CLI auto-loads the cert/key from `~/.trollbridge/`; override with
 For TLS interception (separate from controller mTLS — same CA):
 
 ```sh
-# install trollbridge-ca.crt into your *client* trust store
-# set interception.enabled: true in trollbridge.yaml
+# Local install (run on the same host as `trollbridge run`):
+trollbridge ca install --apply        # searches canonical paths;
+                                      # requires root (sudo)
+
+# Remote install (consumer app on a different host than the proxy):
+#   1. From the trollbridge host:
+#        scp trollbridge-ca.crt user@consumer:/usr/local/share/ca-certificates/
+#   2. From the consumer host:
+#        sudo trollbridge ca install --apply
+
+# Then enable interception:
+#   set interception.enabled: true in trollbridge.yaml
 ```
+
+`trollbridge ca install` searches, in priority order, for the cert
+at `/etc/trollbridge/trollbridge-ca.crt`,
+`/usr/local/share/ca-certificates/trollbridge-ca.crt`, then
+`./trollbridge-ca.crt`. Pass `--cert <path>` to override.
 
 When `trollbridge run` is interactive, it presents a console
 prompt for live edits to `lists.allow` / `lists.deny` in

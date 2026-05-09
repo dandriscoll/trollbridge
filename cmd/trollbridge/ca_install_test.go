@@ -2,11 +2,91 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// fakeStat returns nil for paths in `exists`, errFakeStat otherwise.
+type fakeStat map[string]bool
+
+var errFakeStat = errors.New("not present (fake stat)")
+
+func (f fakeStat) stat(path string) (os.FileInfo, error) {
+	if f[path] {
+		return nil, nil
+	}
+	return nil, errFakeStat
+}
+
+func TestFindInstallCert_ExplicitWins_NoExistenceCheck(t *testing.T) {
+	got, err := findInstallCert("/explicit/cert.pem", "/some/config-cert", fakeStat{}.stat)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got != "/explicit/cert.pem" {
+		t.Errorf("got %q, want explicit path", got)
+	}
+}
+
+func TestFindInstallCert_ConfigPathPreferredWhenExists(t *testing.T) {
+	got, err := findInstallCert("", "/conf/cert.pem", fakeStat{"/conf/cert.pem": true}.stat)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got != "/conf/cert.pem" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestFindInstallCert_FallsThroughToCanonical(t *testing.T) {
+	// config path set but absent → fall through to canonical, where
+	// /usr/local/share/ca-certificates/trollbridge-ca.crt exists.
+	stat := fakeStat{"/usr/local/share/ca-certificates/trollbridge-ca.crt": true}.stat
+	got, err := findInstallCert("", "/conf/missing.pem", stat)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got != "/usr/local/share/ca-certificates/trollbridge-ca.crt" {
+		t.Errorf("got %q, want /usr/local/share/ca-certificates/trollbridge-ca.crt", got)
+	}
+}
+
+func TestFindInstallCert_PrefersEtcOverShare(t *testing.T) {
+	// Both /etc and /usr/local exist; /etc wins.
+	stat := fakeStat{
+		"/etc/trollbridge/trollbridge-ca.crt":                       true,
+		"/usr/local/share/ca-certificates/trollbridge-ca.crt":       true,
+	}.stat
+	got, err := findInstallCert("", "", stat)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got != "/etc/trollbridge/trollbridge-ca.crt" {
+		t.Errorf("got %q, want /etc/trollbridge/trollbridge-ca.crt", got)
+	}
+}
+
+func TestFindInstallCert_NoCertAnywhere_ErrorNamesEveryCandidate(t *testing.T) {
+	_, err := findInstallCert("", "/conf/missing.pem", fakeStat{}.stat)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	for _, want := range []string{
+		"/conf/missing.pem",
+		"/etc/trollbridge/trollbridge-ca.crt",
+		"/usr/local/share/ca-certificates/trollbridge-ca.crt",
+		"trollbridge-ca.crt",
+		"--cert",
+		"remote-mode",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in error:\n%s", want, err.Error())
+		}
+	}
+}
 
 func TestDetectPlatformFrom(t *testing.T) {
 	cases := []struct {

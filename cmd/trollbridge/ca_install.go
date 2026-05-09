@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -226,11 +227,22 @@ etc.) stay print-only regardless of --apply.
 
 By default --apply prompts for confirmation; pass --yes to skip.
 
-The cert path is resolved from --config <trollbridge.yaml> (the
-` + "`interception.ca.cert_path`" + ` field), --cert <path>, or the default
-` + "`trollbridge-ca.crt`" + ` in the current directory.`,
+Cert resolution (in priority order):
+  1. --cert <path>           explicit, overrides everything
+  2. --config <yaml>         the file's interception.ca.cert_path,
+                             if it exists
+  3. canonical system paths  /etc/trollbridge/trollbridge-ca.crt,
+                             then /usr/local/share/ca-certificates/
+                             trollbridge-ca.crt, then ./trollbridge-ca.crt
+                             — first that exists wins.
+
+In a remote-mode topology (the trollbridge daemon runs on a
+different host than the consumer apps), copy the cert from the
+daemon host to one of the canonical paths above; this command
+will find it without --cert.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cp, _, _, err := resolveCAArgs(configPath, certPath, "", "")
+			cfgCert, _ := configCertPath(configPath)
+			cp, err := findInstallCert(certPath, cfgCert, os.Stat)
 			if err != nil {
 				return &configErr{err}
 			}
@@ -250,11 +262,78 @@ The cert path is resolved from --config <trollbridge.yaml> (the
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "trollbridge.yaml path")
-	cmd.Flags().StringVar(&certPath, "cert", "", "explicit cert path (overrides config)")
+	cmd.Flags().StringVar(&certPath, "cert", "", "explicit cert path (overrides config and canonical-path search)")
 	cmd.Flags().BoolVar(&allPlatformsFlag, "all-platforms", false, "print install commands for every supported platform")
 	cmd.Flags().BoolVar(&applyFlag, "apply", false, "execute the system trust-store install (requires root)")
 	cmd.Flags().BoolVar(&yesFlag, "yes", false, "with --apply: skip the confirmation prompt")
 	return cmd
+}
+
+// installCertCandidates returns the canonical paths `ca install`
+// searches, in priority order, when neither --cert nor a config-
+// derived path is supplied. The order matches the operator
+// expectation that an explicit system install (under
+// /etc/trollbridge/) wins over a Debian-style drop-in (under
+// /usr/local/share/ca-certificates/) which wins over a laptop-dev
+// cwd file.
+func installCertCandidates() []string {
+	return []string{
+		"/etc/trollbridge/trollbridge-ca.crt",
+		"/usr/local/share/ca-certificates/trollbridge-ca.crt",
+		"trollbridge-ca.crt",
+	}
+}
+
+// findInstallCert resolves the cert path for `ca install`.
+//   1. If `explicit` is non-empty, return it as-is. The applyInstall
+//      path will surface a detailed error if it does not exist.
+//   2. If `configCert` is non-empty and the file exists, return it.
+//   3. Walk installCertCandidates() and return the first existing.
+//   4. Otherwise return an error that names every searched path so
+//      the operator can place the cert at the canonical Debian
+//      drop-in location, or pass --cert.
+//
+// `statFn` is injected so tests can drive the search without
+// touching the live filesystem.
+func findInstallCert(explicit, configCert string, statFn func(string) (os.FileInfo, error)) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if configCert != "" {
+		if _, err := statFn(configCert); err == nil {
+			return configCert, nil
+		}
+	}
+	candidates := installCertCandidates()
+	for _, p := range candidates {
+		if _, err := statFn(p); err == nil {
+			return p, nil
+		}
+	}
+	searched := candidates
+	if configCert != "" {
+		searched = append([]string{configCert + " (from --config)"}, candidates...)
+	}
+	return "", fmt.Errorf(
+		"trollbridge CA cert not found. Searched:\n  - %s\nFix: pass --cert <path>, or place the cert at /usr/local/share/ca-certificates/trollbridge-ca.crt (then re-run). In a remote-mode topology, scp the cert from the trollbridge host to one of the searched paths.",
+		strings.Join(searched, "\n  - "),
+	)
+}
+
+// configCertPath loads trollbridge.yaml at configPath (or the
+// default) and returns the configured interception.ca.cert_path.
+// Errors are swallowed — `ca install` does not require a yaml to
+// exist (the canonical-path search covers the case where the
+// consumer host has no trollbridge.yaml).
+func configCertPath(configPath string) (string, error) {
+	if configPath == "" {
+		configPath = defaultConfigPath()
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return "", nil //nolint:nilerr // intentional: missing yaml is fine for ca install
+	}
+	return cfg.Interception.CA.CertPath, nil
 }
 
 func printInstallHelp(out io.Writer, certPath string, allPlatformsFlag bool, detected platform) {

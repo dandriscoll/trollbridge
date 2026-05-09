@@ -97,7 +97,9 @@ func applyInstall(
 	}
 
 	if _, err := os.Stat(certPath); err != nil {
-		return &runtimeErr{fmt.Errorf("CA cert not found at %s: %w; run `trollbridge ca init` first", certPath, err)}
+		return &runtimeErr{fmt.Errorf(
+			"CA cert not found at %s: %w. If this host runs `trollbridge run`, run `trollbridge ca init` to generate one. If this is a consumer host (the trollbridge daemon runs elsewhere), copy the cert from the daemon host into one of: /etc/trollbridge/trollbridge-ca.crt, /usr/local/share/ca-certificates/trollbridge-ca.crt, or pass --cert <path>",
+			certPath, err)}
 	}
 
 	steps := installStepsFor(p, certPath)
