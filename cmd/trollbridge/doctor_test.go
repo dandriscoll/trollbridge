@@ -107,6 +107,50 @@ func TestDoctor_LlmHappyPath_ReportsOK(t *testing.T) {
 	}
 }
 
+// TestDoctor_LlmHappyPath_AnnouncesContactBeforeResult asserts the
+// progress line that closes issue #9: doctor must print an
+// in-flight "contacting …" status line *before* the synchronous
+// classification call, so operators do not see a hung terminal
+// during the up-to-(timeout+2)s wait.
+func TestDoctor_LlmHappyPath_AnnouncesContactBeforeResult(t *testing.T) {
+	cfgPath := minimalDoctorYaml(t, true)
+
+	prev := doctorAdvisor
+	defer func() { doctorAdvisor = prev }()
+	doctorAdvisor = &advisor.MockProvider{
+		Output: advisor.Output{Effect: "allow", Confidence: "high", Reason: "ok"},
+	}
+
+	var stdout bytes.Buffer
+	cmd := newDoctorCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stdout)
+	cmd.SetContext(context.Background())
+	cmd.SetArgs([]string{"-c", cfgPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	out := stdout.String()
+
+	contactIdx := strings.Index(out, "contacting provider=anthropic")
+	if contactIdx < 0 {
+		t.Fatalf("doctor did not announce LLM contact before the call; got:\n%s", out)
+	}
+	for _, want := range []string{"endpoint=https://example.invalid", "auth=x-api-key", "timeout 2s"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("contacting line missing %q in:\n%s", want, out)
+		}
+	}
+	okIdx := strings.Index(out, "OK (provider=anthropic")
+	if okIdx < 0 {
+		t.Fatalf("missing OK line in:\n%s", out)
+	}
+	if contactIdx > okIdx {
+		t.Errorf("contacting line must precede OK line; got contactIdx=%d okIdx=%d in:\n%s",
+			contactIdx, okIdx, out)
+	}
+}
+
 func TestDoctor_LlmDispatchError_ReturnsRuntimeErr(t *testing.T) {
 	cfgPath := minimalDoctorYaml(t, true)
 

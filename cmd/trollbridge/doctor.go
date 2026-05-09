@@ -92,6 +92,10 @@ input. Each check prints a status line; non-zero exit on any FAIL.`,
 				prov = buildDoctorProvider(cfg.LLM, translator, endpoint)
 			}
 
+			printDoctorLine(out, "llm",
+				fmt.Sprintf("contacting provider=%s endpoint=%s auth=%s (timeout %ds)",
+					providerName(cfg.LLM.Provider), endpoint, authName, cfg.LLM.TimeoutSeconds))
+
 			ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(cfg.LLM.TimeoutSeconds)*time.Second+2*time.Second)
 			defer cancel()
 
