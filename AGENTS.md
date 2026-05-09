@@ -83,15 +83,21 @@ Verify `--help` lists the commands you expect: `run`, `init`,
 
 ## Step 2 — Initialize a config tree
 
-Pick a directory based on the topology decided in Step 0. For
-laptop use:
+For laptop use, just run:
 
 ```sh
-./bin/trollbridge init -d ~/.trollbridge
+./bin/trollbridge init
 ```
 
-For a system install, use a path the daemon will read (the systemd
-unit in `packaging/systemd/` reads `/etc/trollbridge/`).
+`init` defaults its target directory to `$HOME/.config/trollbridge/`
+(or whatever `$TROLLBRIDGE_CONFIG` / `$XDG_CONFIG_HOME` resolves to)
+— the same path every other subcommand reads from by default.
+After this, `trollbridge doctor`, `trollbridge run`, etc., all
+find the config without `-c`.
+
+For a system install, pass `-d <path>` to write the config (and the
+generated CA, when interception is chosen) to that directory; the
+systemd unit in `packaging/systemd/` reads `/etc/trollbridge/`.
 
 When stdin is a TTY, `init` runs as a guided setup that asks the
 operator about topology, mode, TLS interception, and the LLM

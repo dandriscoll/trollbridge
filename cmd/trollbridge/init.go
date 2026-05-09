@@ -92,10 +92,16 @@ approvals:
 func newInitCmd() *cobra.Command {
 	var dir string
 	var force, nonInteractive bool
+	defaultDir := filepath.Dir(defaultConfigPath())
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create a trollbridge.yaml. Interactive when stdin is a TTY; static defaults otherwise.",
 		Long: `Create a trollbridge.yaml in the target directory.
+
+The default directory matches the location every other subcommand
+reads from (TROLLBRIDGE_CONFIG, then $XDG_CONFIG_HOME/trollbridge,
+then $HOME/.config/trollbridge). Pass -d <path> to write somewhere
+else.
 
 By default, when stdin is a TTY, init runs as a guided setup that
 asks about topology, policy mode, TLS interception, and LLM
@@ -107,7 +113,7 @@ is passed, init writes the static default config without prompting.
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
-				dir = "."
+				dir = defaultDir
 			}
 			if err := os.MkdirAll(dir, 0o750); err != nil {
 				return &runtimeErr{err}
@@ -134,6 +140,19 @@ is passed, init writes the static default config without prompting.
 					return &configErr{err}
 				}
 				ans = a
+				if ans.interception {
+					// Resolve the CA paths to absolutes so the running
+					// daemon finds them regardless of cwd. The relative
+					// `./trollbridge-ca.{crt,key}` defaults in the
+					// template only worked when the operator stayed in
+					// the dir they ran init from.
+					if abs, err := filepath.Abs(filepath.Join(dir, "trollbridge-ca.crt")); err == nil {
+						ans.caCertPath = abs
+					}
+					if abs, err := filepath.Abs(filepath.Join(dir, "trollbridge-ca.key")); err == nil {
+						ans.caKeyPath = abs
+					}
+				}
 				content = applyAnswers(defaultConfigYAML, ans)
 
 				// LLM key first — if this fails, the YAML wouldn't
@@ -167,22 +186,32 @@ is passed, init writes the static default config without prompting.
 				caGenerated = true
 			}
 
+			// When the resolved file matches defaultConfigPath(), the
+			// rest of the CLI finds it without -c — print bare commands.
+			// Otherwise the operator chose a non-default location;
+			// thread the absolute path through every follow-on so the
+			// printed advice works from any cwd.
+			cFlag := ""
+			if abs, err := filepath.Abs(yamlPath); err == nil && abs != defaultConfigPath() {
+				cFlag = " -c " + abs
+			}
+
 			fmt.Fprintln(out, "\nnext steps:")
 			if !caGenerated {
-				fmt.Fprintln(out, "  trollbridge ca init                              # generate the CA")
+				fmt.Fprintln(out, "  trollbridge ca init"+cFlag+"                              # generate the CA")
 			} else {
-				fmt.Fprintln(out, "  trollbridge ca install -c "+yamlPath+"     # show OS-tailored trust-store install commands")
+				fmt.Fprintln(out, "  trollbridge ca install"+cFlag+"     # show OS-tailored trust-store install commands")
 			}
 			fmt.Fprintln(out, "  trollbridge ca client-cert <op>                  # issue your operator client cert")
 			fmt.Fprintln(out, "  install <op>.{crt,key} at ~/.trollbridge/controller-client.{crt,key}")
-			fmt.Fprintln(out, "  trollbridge validate -c", yamlPath)
-			fmt.Fprintln(out, "  trollbridge doctor   -c", yamlPath, "  # check yaml + LLM connection")
-			fmt.Fprintln(out, "  trollbridge run      -c", yamlPath)
-			fmt.Fprintln(out, "  eval \"$(trollbridge env -c "+yamlPath+")\"   # wire client env")
+			fmt.Fprintln(out, "  trollbridge validate"+cFlag)
+			fmt.Fprintln(out, "  trollbridge doctor"+cFlag+"   # check yaml + LLM connection")
+			fmt.Fprintln(out, "  trollbridge run"+cFlag)
+			fmt.Fprintln(out, "  eval \"$(trollbridge env"+cFlag+")\"   # wire client env")
 			return nil
 		},
 	}
-	cmd.Flags().StringVarP(&dir, "dir", "d", ".", "directory to write the config to")
+	cmd.Flags().StringVarP(&dir, "dir", "d", defaultDir, "directory to write the config to (default: matches `trollbridge run -c` discovery)")
 	cmd.Flags().BoolVar(&force, "force", false, "archive existing files (.bak) and replace")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "skip the guided setup; write the static default config")
 	return cmd

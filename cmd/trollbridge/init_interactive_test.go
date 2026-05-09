@@ -90,6 +90,31 @@ func TestApplyAnswers_InterceptionEnabled(t *testing.T) {
 	}
 }
 
+// TestApplyAnswers_InterceptionAbsoluteCAPaths is the regression
+// guard for the follow-on bug surfaced by issue #8: when init
+// writes the CA outside cwd (because the dir default now points at
+// $HOME/.config/trollbridge/), the YAML's interception.ca paths
+// must be absolute, not relative to cwd. Otherwise the running
+// daemon (started from a different cwd) would not find the CA.
+func TestApplyAnswers_InterceptionAbsoluteCAPaths(t *testing.T) {
+	out := applyAnswers(defaultConfigYAML, initAnswers{
+		topology:     "laptop",
+		mode:         "default-ask",
+		interception: true,
+		caCertPath:   "/var/lib/trollbridge/ca.crt",
+		caKeyPath:    "/var/lib/trollbridge/ca.key",
+	})
+	if !strings.Contains(out, "    cert_path: /var/lib/trollbridge/ca.crt") {
+		t.Errorf("absolute cert_path substitution missing; got:\n%s", out)
+	}
+	if !strings.Contains(out, "    key_path:  /var/lib/trollbridge/ca.key") {
+		t.Errorf("absolute key_path substitution missing; got:\n%s", out)
+	}
+	if strings.Contains(out, "    cert_path: ./trollbridge-ca.crt") {
+		t.Errorf("relative cert_path default should have been replaced")
+	}
+}
+
 func TestApplyAnswers_LLMEnabledWithProvider(t *testing.T) {
 	out := applyAnswers(defaultConfigYAML, initAnswers{
 		topology:    "laptop",

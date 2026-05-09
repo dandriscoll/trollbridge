@@ -23,6 +23,8 @@ type initAnswers struct {
 	topology     string // "laptop" | "incus-vm" | "sidecar" | "host-daemon"
 	mode         string // "default-deny" | "default-allow" | "default-ask"
 	interception bool
+	caCertPath   string // absolute path to the CA cert when interception=on; empty otherwise
+	caKeyPath    string // absolute path to the CA key when interception=on; empty otherwise
 	llmEnabled   bool
 	llmProvider  string // "anthropic" | "aoai" | <other string>
 	llmModel     string
@@ -209,6 +211,12 @@ func applyAnswers(template string, ans initAnswers) string {
 	out = strings.Replace(out, "mode: default-ask", "mode: "+ans.mode, 1)
 	if ans.interception {
 		out = strings.Replace(out, "  enabled: false\n  ca:", "  enabled: true\n  ca:", 1)
+		if ans.caCertPath != "" {
+			out = strings.Replace(out, "    cert_path: ./trollbridge-ca.crt", "    cert_path: "+ans.caCertPath, 1)
+		}
+		if ans.caKeyPath != "" {
+			out = strings.Replace(out, "    key_path:  ./trollbridge-ca.key", "    key_path:  "+ans.caKeyPath, 1)
+		}
 	}
 	if ans.llmEnabled {
 		out = strings.Replace(out, "  enabled: false\n  provider: anthropic", "  enabled: true\n  provider: "+ans.llmProvider, 1)
