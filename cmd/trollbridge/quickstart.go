@@ -20,18 +20,20 @@ import (
 )
 
 // newQuickstartCmd implements `trollbridge quickstart`: write a
-// minimum-setup default config (if absent) and immediately start
-// the proxy. Targets the "30-second start" flow named in issue #17.
+// minimum-setup user-mode default config (if absent) and
+// immediately start the proxy. Targets the "30-second start" flow
+// named in issue #17.
 //
-// The flavor of the default config is the same as `init`'s static
-// template with one tweak — controller: 0 — because the quickstart
-// is for laptop dev where the operator does not yet have a CA and
-// does not want to run as root. Without a controller there is no
-// mTLS dependency, so no CA is required.
+// quickstart is explicitly the user-mode on-ramp: every path
+// anchors at cwd, the operator runs as themselves, no sudo at any
+// step. The controller surface is disabled in the rendered yaml
+// so no CA is required at startup.
 //
-// The operator who wants the full proxy posture (controller mTLS,
-// TLS interception) runs `trollbridge init` and `trollbridge ca
-// init` instead. Quickstart is the on-ramp, not the destination.
+// The operator who wants the full daemon-mode posture (systemd
+// unit, controller mTLS, TLS interception) runs `trollbridge init`
+// and picks install mode = daemon, then `sudo -u trollbridge
+// trollbridge ca init`. Quickstart is the on-ramp, not the
+// destination.
 func newQuickstartCmd() *cobra.Command {
 	var configPath string
 	var verbose bool
@@ -51,8 +53,9 @@ The default mode is default-deny. Your first request through the
 proxy will be declined (HTTP 470) — the startup banner names this
 and tells you how to allow a host.
 
-For the full proxy posture (controller mTLS, TLS interception),
-run ` + "`trollbridge init`" + ` and ` + "`sudo trollbridge ca init`" + ` instead.
+For the full daemon-mode posture (systemd unit, controller mTLS,
+TLS interception), run ` + "`trollbridge init`" + ` and pick install
+mode = daemon, then ` + "`sudo -u trollbridge trollbridge ca init`" + `.
 Quickstart is the on-ramp, not the destination.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if configPath == "" {
@@ -62,10 +65,15 @@ Quickstart is the on-ramp, not the destination.`,
 
 			created := false
 			if _, err := os.Stat(configPath); os.IsNotExist(err) {
-				if err := os.MkdirAll(filepath.Dir(configPath), 0o750); err != nil {
+				configDir := filepath.Dir(configPath)
+				if err := os.MkdirAll(configDir, 0o750); err != nil {
 					return &runtimeErr{err}
 				}
-				body := quickstartConfigYAML()
+				absDir, abserr := filepath.Abs(configDir)
+				if abserr != nil {
+					absDir = configDir
+				}
+				body := quickstartConfigYAML(absDir)
 				if err := os.WriteFile(configPath, []byte(body), 0o640); err != nil {
 					return &runtimeErr{err}
 				}
@@ -86,16 +94,22 @@ Quickstart is the on-ramp, not the destination.`,
 	return cmd
 }
 
-// quickstartConfigYAML is the static default written by quickstart
-// when no trollbridge.yaml exists. Differs from `init`'s static
-// default by one line: control is disabled so no CA is required to
-// start the daemon.
-func quickstartConfigYAML() string {
+// quickstartConfigYAML is the user-mode default written by
+// `trollbridge quickstart` when no trollbridge.yaml exists.
+// Differs from `init`'s static template:
+//   - controller is disabled (no CA required at startup);
+//   - cert / key / audit / llm-key paths anchor at the absolute
+//     init-dir path passed in (matches user-mode init's
+//     branch-on-installMode behavior).
+func quickstartConfigYAML(absDir string) string {
 	body := defaultConfigYAML
-	// Disable the controller so no CA is required at startup. The
-	// operator who wants the controller runs `trollbridge init` +
-	// `sudo trollbridge ca init` for the full posture.
+	// Disable the controller so no CA is required at startup.
 	body = strings.Replace(body, "control: lo:8081", "control: 0", 1)
+	// Anchor proxy-host paths at the operator's init dir.
+	body = strings.Replace(body, "    cert_path: "+DefaultCACertPath, "    cert_path: "+filepath.Join(absDir, "trollbridge-ca.crt"), 1)
+	body = strings.Replace(body, "    key_path:  "+DefaultCAKeyPath, "    key_path:  "+filepath.Join(absDir, "trollbridge-ca.key"), 1)
+	body = strings.Replace(body, "  audit_path:        /var/log/trollbridge/audit.jsonl", "  audit_path:        "+filepath.Join(absDir, "trollbridge.audit.jsonl"), 1)
+	body = strings.Replace(body, "  api_key_path: /etc/trollbridge/llm.key", "  api_key_path: "+filepath.Join(absDir, "llm.key"), 1)
 	return body
 }
 

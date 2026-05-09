@@ -47,7 +47,7 @@ internal/configwrite/   # in-place yaml.v3 Node-API edits (REPL writes)
 internal/envprint/      # render shell exports for HTTP(S)_PROXY
 packaging/              # systemd unit, Dockerfile, Incus cloud-init, firewall
 scripts/release.sh      # end-to-end release flow (bump → tag → build → publish)
-docs/deploy.md          # deployment recipes (laptop, Incus, sidecar, systemd)
+docs/deploy.md          # deployment recipes (user-mode dev, Incus, sidecar, systemd)
 ```
 
 ## Build & test

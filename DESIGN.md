@@ -185,7 +185,7 @@ held request via `trollbridge decisions --pending` and denies it.
 
 ### 3.2 Local development on a single host
 
-A developer runs Codex CLI on their laptop. They run trollbridge as a
+A developer runs Codex CLI on their workstation. They run trollbridge as a
 user-level daemon on `127.0.0.1:8080`, set `HTTPS_PROXY` in their
 shell, and install the CA into their user trust store. trollbridge is
 configured in `default-allow-with-audit` mode for trusted dev hosts
@@ -1577,7 +1577,7 @@ where the agent runs relative to the proxy: `local` (same host),
 machine). Each subsection below names which preset its recipe maps
 to.
 
-### 14.1 Local (developer laptop)
+### 14.1 Local (developer workstation)
 
 *Init preset: `local`.*
 

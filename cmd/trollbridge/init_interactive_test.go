@@ -266,18 +266,19 @@ func TestPromptSecret_FallsBackToBufioWhenNonTTY(t *testing.T) {
 
 func TestRunInteractiveInit_HappyPathAllOff(t *testing.T) {
 	in := newReader(strings.Join([]string{
+		"user",         // install mode
 		"local",        // topology
-		"default-deny", // mode
+		"default-deny", // policy posture
 		"n",            // interception
 		"n",            // advisor
-		"",             // (no further input needed)
+		"",
 	}, "\n") + "\n")
 	var out bytes.Buffer
 	ans, err := runInteractiveInit(in, &out)
 	if err != nil {
 		t.Fatalf("runInteractiveInit: %v\n%s", err, out.String())
 	}
-	if ans.topology != "local" || ans.mode != "default-deny" || ans.interception || ans.llmEnabled {
+	if ans.installMode != "user" || ans.topology != "local" || ans.mode != "default-deny" || ans.interception || ans.llmEnabled {
 		t.Errorf("answers mis-collected: %+v", ans)
 	}
 }
@@ -285,6 +286,7 @@ func TestRunInteractiveInit_HappyPathAllOff(t *testing.T) {
 func TestRunInteractiveInit_AOAIPromptsForEndpoint(t *testing.T) {
 	endpoint := "https://contoso.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-02-15-preview"
 	in := newReader(strings.Join([]string{
+		"user",
 		"local",
 		"default-ask",
 		"n", // interception
@@ -292,7 +294,7 @@ func TestRunInteractiveInit_AOAIPromptsForEndpoint(t *testing.T) {
 		"aoai",
 		"gpt-4o",
 		endpoint,
-		"sk-azure-test",
+		"sk-azure-test", // LLM key (user-mode prompts for it)
 	}, "\n") + "\n")
 	var out bytes.Buffer
 	ans, err := runInteractiveInit(in, &out)
@@ -305,17 +307,21 @@ func TestRunInteractiveInit_AOAIPromptsForEndpoint(t *testing.T) {
 	if !strings.Contains(out.String(), "endpoint URL") {
 		t.Errorf("AOAI flow should prompt for endpoint URL; transcript:\n%s", out.String())
 	}
+	if ans.llmKey != "sk-azure-test" {
+		t.Errorf("user-mode AOAI flow should collect the API key inline; got %q", ans.llmKey)
+	}
 }
 
 func TestRunInteractiveInit_AnthropicSkipsEndpointPrompt(t *testing.T) {
 	in := newReader(strings.Join([]string{
+		"user",
 		"local",
 		"default-ask",
 		"n", // interception
 		"y", // advisor
 		"anthropic",
 		"claude-opus-4-7",
-		"sk-anthropic-test",
+		"sk-anthropic-test", // LLM key
 	}, "\n") + "\n")
 	var out bytes.Buffer
 	ans, err := runInteractiveInit(in, &out)
@@ -347,13 +353,13 @@ func TestPromptRequiredString_RejectsEmptyThenAccepts(t *testing.T) {
 
 func TestPromptChoice_RejectsOldPresetName(t *testing.T) {
 	var buf bytes.Buffer
-	got := promptChoice(newReader("laptop\nlocal\n"), &buf, "topology",
+	got := promptChoice(newReader("garbage\nlocal\n"), &buf, "topology",
 		[]string{"local", "local-vm", "remote"}, "local")
 	if got != "local" {
-		t.Errorf("retry after rejected old name should yield 'local'; got %q", got)
+		t.Errorf("retry after rejected name should yield 'local'; got %q", got)
 	}
 	if !strings.Contains(buf.String(), "unknown choice") {
-		t.Errorf("old preset name should produce 'unknown choice' notice; got:\n%s", buf.String())
+		t.Errorf("invalid choice should produce 'unknown choice' notice; got:\n%s", buf.String())
 	}
 }
 
@@ -408,6 +414,7 @@ func TestInit_InteractiveInterception_DoesNotBootstrapCA(t *testing.T) {
 	go func() {
 		defer pw.Close()
 		_, _ = pw.WriteString(strings.Join([]string{
+			"daemon", // install mode (exercises the never-bootstrap-inline rule)
 			"local",
 			"default-deny",
 			"y", // interception=on
@@ -422,7 +429,8 @@ func TestInit_InteractiveInterception_DoesNotBootstrapCA(t *testing.T) {
 	cmd.SetErr(&out)
 	cmd.SetArgs([]string{"-d", dir})
 	// Should NOT fail, even though the test runs as a non-root user
-	// and /etc/trollbridge is not writable.
+	// and /etc/trollbridge is not writable. `init` writes the yaml
+	// only; CA generation defers to `trollbridge ca init`.
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("init interactive should not require root; got err: %v\n%s", err, out.String())
 	}
@@ -438,11 +446,12 @@ func TestInit_InteractiveInterception_DoesNotBootstrapCA(t *testing.T) {
 		t.Errorf("mode=default-deny should appear in YAML; got:\n%s", body)
 	}
 
-	// The next-steps output must name the deferred ca init step
-	// and label it as a proxy-host operation.
+	// The daemon-mode next-steps must name the deferred ca init step
+	// (run as the trollbridge user, NOT as root).
 	for _, want := range []string{
-		"proxy host",
-		"sudo trollbridge ca init",
+		"daemon-mode",
+		"sudo -u trollbridge trollbridge ca init",
+		"runs as the `trollbridge` system user (not root)",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("next-steps missing %q in:\n%s", want, out.String())
@@ -455,10 +464,11 @@ func TestInit_InteractiveInterception_DoesNotBootstrapCA(t *testing.T) {
 	}
 }
 
-// TestInit_NextSteps_RemoteTopology_NamesCertDistribution closes
-// the topology-awareness half of the fix: when the operator chose
-// remote topology, the next-steps call out the cert-transfer step
-// and frame the proxy host as "a different machine."
+// TestInit_NextSteps_RemoteTopology_NamesCertDistribution covers
+// the topology-awareness half: when the operator chose remote
+// topology, next-steps include cert-transfer (scp) and per-consumer
+// install steps. Tested under daemon-mode (the more common shape
+// for remote topology).
 func TestInit_NextSteps_RemoteTopology_NamesCertDistribution(t *testing.T) {
 	dir := t.TempDir()
 
@@ -474,6 +484,7 @@ func TestInit_NextSteps_RemoteTopology_NamesCertDistribution(t *testing.T) {
 	go func() {
 		defer pw.Close()
 		_, _ = pw.WriteString(strings.Join([]string{
+			"daemon", // install mode
 			"remote",
 			"default-deny",
 			"y", // interception=on
@@ -492,11 +503,9 @@ func TestInit_NextSteps_RemoteTopology_NamesCertDistribution(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"the proxy host",
 		"scp",
 		"trollbridge-ca.crt",
 		"sudo trollbridge ca install --apply",
-		"every consumer host",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("remote-topology next-steps missing %q in:\n%s", want, out.String())
@@ -504,15 +513,12 @@ func TestInit_NextSteps_RemoteTopology_NamesCertDistribution(t *testing.T) {
 	}
 }
 
-// TestInit_InteractiveLLM_DoesNotWriteKey closes issue #21: the
-// interactive LLM flow used to write the API key to <init dir>/llm.key
-// (an init-dir-relative path). That broke when the proxy host was a
-// different machine than the init dir. New contract: init does NOT
-// write the key file. The yaml records the canonical proxy-host
-// path /etc/trollbridge/llm.key and the operator writes the key on
-// the proxy host as a separate root-only step. Same separation as
-// CA generation in #19.
-func TestInit_InteractiveLLM_DoesNotWriteKey(t *testing.T) {
+// TestInit_DaemonMode_LLM_DoesNotWriteKey: in daemon-mode the
+// interactive LLM prompt does NOT collect the API key, and `init`
+// does NOT write a key file — the operator writes it on the proxy
+// host via `sudo -u trollbridge`. Yaml records the canonical
+// /etc/trollbridge/llm.key path.
+func TestInit_DaemonMode_LLM_DoesNotWriteKey(t *testing.T) {
 	dir := t.TempDir()
 
 	prev := isTerminal
@@ -527,6 +533,7 @@ func TestInit_InteractiveLLM_DoesNotWriteKey(t *testing.T) {
 	go func() {
 		defer pw.Close()
 		_, _ = pw.WriteString(strings.Join([]string{
+			"daemon",
 			"local",
 			"default-ask",
 			"n", // interception=off
@@ -546,27 +553,100 @@ func TestInit_InteractiveLLM_DoesNotWriteKey(t *testing.T) {
 		t.Fatalf("init interactive llm: %v\n%s", err, out.String())
 	}
 
-	// init must not have written a key file in the init dir.
 	if _, err := os.Stat(filepath.Join(dir, "llm.key")); err == nil {
-		t.Errorf("init must not write llm.key into the init dir (issue #21)")
+		t.Errorf("daemon-mode init must not write llm.key into the init dir")
 	}
 
 	body, err := os.ReadFile(filepath.Join(dir, "trollbridge.yaml"))
 	if err != nil {
 		t.Fatalf("read yaml: %v", err)
 	}
-	// YAML must record the canonical proxy-host path.
 	if !strings.Contains(string(body), "api_key_path: /etc/trollbridge/llm.key") {
-		t.Errorf("YAML should record canonical /etc/trollbridge/llm.key; got:\n%s", body)
+		t.Errorf("daemon-mode YAML should record /etc/trollbridge/llm.key; got:\n%s", body)
 	}
 	if !strings.Contains(string(body), "  enabled: true\n  provider: anthropic") {
 		t.Errorf("YAML should reflect llm.enabled=true; got:\n%s", body)
 	}
-	// Next-steps must instruct the operator to write the key on the proxy host.
-	for _, want := range []string{"/etc/trollbridge/llm.key", "proxy host"} {
+	for _, want := range []string{
+		"/etc/trollbridge/llm.key",
+		"sudo -u trollbridge",
+	} {
 		if !strings.Contains(out.String(), want) {
-			t.Errorf("transcript missing %q (operator needs to know where to put the key); got:\n%s", want, out.String())
+			t.Errorf("daemon-mode transcript missing %q; got:\n%s", want, out.String())
 		}
+	}
+}
+
+// TestInit_UserMode_LLM_WritesKeyInline: in user-mode the operator
+// types the API key at the prompt; init writes it to <init-dir>/
+// llm.key with mode 0600. Yaml records the absolute path.
+func TestInit_UserMode_LLM_WritesKeyInline(t *testing.T) {
+	dir := t.TempDir()
+	keyValue := "sk-user-mode-test"
+
+	prev := isTerminal
+	isTerminal = func(int) bool { return true }
+	prevPw := readPassword
+	readPassword = func(int) ([]byte, error) { return []byte(keyValue), nil }
+	t.Cleanup(func() {
+		isTerminal = prev
+		readPassword = prevPw
+	})
+
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = pr.Close() })
+	go func() {
+		defer pw.Close()
+		_, _ = pw.WriteString(strings.Join([]string{
+			"user",
+			"local",
+			"default-ask",
+			"n", // interception=off
+			"y", // advisor=on
+			"anthropic",
+			"claude-opus-4-7",
+			keyValue,
+		}, "\n") + "\n")
+	}()
+
+	cmd := newInitCmd()
+	var out bytes.Buffer
+	cmd.SetIn(pr)
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"-d", dir})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init: %v\n%s", err, out.String())
+	}
+
+	wantKeyPath, err := filepath.Abs(filepath.Join(dir, "llm.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(wantKeyPath)
+	if err != nil {
+		t.Fatalf("user-mode init should write llm.key at %s: %v", wantKeyPath, err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("llm.key mode = %o, want 0600", mode)
+	}
+	got, err := os.ReadFile(wantKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != keyValue {
+		t.Errorf("llm.key contents = %q, want %q", string(got), keyValue)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, "trollbridge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "api_key_path: "+wantKeyPath) {
+		t.Errorf("YAML should record absolute api_key_path %q; got:\n%s", wantKeyPath, body)
 	}
 }
 
@@ -586,6 +666,7 @@ func TestInit_InteractiveAOAIWritesEndpointInYaml(t *testing.T) {
 	go func() {
 		defer pw.Close()
 		_, _ = pw.WriteString(strings.Join([]string{
+			"daemon", // install mode (test exercises daemon-mode AOAI flow)
 			"local",
 			"default-ask",
 			"n", // interception=off

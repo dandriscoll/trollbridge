@@ -53,10 +53,10 @@ git clone https://github.com/dandriscoll/trollbridge.git
 cd trollbridge
 make build
 
-# Fastest path (laptop dev, no controller, no TLS interception):
+# Fastest path (user-mode, no controller, no TLS interception):
 ./bin/trollbridge quickstart   # writes a minimal yaml + starts the proxy
 
-# Or the full setup:
+# Or the full setup (interactive — picks user-mode or daemon-mode, then runs):
 ./bin/trollbridge init         # interactive in a TTY; default config otherwise
 ./bin/trollbridge run          # listens on 127.0.0.1:8080
 ```

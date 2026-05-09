@@ -145,25 +145,45 @@ is passed, init writes the static default config without prompting.
 					return &configErr{err}
 				}
 				ans = a
-				if ans.interception {
-					// Per-host stability: pin the CA paths to the
-					// canonical absolute path used everywhere else in
-					// trollbridge. The same path is valid on every
-					// host the config is shared with — issue #14.
+
+				absDir, abserr := filepath.Abs(dir)
+				if abserr != nil {
+					absDir = dir
+				}
+
+				// Path defaults branch on install mode. user-mode
+				// anchors every file at the absolute init-dir path
+				// (so the daemon, started later from any cwd, still
+				// finds them — issue #14). daemon-mode uses the
+				// canonical /etc/trollbridge/ + /var/log/trollbridge/
+				// paths; the package install pre-creates the dirs
+				// owned by the `trollbridge` user (Q1 punt — user
+				// creation is a packaging concern).
+				if ans.installMode == "daemon" {
 					ans.caCertPath = DefaultCACertPath
 					ans.caKeyPath = DefaultCAKeyPath
-				}
-				if ans.llmEnabled {
-					// LLM key path is a *proxy-host* path. The yaml
-					// records where the daemon will read it from
-					// (/etc/trollbridge/llm.key by template default).
-					// `init` does NOT write the key file — that step
-					// belongs on the proxy host as root, so init runs
-					// without privilege regardless of where the proxy
-					// will eventually live (issues #19, #21).
+					ans.auditPath = "/var/log/trollbridge/audit.jsonl"
 					ans.llmKeyPath = "/etc/trollbridge/llm.key"
+				} else {
+					ans.caCertPath = filepath.Join(absDir, "trollbridge-ca.crt")
+					ans.caKeyPath = filepath.Join(absDir, "trollbridge-ca.key")
+					ans.auditPath = filepath.Join(absDir, "trollbridge.audit.jsonl")
+					ans.llmKeyPath = filepath.Join(absDir, "llm.key")
 				}
 				content = applyAnswers(defaultConfigYAML, ans)
+
+				// user-mode + LLM advisor: the operator typed the
+				// key into the prompt; init writes the file at
+				// <init-dir>/llm.key with mode 0600. daemon-mode
+				// suppresses the prompt; the key gets written by
+				// the operator post-install (next-steps document
+				// the recipe).
+				if ans.llmEnabled && ans.installMode == "user" && ans.llmKey != "" {
+					if err := writeLLMKey(ans.llmKeyPath, ans.llmKey); err != nil {
+						return &runtimeErr{fmt.Errorf("write LLM key: %w", err)}
+					}
+					fmt.Fprintf(out, "  wrote LLM API key: %s (mode 0600)\n", ans.llmKeyPath)
+				}
 			}
 
 			if err := os.WriteFile(yamlPath, []byte(content), 0o640); err != nil {
@@ -199,84 +219,90 @@ is passed, init writes the static default config without prompting.
 
 // printNextSteps emits an operator-facing block describing the
 // commands they should run after `trollbridge init`. The output is
-// topology-aware: when the operator chose `remote`, the steps name
-// "the proxy host (a different machine than this one)" so the
-// operator does not assume the next commands run locally. CA
-// generation is always a separate `trollbridge ca init` step,
-// **never** inlined into `init` — `init` produces a yaml at no
-// privilege; CA generation needs root on the proxy host. (Issue
-// #19; v0.4.6/v0.4.7 attempts conflated the two.)
+// install-mode-aware (user vs daemon) AND topology-aware (does the
+// cert need to be transferred to consumer hosts?). CA generation
+// is always a separate `trollbridge ca init` step, never inlined
+// into `init` — see issue #19. The daemon never runs as root —
+// see packaging/systemd/trollbridge.service (User=trollbridge).
 func printNextSteps(out io.Writer, ans initAnswers, interactive bool, cFlag string) {
 	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
 	w("\nnext steps:\n")
 
-	// In non-interactive mode we don't know the topology or whether
-	// interception is on, so fall back to a generic flow.
+	// Non-interactive defaults to user-mode + local topology.
 	if !interactive {
-		w("  trollbridge ca init%s            # on the proxy host: generates the CA at /etc/trollbridge/\n", cFlag)
-		w("  trollbridge ca client-cert <op>%s # on the proxy host: issue an operator client cert\n", cFlag)
-		w("  trollbridge run%s                # on the proxy host: start the daemon\n", cFlag)
-		w("  trollbridge test https://example.com%s   # from a consumer host: probe one request\n", cFlag)
+		w("  trollbridge ca init%s                       # generates the CA next to your config\n", cFlag)
+		w("  trollbridge ca client-cert <op>%s            # issue an operator client cert\n", cFlag)
+		w("  trollbridge run%s                            # start the daemon\n", cFlag)
+		w("  trollbridge test https://example.com%s       # probe one request through the proxy\n", cFlag)
 		return
 	}
 
-	remote := ans.topology == "remote"
-	proxyHost := "the proxy host"
-	if !remote {
-		proxyHost = "this host (the proxy host)"
-	}
-
-	if ans.interception {
-		w("  # CA generation and API key writes are separate, root-only steps.\n")
-		w("  # `trollbridge init` writes only the yaml — the operator running it\n")
-		w("  # may not be on the proxy host or may not own /etc/trollbridge.\n")
-		w("\n")
-		w("  On %s, as root:\n", proxyHost)
-		w("    sudo trollbridge ca init%s              # generates /etc/trollbridge/trollbridge-ca.{crt,key}\n", cFlag)
-		w("    sudo trollbridge ca client-cert <op>%s   # issue an operator client cert\n", cFlag)
-		if ans.llmEnabled {
-			w("    # write your LLM API key (paste, then Ctrl-D):\n")
-			w("    sudo install -m 600 /dev/stdin /etc/trollbridge/llm.key\n")
-		}
-		w("\n")
-		if remote {
-			w("  Then transfer trollbridge-ca.crt to every consumer host:\n")
-			w("    scp <proxy-host>:/etc/trollbridge/trollbridge-ca.crt \\\n")
-			w("        <consumer-host>:/etc/trollbridge/trollbridge-ca.crt\n")
-			w("\n")
-			w("  On each consumer host:\n")
-			w("    sudo trollbridge ca install --apply        # installs the cert into the system trust store\n")
-		} else {
-			w("  On the same host (the consumer also runs here):\n")
-			w("    sudo trollbridge ca install --apply        # installs the cert into the system trust store\n")
-		}
-		w("\n")
-		w("  On %s, run the daemon:\n", proxyHost)
-		w("    trollbridge run%s\n", cFlag)
-		w("\n")
-		w("  From a consumer (set HTTP(S)_PROXY first):\n")
-		w("    eval \"$(trollbridge env%s)\"\n", cFlag)
-		w("    trollbridge test https://example.com%s\n", cFlag)
+	if ans.installMode == "daemon" {
+		printDaemonNextSteps(w, ans, cFlag)
 		return
 	}
+	printUserNextSteps(w, ans, cFlag)
+}
 
-	// Interception off → no CA distribution flow, but we still need
-	// to name where the daemon will run, and the controller still
-	// uses an mTLS CA so ca init is still required.
-	w("  On %s, as root (the controller still uses an mTLS CA):\n", proxyHost)
-	w("    sudo trollbridge ca init%s              # generates /etc/trollbridge/trollbridge-ca.{crt,key}\n", cFlag)
-	w("    sudo trollbridge ca client-cert <op>%s   # issue an operator client cert\n", cFlag)
+// printUserNextSteps renders the user-mode flow. No sudo anywhere;
+// every command runs as the operator. CA files end up next to the
+// yaml; the LLM key is already written if applicable.
+func printUserNextSteps(w func(string, ...any), ans initAnswers, cFlag string) {
+	w("  # user-mode: every step runs as you; no sudo anywhere.\n")
+	w("\n")
+	w("  trollbridge ca init%s                       # generates the CA next to your config\n", cFlag)
+	w("  trollbridge ca client-cert <op>%s            # issue an operator client cert\n", cFlag)
+	w("\n")
+	if ans.interception && ans.topology == "remote" {
+		w("  # consumers run on a different machine. Transfer the CA cert:\n")
+		w("  scp <init-dir>/trollbridge-ca.crt <consumer>:/tmp/trollbridge-ca.crt\n")
+		w("  # then on each consumer:\n")
+		w("  trollbridge ca install --apply --cert /tmp/trollbridge-ca.crt\n")
+		w("\n")
+	} else if ans.interception {
+		w("  trollbridge ca install --apply               # install the CA into your system trust store\n")
+		w("\n")
+	}
+	w("  trollbridge run%s\n", cFlag)
+	w("\n")
+	w("  # in another shell:\n")
+	w("  eval \"$(trollbridge env%s)\"\n", cFlag)
+	w("  trollbridge test https://example.com%s\n", cFlag)
+}
+
+// printDaemonNextSteps renders the daemon-mode flow. Setup steps
+// run via `sudo -u trollbridge` (after package install creates the
+// user/group/dirs); the daemon process itself runs as the
+// `trollbridge` user, never as root.
+func printDaemonNextSteps(w func(string, ...any), ans initAnswers, cFlag string) {
+	w("  # daemon-mode: trollbridge runs as the `trollbridge` system user (not root).\n")
+	w("  # The package install creates the user/group and pre-creates /etc/trollbridge\n")
+	w("  # and /var/log/trollbridge owned by it. Setup steps run via `sudo -u trollbridge`.\n")
+	w("\n")
+	w("  sudo -u trollbridge trollbridge ca init%s          # generates /etc/trollbridge/trollbridge-ca.{crt,key}\n", cFlag)
+	w("  sudo -u trollbridge trollbridge ca client-cert <op>%s\n", cFlag)
 	if ans.llmEnabled {
-		w("    # write your LLM API key (paste, then Ctrl-D):\n")
-		w("    sudo install -m 600 /dev/stdin /etc/trollbridge/llm.key\n")
+		w("  # write your LLM API key (paste, then Ctrl-D) as the trollbridge user:\n")
+		w("  sudo -u trollbridge install -m 600 /dev/stdin /etc/trollbridge/llm.key\n")
 	}
 	w("\n")
-	w("  On %s, run the daemon:\n", proxyHost)
-	w("    trollbridge run%s\n", cFlag)
+	if ans.interception && ans.topology == "remote" {
+		w("  # consumers run on a different machine. Transfer the CA cert:\n")
+		w("  scp <proxy-host>:/etc/trollbridge/trollbridge-ca.crt \\\n")
+		w("      <consumer>:/etc/trollbridge/trollbridge-ca.crt\n")
+		w("  # then on each consumer:\n")
+		w("  sudo trollbridge ca install --apply\n")
+		w("\n")
+	} else if ans.interception {
+		w("  sudo trollbridge ca install --apply               # install the CA into the system trust store\n")
+		w("\n")
+	}
+	w("  # start the daemon under systemd (the unit ships in packaging/systemd/):\n")
+	w("  sudo systemctl start trollbridge\n")
 	w("\n")
-	w("  From a consumer:\n")
-	w("    eval \"$(trollbridge env%s)\"\n", cFlag)
-	w("    trollbridge test https://example.com%s\n", cFlag)
+	w("  # in another shell, on a consumer:\n")
+	w("  eval \"$(trollbridge env%s)\"\n", cFlag)
+	w("  trollbridge test https://example.com%s\n", cFlag)
 }
 
 // writeLLMKey writes the API key to path with mode 0600. Creates

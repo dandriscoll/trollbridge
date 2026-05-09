@@ -12,7 +12,7 @@ Per `DESIGN.md` §14 the four supported topologies are:
 
 | Topology | Best for | Strength |
 |---|---|---|
-| Local laptop | Developer flow | Audit log; weak isolation |
+| User-mode local | Developer flow | Audit log; weak isolation |
 | Incus VM, host-side proxy | Coding agents in dev/CI | Strong isolation if firewall is binding |
 | Sidecar container | CI runners, ephemeral agents | Strong isolation via internal: true network |
 | System-wide host daemon | Shared agent network | Isolation only as good as per-agent identity |
@@ -21,13 +21,14 @@ Per `DESIGN.md` §14 the four supported topologies are:
 agent's environment MUST be configured so direct network egress
 goes nowhere except trollbridge.
 
-## Quickstart: local laptop
+## Quickstart: user-mode local
 
 ```sh
 make build                                # build bin/trollbridge
-./bin/trollbridge init -d ~/.trollbridge    # creates yaml + rules
-./bin/trollbridge validate -c ~/.trollbridge/trollbridge.yaml
-./bin/trollbridge run -c ~/.trollbridge/trollbridge.yaml
+./bin/trollbridge quickstart                # one-shot: write yaml + run
+# (or, for the full setup wizard:)
+./bin/trollbridge init                      # creates ./trollbridge.yaml
+./bin/trollbridge run                       # listens on 127.0.0.1:8080
 ```
 
 In another shell:

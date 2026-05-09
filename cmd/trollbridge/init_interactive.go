@@ -31,17 +31,19 @@ var readPassword = func(fd int) ([]byte, error) { return term.ReadPassword(fd) }
 // on the same host, reaches the proxy across a bridge), `remote`
 // (a different machine).
 type initAnswers struct {
+	installMode  string // "user" | "daemon" — see the install-mode question below
 	topology     string // "local" | "local-vm" | "remote"
-	mode         string // "default-deny" | "default-allow" | "default-ask"
+	mode         string // "default-deny" | "default-allow" | "default-ask"  (policy posture)
 	interception bool
 	caCertPath   string // absolute path to the CA cert when interception=on; empty otherwise
 	caKeyPath    string // absolute path to the CA key when interception=on; empty otherwise
+	auditPath    string // absolute path to the audit log
 	llmEnabled   bool
 	llmProvider  string // "anthropic" | "aoai" | <other string>
 	llmModel     string
 	llmEndpoint  string // operator-supplied URL when provider != "anthropic"; empty preserves the template default
-	llmKeyPath   string // set by the caller from <config-dir>/llm.key, not by a prompt
-	llmKey       string // present only if llmEnabled; the file gets written separately
+	llmKeyPath   string // absolute path to the LLM API key file
+	llmKey       string // present only if llmEnabled AND user-mode; init writes the file inline
 }
 
 // proxyBindFor maps a topology choice to the proxy bind string.
@@ -66,6 +68,7 @@ func proxyBindFor(topology string) string {
 func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 	r := bufio.NewReader(in)
 	ans := initAnswers{
+		installMode: "user",
 		topology:    "local",
 		mode:        "default-ask",
 		llmProvider: "anthropic",
@@ -75,8 +78,23 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 	fmt.Fprintln(out, "trollbridge init: guided setup. Press return to accept defaults shown in [brackets].")
 	fmt.Fprintln(out)
 
-	// 1. Topology — keyed on where the agent runs relative to the proxy.
-	fmt.Fprintln(out, "1) Where will the agent run?")
+	// 1. Install mode — the load-bearing axis. Picks where files
+	// live and which user the daemon will run as. Asked first
+	// because every later answer's defaults depend on it.
+	fmt.Fprintln(out, "1) How will trollbridge be installed?")
+	fmt.Fprintln(out, "   user    — for me, this user. Files under the current directory; runtime as you.")
+	fmt.Fprintln(out, "             No sudo needed at any step.")
+	fmt.Fprintln(out, "   daemon  — system service. Files under /etc/trollbridge/ and /var/log/trollbridge/;")
+	fmt.Fprintln(out, "             runtime as a `trollbridge` system user (not root). Setup uses sudo.")
+	ans.installMode = promptChoice(r, out,
+		"   install mode",
+		[]string{"user", "daemon"},
+		ans.installMode,
+	)
+	fmt.Fprintln(out)
+
+	// 2. Topology — keyed on where the agent runs relative to the proxy.
+	fmt.Fprintln(out, "2) Where will the agent run?")
 	fmt.Fprintln(out, "   local     — agent on this host (shares loopback with the proxy).")
 	fmt.Fprintln(out, "   local-vm  — agent in a VM on this host (reaches the proxy via a bridge).")
 	fmt.Fprintln(out, "   remote    — agent on a different machine.")
@@ -87,8 +105,8 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 	)
 	fmt.Fprintf(out, "   → proxy bind: %s\n\n", proxyBindFor(ans.topology))
 
-	// 2. Mode
-	fmt.Fprintln(out, "2) What policy posture should the proxy enforce?")
+	// 3. Policy posture
+	fmt.Fprintln(out, "3) What policy posture should the proxy enforce?")
 	fmt.Fprintln(out, "   default-deny  — only listed hosts forward; everything else is blocked.")
 	fmt.Fprintln(out, "   default-allow — only blocklisted hosts are denied; audit log captures the rest.")
 	fmt.Fprintln(out, "   default-ask   — unmatched requests are held for advisor or operator approval.")
@@ -99,18 +117,13 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 	)
 	fmt.Fprintln(out)
 
-	// 3. TLS interception
-	fmt.Fprintln(out, "3) Enable TLS interception? (lets trollbridge see HTTPS request paths/bodies; requires installing a CA in the client trust store.)")
+	// 4. TLS interception
+	fmt.Fprintln(out, "4) Enable TLS interception? (lets trollbridge see HTTPS request paths/bodies; requires installing a CA in the client trust store.)")
 	ans.interception = promptYesNo(r, out, "   interception", false)
-	if ans.interception {
-		fmt.Fprintln(out, "   → trollbridge will generate a CA at /etc/trollbridge/trollbridge-ca.{crt,key}.")
-		fmt.Fprintln(out, "   → If you are not running as root, re-run with sudo (the canonical")
-		fmt.Fprintln(out, "     location is required for cross-machine validity).")
-	}
 	fmt.Fprintln(out)
 
-	// 4. LLM advisor
-	fmt.Fprintln(out, "4) Enable the LLM advisor? (classifies ambiguous requests when policy says ask_llm.)")
+	// 5. LLM advisor
+	fmt.Fprintln(out, "5) Enable the LLM advisor? (classifies ambiguous requests when policy says ask_llm.)")
 	ans.llmEnabled = promptYesNo(r, out, "   advisor", false)
 	if ans.llmEnabled {
 		ans.llmProvider = promptChoice(r, out,
@@ -128,15 +141,21 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 			}
 			ans.llmEndpoint = ep
 		}
-		// We deliberately do NOT prompt for the API key here. The
-		// key file lives on the proxy host (which may not be the
-		// machine running `init`), at /etc/trollbridge/llm.key. The
-		// operator writes it themselves as a separate root-only step
-		// — see the next-steps output. Keeping the prompt and then
-		// failing on writeLLMKey when /etc/trollbridge is not
-		// writable was the v0.4.7 bug shape (issues #19, #21).
-		fmt.Fprintln(out, "   → on the proxy host (as root) you'll write the API key separately")
-		fmt.Fprintln(out, "     to /etc/trollbridge/llm.key (mode 0600). The yaml records that path.")
+		// In user-mode init writes the key file inline (no privilege
+		// needed). In daemon-mode the key file lives at /etc/
+		// trollbridge/llm.key and the operator writes it themselves
+		// (next-steps document the recipe) — `init` itself runs at no
+		// privilege, regardless of mode.
+		if ans.installMode == "user" {
+			key, err := promptSecret(in, r, out, "   API key (paste; will not be echoed back)")
+			if err != nil {
+				return ans, err
+			}
+			ans.llmKey = key
+		} else {
+			fmt.Fprintln(out, "   → daemon-mode: write the API key separately on the proxy host as the")
+			fmt.Fprintln(out, "     `trollbridge` user. See the next-steps for the exact recipe.")
+		}
 	}
 	fmt.Fprintln(out)
 
@@ -281,12 +300,15 @@ func applyAnswers(template string, ans initAnswers) string {
 	out = strings.Replace(out, "mode: default-ask", "mode: "+ans.mode, 1)
 	if ans.interception {
 		out = strings.Replace(out, "  enabled: false\n  ca:", "  enabled: true\n  ca:", 1)
-		if ans.caCertPath != "" {
-			out = strings.Replace(out, "    cert_path: "+DefaultCACertPath, "    cert_path: "+ans.caCertPath, 1)
-		}
-		if ans.caKeyPath != "" {
-			out = strings.Replace(out, "    key_path:  "+DefaultCAKeyPath, "    key_path:  "+ans.caKeyPath, 1)
-		}
+	}
+	if ans.caCertPath != "" {
+		out = strings.Replace(out, "    cert_path: "+DefaultCACertPath, "    cert_path: "+ans.caCertPath, 1)
+	}
+	if ans.caKeyPath != "" {
+		out = strings.Replace(out, "    key_path:  "+DefaultCAKeyPath, "    key_path:  "+ans.caKeyPath, 1)
+	}
+	if ans.auditPath != "" {
+		out = strings.Replace(out, "  audit_path:        /var/log/trollbridge/audit.jsonl", "  audit_path:        "+ans.auditPath, 1)
 	}
 	if ans.llmEnabled {
 		out = strings.Replace(out, "  enabled: false\n  provider: anthropic", "  enabled: true\n  provider: "+ans.llmProvider, 1)

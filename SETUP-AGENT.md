@@ -75,29 +75,38 @@ is on the proxy host or has root.
 Before running any command, get answers to these. Skipping any of
 them produces a configuration the user did not ask for.
 
-1. **Where will the agent run relative to trollbridge?** `local`
+1. **How will trollbridge be installed?** `user` mode runs as the
+   operator with files anchored at the init dir; no sudo at any
+   step. `daemon` mode runs as the `trollbridge` system user (never
+   root) with files under `/etc/trollbridge/` and
+   `/var/log/trollbridge/`; setup needs `sudo -u trollbridge`. The
+   choice drives every later default.
+2. **Where will the agent run relative to trollbridge?** `local`
    (same host as the proxy), `local-vm` (a VM on the same host;
    reaches the proxy across a bridge), or `remote` (a different
    machine). The choice drives the proxy's bind address. See
-   `docs/deploy.md` for the per-environment recipes (laptop, Incus
-   VM, sidecar, system daemon) that map onto these presets.
-2. **What is the agent's goal?** Pick one or more from the catalog
+   `docs/deploy.md` for the per-environment recipes (user-mode dev,
+   Incus VM, sidecar, system daemon) that map onto these presets.
+3. **What is the agent's goal?** Pick one or more from the catalog
    in *Goal mapping* below. The user's words ("block exfiltration",
    "let CI fetch npm and nothing else", "I want to review every new
    destination") map to specific knobs.
-3. **Should the LLM advisor be on?** It only fires on `ask_llm` rules
+4. **Should the LLM advisor be on?** It only fires on `ask_llm` rules
    or in `default-ask` mode. It cannot elevate above the
    deterministic policy. If on, get the provider and the model
    string. For `aoai` or `other` providers, also get the endpoint
-   URL (`init` will ask). The API key file is written next to
-   `trollbridge.yaml` (`<config-dir>/llm.key`, mode 0600).
-4. **Should TLS be intercepted?** Without interception, trollbridge
+   URL (`init` will ask). In user-mode `init` writes the API key
+   file inline at `<init-dir>/llm.key`; in daemon-mode the operator
+   writes it as `sudo -u trollbridge install -m 600 /dev/stdin
+   /etc/trollbridge/llm.key`.
+5. **Should TLS be intercepted?** Without interception, trollbridge
    sees only `host:port` for HTTPS — path, method, header, and body
    rules cannot fire. Default off; turn on only if the user accepts
    installing a CA cert into the client's trust store.
-5. **Where will the audit log live?** Default `/var/log/trollbridge/`
-   on system installs, `~/.trollbridge/` for laptop use. The user
-   may want it elsewhere (a dedicated volume, a syslog forwarder).
+6. **Where will the audit log live?** Default
+   `/var/log/trollbridge/` in daemon-mode, `<init-dir>/trollbridge.audit.jsonl`
+   in user-mode. The user may want it elsewhere (a dedicated volume,
+   a syslog forwarder).
 
 Write the answers somewhere the user can see them before you start
 configuring — chat is fine, a scratch file is better.
@@ -117,7 +126,7 @@ Verify `--help` lists the commands you expect: `run`, `init`,
 
 ## Step 2 — Initialize a config tree
 
-For laptop use, just run:
+For user-mode (single-user, no sudo), just run:
 
 ```sh
 ./bin/trollbridge init
