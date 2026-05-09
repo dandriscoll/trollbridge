@@ -28,7 +28,7 @@ func newCACmd() *cobra.Command {
 		Use:   "ca",
 		Short: "Manage trollbridge's local CA used for TLS interception.",
 	}
-	cmd.AddCommand(newCAInitCmd(), newCAExportCmd(), newCAInstallCmd(), newCARotateCmd(), newCAFlushCacheCmd(), newCAClientCertCmd())
+	cmd.AddCommand(newCAInitCmd(), newCAExportCmd(), newCAInstallCmd(), newCAUninstallCmd(), newCARotateCmd(), newCAFlushCacheCmd(), newCAClientCertCmd())
 	return cmd
 }
 

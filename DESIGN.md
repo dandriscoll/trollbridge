@@ -644,6 +644,29 @@ the system-trust-store install commands itself when invoked with
 - Step failure aborts the sequence and exits non-zero with the
   underlying tool's stderr surfaced to the operator.
 
+The reverse operation is `trollbridge ca uninstall`, symmetric in
+flag surface (`--config`, `--cert`, `--all-platforms`, `--apply`,
+`--yes`) and in privilege rules. Per platform it removes the
+destination cert from the trust-store drop-in directory and
+re-runs the trust-store rebuild:
+
+- Debian / Ubuntu / Mint / Alpine: `rm -f
+  /usr/local/share/ca-certificates/trollbridge-ca.crt &&
+  update-ca-certificates --fresh`.
+- Fedora / RHEL / CentOS / Rocky: `rm -f
+  /etc/pki/ca-trust/source/anchors/trollbridge-ca.crt &&
+  update-ca-trust`.
+- Arch / Manjaro: `trust anchor --remove trollbridge-ca`.
+- macOS system keychain: `security delete-certificate -c
+  trollbridge-ca /Library/Keychains/System.keychain`.
+- Windows: `certutil -delstore -f Root trollbridge-ca` (admin shell).
+
+The subcommand is print-only by default; `--apply` runs the
+sequence under the same root + confirmation rules as `ca install`.
+The cert resolution is informational — `uninstall` removes the
+*destination* file in the trust store, not the source cert at
+`interception.ca.cert_path`.
+
 ### 7.6 Inside an Incus VM
 
 For the recommended Incus deployment (§14):
