@@ -455,6 +455,19 @@ func renderResult(out io.Writer, req *http.Request, proxyAddr string, resp *http
 			w("  hint:       held — list pending via `trollbridge decisions --pending`, then `trollbridge approve <id>`\n")
 		}
 	}
+	// Closes #16: when the proxy declines a request, surface the
+	// most likely operator next step — adding the host to the
+	// allow list. We can give a host-specific recipe because the
+	// request URL is in hand.
+	if resp.StatusCode == 470 { // StatusTrollbridgeDeclined
+		host := req.URL.Hostname()
+		if host == "" {
+			host = req.URL.Host
+		}
+		w("  hint:       declined — to allow this host, type in the `trollbridge run` REPL:\n")
+		w("                  allow %s\n", host)
+		w("              or add `%s` under lists.allow in trollbridge.yaml.\n", host)
+	}
 
 	if len(resp.Header) > 0 {
 		keys := make([]string, 0, len(resp.Header))

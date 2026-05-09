@@ -37,4 +37,28 @@ func TestPrintRunStartupBanner_ReflectsBindAddress(t *testing.T) {
 	if !strings.Contains(out, "default-allow") {
 		t.Errorf("banner did not reflect mode; got:\n%s", out)
 	}
+	// default-allow should NOT trigger the deny-by-default note.
+	if strings.Contains(out, "first request will be declined") {
+		t.Errorf("non-deny mode should not print the deny note; got:\n%s", out)
+	}
+}
+
+// TestPrintRunStartupBanner_DefaultDenyNamesFirstRequestBehavior
+// closes issue #16: under default-deny, the operator's first
+// request will be declined (HTTP 470). The startup banner should
+// name this so the operator interprets the decline as policy
+// rather than a setup error.
+func TestPrintRunStartupBanner_DefaultDenyNamesFirstRequestBehavior(t *testing.T) {
+	var buf bytes.Buffer
+	printRunStartupBanner(&buf, "127.0.0.1:8080", "default-deny")
+	out := buf.String()
+	for _, want := range []string{
+		"first request will be declined",
+		"HTTP 470",
+		"allow <hostname>",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("default-deny banner missing %q in:\n%s", want, out)
+		}
+	}
 }

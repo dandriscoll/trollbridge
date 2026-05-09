@@ -176,6 +176,17 @@ func printRunStartupBanner(out io.Writer, addr, mode string) {
 	w("\n")
 	w("trollbridge is listening on %s (mode: %s).\n", addr, mode)
 	w("\n")
+	if mode == "default-deny" {
+		// Closes #16: a first-time operator under default-deny will
+		// see their first request declined. Tell them up front that
+		// the decline is the policy doing its job, and how to allow
+		// the host they want to test.
+		w("Note: default-deny means your first request will be declined (HTTP 470).\n")
+		w("That is the proxy enforcing the policy, not a bug. To allow a host,\n")
+		w("either add it to lists.allow in trollbridge.yaml or, in this REPL,\n")
+		w("type: allow <hostname>\n")
+		w("\n")
+	}
 	w("In another terminal, try:\n")
 	w("  trollbridge test https://example.com\n")
 	w("\n")

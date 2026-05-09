@@ -250,6 +250,46 @@ func TestRunTest_DenyPath_RendersTrollbridgeReason(t *testing.T) {
 	}
 }
 
+// TestRunTest_DeclinedPath_470_SurfacesAllowHint closes issue #16:
+// when the proxy declines a request (HTTP 470), the test command
+// should suggest adding the host to the allow list — the most
+// likely operator next step for a first-time decline.
+func TestRunTest_DeclinedPath_470_SurfacesAllowHint(t *testing.T) {
+	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Trollbridge-Reason", "declined")
+		w.WriteHeader(470)
+		fmt.Fprint(w, "trollbridge: request declined")
+	})
+	defer srv.Close()
+	host, port := splitHostPort(t, srv.URL)
+
+	cfgPath, auditPath := minimalTestYaml(t, host, port)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := buildTestRequest("http://forbidden.example/", "GET", nil, "", "")
+	appendAuditEntry(t, auditPath, audit.Entry{
+		Method: "GET", Host: "forbidden.example", Path: "/",
+		Decision: "deny", DecisionSource: "default", Reason: "default-deny",
+		ResponseStatus: 470,
+	})
+	var buf bytes.Buffer
+	if err := runTest(context.Background(), &buf, cfg, req, testOpts{ShowBody: 0}); err != nil {
+		t.Fatalf("runTest: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"hint:       declined",
+		"allow forbidden.example",
+		"lists.allow",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in 470-decline transcript:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunTest_HoldPath_471_SurfacesApproveHint(t *testing.T) {
 	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
 		// New wire contract (issue #11): 471, categorical Trollbridge-Reason.
