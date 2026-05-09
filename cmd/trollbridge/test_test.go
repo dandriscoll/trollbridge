@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -396,6 +397,106 @@ func TestRender_NoFmtSentinels_OnEmptyEntry(t *testing.T) {
 	}
 	if !strings.Contains(out, "decision:   - (source=- rule=-)") {
 		t.Errorf("expected dash-filled decision line; got:\n%s", out)
+	}
+}
+
+// TestTestCmd_NoArgs_ShowsUsageAndExamples closes issue #13: when
+// `trollbridge test` is run without a URL, the user gets a usage block
+// with concrete examples — not just cobra's terse "accepts 1 arg(s)".
+func TestTestCmd_NoArgs_ShowsUsageAndExamples(t *testing.T) {
+	cmd := newTestCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error from missing positional arg")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"takes one URL argument",
+		"Usage:",
+		"trollbridge test [flags] <url>",
+		"Examples:",
+		"https://api.github.com/zen",
+		"--print-curl",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("usage message missing %q in:\n%s", want, msg)
+		}
+	}
+}
+
+// TestTestCmd_TooManyArgs_ShowsUsage closes the second branch of
+// requireURLArg.
+func TestTestCmd_TooManyArgs_ShowsUsage(t *testing.T) {
+	cmd := newTestCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"http://a/", "http://b/"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for >1 positional args")
+	}
+	if !strings.Contains(err.Error(), "got 2") {
+		t.Errorf("expected 'got 2' in error; got: %v", err)
+	}
+}
+
+// TestRunTest_FailedDial_PrintsPreambleAndHint closes issue #13's
+// second branch: when client.Do fails (proxy unreachable), the
+// operator sees the preamble (so they know what was attempted) plus an
+// error: line and a hint: line pointing at the next operator step.
+func TestRunTest_FailedDial_PrintsPreambleAndHint(t *testing.T) {
+	// Allocate a TCP listener and immediately close it to get a
+	// reliably-unreachable port (less flaky than picking 1).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedPort := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	cfgPath, _ := minimalTestYaml(t, "127.0.0.1", closedPort)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := buildTestRequest("http://api.example.com/foo", "GET", nil, "", "")
+
+	var buf bytes.Buffer
+	runErr := runTest(context.Background(), &buf, cfg, req,
+		testOpts{ShowBody: 0, Timeout: 2 * time.Second, ConfigPath: cfgPath})
+	if runErr == nil {
+		t.Fatal("expected error from closed-port dial")
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"trollbridge test:",
+		"GET http://api.example.com/foo",
+		"via proxy:",
+		"config:",
+		"error:",
+		"hint:",
+		"trollbridge run",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in failure transcript:\n%s", want, out)
+		}
+	}
+}
+
+func TestAnnotateConfigLoadErr_FileMissing_AddsHint(t *testing.T) {
+	err := annotateConfigLoadErr("/nope/trollbridge.yaml", os.ErrNotExist)
+	if err == nil {
+		t.Fatal("nil error")
+	}
+	for _, want := range []string{"trollbridge.yaml not found", "/nope/trollbridge.yaml", "trollbridge init"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in: %s", want, err.Error())
+		}
 	}
 }
 

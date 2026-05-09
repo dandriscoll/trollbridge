@@ -80,14 +80,14 @@ The flag does not contact the proxy daemon; --show-body, --raw,
 The emitted curl command targets the proxy at the address from
 trollbridge.yaml; the host that runs the curl command must share
 network reachability with the daemon.`,
-		Args: cobra.ExactArgs(1),
+		Args: requireURLArg,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if configPath == "" {
 				configPath = defaultConfigPath()
 			}
 			cfg, err := config.Load(configPath)
 			if err != nil {
-				return &configErr{err}
+				return &configErr{annotateConfigLoadErr(configPath, err)}
 			}
 			req, err := buildTestRequest(args[0], method, headers, body, bodyFile)
 			if err != nil {
@@ -113,6 +113,7 @@ network reachability with the daemon.`,
 				Raw:        raw,
 				Timeout:    to,
 				NoDecision: noDecision,
+				ConfigPath: configPath,
 			})
 		},
 	}
@@ -134,6 +135,48 @@ type testOpts struct {
 	Raw        bool
 	Timeout    time.Duration
 	NoDecision bool
+	ConfigPath string
+}
+
+// requireURLArg replaces cobra.ExactArgs(1) so the user sees a usage
+// block and concrete examples — not just "accepts 1 arg(s), received N"
+// — when they run `trollbridge test` without (or with the wrong number
+// of) positional arguments. Returned error is wrapped to configErr by
+// the caller's RunE; here we just shape the message.
+func requireURLArg(cmd *cobra.Command, args []string) error {
+	if len(args) == 1 {
+		return nil
+	}
+	var lead string
+	if len(args) == 0 {
+		lead = "trollbridge test takes one URL argument; got none."
+	} else {
+		lead = fmt.Sprintf("trollbridge test takes exactly one URL argument; got %d.", len(args))
+	}
+	return fmt.Errorf(`%s
+
+Usage:
+  trollbridge test [flags] <url>
+
+Common flags:
+  -X, --method        HTTP method (default GET)
+  -H, --header        extra request header (repeatable, "KEY: VALUE")
+      --body          request body (string)
+      --body-file     request body (file path; mutually exclusive with --body)
+      --show-body N   max bytes of response body to print (default 4096)
+      --raw           print full response body (no truncation)
+      --timeout N     per-request timeout in seconds (0 = none)
+      --no-decision   skip audit-log decision correlation
+      --print-curl    emit equivalent curl commands instead of sending
+  -c, --config        trollbridge.yaml path (default ./trollbridge.yaml)
+
+Examples:
+  trollbridge test https://api.github.com/zen
+  trollbridge test -X POST -H 'Content-Type: application/json' \
+                  --body '{"q":"hi"}' https://api.openai.com/v1/chat/completions
+  trollbridge test --print-curl https://api.github.com/zen
+
+Run 'trollbridge test --help' for the full reference.`, lead)
 }
 
 func buildTestRequest(rawURL, method string, headers []string, body, bodyFile string) (*http.Request, error) {
@@ -215,13 +258,17 @@ func runTest(ctx context.Context, out io.Writer, cfg *config.Config, req *http.R
 		client.Timeout = opts.Timeout
 	}
 
+	printTestPreamble(out, req, proxyAddr, opts.ConfigPath, string(cfg.Mode), cfg.Interception.Enabled)
+
 	startedAt := time.Now()
 	if ctx != nil {
 		req = req.WithContext(ctx)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return &runtimeErr{annotateRequestErr(err, proxyAddr, cfg.Interception.Enabled, req.URL.Scheme)}
+		annotated := annotateRequestErr(err, proxyAddr, cfg.Interception.Enabled, req.URL.Scheme)
+		printTestError(out, annotated, proxyAddr, cfg.Interception.Enabled, req.URL.Scheme)
+		return &runtimeErr{annotated}
 	}
 	defer resp.Body.Close()
 
@@ -246,6 +293,89 @@ func runTest(ctx context.Context, out io.Writer, cfg *config.Config, req *http.R
 	}
 	renderResult(out, req, proxyAddr, resp, bodyBytes, opts, dec, decErr)
 	return nil
+}
+
+// printTestPreamble writes the "what we are about to do" block to out
+// before client.Do fires. It runs even on the failure path, so when the
+// daemon is down or the URL is wrong, the operator sees the attempted
+// request, the proxy address, and which config file was loaded —
+// without having to re-run with --verbose or read the source.
+func printTestPreamble(out io.Writer, req *http.Request, proxyAddr, configPath, mode string, interceptionOn bool) {
+	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
+	w("trollbridge test:\n")
+	w("  request:    %s %s\n", req.Method, req.URL.String())
+	w("  via proxy:  %s\n", proxyAddr)
+	cfgLine := configPath
+	if cfgLine == "" {
+		cfgLine = "(default)"
+	}
+	if mode != "" {
+		cfgLine = fmt.Sprintf("%s (mode=%s, interception=%s)", cfgLine, mode, onOff(interceptionOn))
+	}
+	w("  config:     %s\n", cfgLine)
+}
+
+// printTestError emits an "error:" line plus one or more "hint:" lines
+// pointing at the most likely operator next step for the failure shape.
+// The wrapped error is returned upstream for exit-code routing; this
+// function exists to give the operator a usable transcript on stdout.
+func printTestError(out io.Writer, err error, proxyAddr string, interceptionOn bool, scheme string) {
+	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
+	w("  status:     -\n")
+	w("  error:      %s\n", err.Error())
+	for _, h := range testFailureHints(err, proxyAddr, interceptionOn, scheme) {
+		w("  hint:       %s\n", h)
+	}
+}
+
+// testFailureHints maps a Do() failure to one or more concrete
+// operator hints. Tightly coupled to annotateRequestErr's substring
+// classification (we already inspected the error there).
+func testFailureHints(err error, proxyAddr string, interceptionOn bool, scheme string) []string {
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "cannot reach proxy at"):
+		return []string{
+			fmt.Sprintf("start the proxy: trollbridge run -c <path>"),
+			fmt.Sprintf("verify the bind address: grep '^proxy:' trollbridge.yaml — current expectation is %s", proxyAddr),
+		}
+	case strings.Contains(s, "TLS handshake to upstream failed"):
+		return []string{
+			"interception is off; the test client's TLS session terminates at the upstream — install the upstream's CA into the client's system trust, or set interception.enabled: true and install trollbridge-ca.crt instead",
+		}
+	case strings.Contains(s, "TLS handshake failed"):
+		return []string{
+			"check that interception.enabled matches whether trollbridge-ca.crt is installed in this client's trust store",
+		}
+	case strings.Contains(s, "context deadline exceeded"), strings.Contains(s, "Client.Timeout"):
+		return []string{
+			"per-request timeout fired before a response. Raise --timeout, or check whether the upstream is reachable from the host running trollbridge run",
+		}
+	case strings.Contains(s, "EOF"), strings.Contains(s, "connection reset by peer"):
+		return []string{
+			fmt.Sprintf("the proxy at %s closed the connection unexpectedly. tail trollbridge run's stderr — a daemon panic or crash will appear there", proxyAddr),
+		}
+	}
+	return []string{
+		fmt.Sprintf("re-run with --no-decision to skip the audit-log read; if that succeeds the failure is not in the request path itself"),
+	}
+}
+
+// annotateConfigLoadErr wraps config.Load failures with a hint when
+// the cause is "file not found at the resolved path" — by far the
+// most common first-run failure for `trollbridge test`.
+func annotateConfigLoadErr(path string, err error) error {
+	if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "no such file") {
+		return fmt.Errorf("trollbridge.yaml not found at %s: %w; run `trollbridge init` to scaffold one, or pass -c <path>", path, err)
+	}
+	return err
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 func annotateRequestErr(err error, proxyAddr string, interceptionOn bool, scheme string) error {
@@ -279,9 +409,10 @@ func loadInterceptionCA(path string) (*x509.CertPool, error) {
 
 func renderResult(out io.Writer, req *http.Request, proxyAddr string, resp *http.Response, body []byte, opts testOpts, dec *audit.Entry, decErr error) {
 	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
-	w("trollbridge test:\n")
-	w("  request:    %s %s\n", req.Method, req.URL.String())
-	w("  via proxy:  %s\n", proxyAddr)
+	// The "trollbridge test:" / "request:" / "via proxy:" preamble is
+	// printed by printTestPreamble before client.Do, so the operator
+	// sees what was attempted even when the call fails. renderResult
+	// only emits the post-response section.
 	w("  status:     %s\n", resp.Status)
 	if r := resp.Header.Get("Trollbridge-Reason"); r != "" {
 		w("  trollbridge: %s\n", r)
