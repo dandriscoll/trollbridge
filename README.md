@@ -50,8 +50,13 @@ Requires Go 1.26+.
 git clone https://github.com/dandriscoll/trollbridge.git
 cd trollbridge
 make build
-./bin/trollbridge init        # interactive in a TTY; default config otherwise
-./bin/trollbridge run         # listens on 127.0.0.1:8080
+
+# Fastest path (laptop dev, no controller, no TLS interception):
+./bin/trollbridge quickstart   # writes a minimal yaml + starts the proxy
+
+# Or the full setup:
+./bin/trollbridge init         # interactive in a TTY; default config otherwise
+./bin/trollbridge run          # listens on 127.0.0.1:8080
 ```
 
 When `run` starts on a terminal, it prints a copy-pasteable

@@ -113,6 +113,7 @@ conditions. See DESIGN.md for the full specification.`,
 	}
 
 	cmd.AddCommand(
+		op(newQuickstartCmd(), groupOperate),
 		op(newRunCmd(), groupOperate),
 		op(newSelftestCmd(), groupOperate),
 		op(newTestCmd(), groupOperate),
