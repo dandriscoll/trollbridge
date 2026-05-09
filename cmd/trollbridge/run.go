@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -15,6 +17,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/server"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func newRunCmd() *cobra.Command {
@@ -136,6 +139,10 @@ func newRunCmd() *cobra.Command {
 				)
 			}
 
+			if isStdoutTTY() {
+				printRunStartupBanner(cmd.OutOrStdout(), srv.Addr(), string(cfg.Mode))
+			}
+
 			if err := srv.ListenAndServe(ctx); err != nil {
 				return &runtimeErr{err}
 			}
@@ -146,4 +153,35 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the interactive console even when stdin is a tty")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "alias for --log-level=debug; emits per-request lifecycle records on the operational log")
 	return cmd
+}
+
+// isStdoutTTY reports whether the process's stdout is a terminal.
+// Wrapped as a var so tests can substitute a static value.
+var isStdoutTTY = func() bool {
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// printRunStartupBanner writes a one-screen "you're up — try this
+// next" block to out, suitable for human operators who just ran
+// `trollbridge run` on a terminal. The banner names the listen
+// address, the policy mode (so a default-deny operator knows why
+// their first curl will be refused), and copy-pasteable next-step
+// commands.
+//
+// The function is suppressed by the caller when stdout is not a
+// TTY; the structured "listening" log line still fires for
+// log-consumers in non-TTY environments.
+func printRunStartupBanner(out io.Writer, addr, mode string) {
+	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
+	w("\n")
+	w("trollbridge is listening on %s (mode: %s).\n", addr, mode)
+	w("\n")
+	w("In another terminal, try:\n")
+	w("  trollbridge test https://example.com\n")
+	w("\n")
+	w("Or wire up any HTTP client:\n")
+	w("  eval \"$(trollbridge env)\" && curl -sI https://example.com\n")
+	w("\n")
+	w("Stop with Ctrl-C.\n")
+	w("\n")
 }

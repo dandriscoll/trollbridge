@@ -50,35 +50,30 @@ Requires Go 1.26+.
 git clone https://github.com/dandriscoll/trollbridge.git
 cd trollbridge
 make build
-./bin/trollbridge --help
-./bin/trollbridge init -d ~/.trollbridge
-./bin/trollbridge validate -c ~/.trollbridge/trollbridge.yaml
-./bin/trollbridge run -c ~/.trollbridge/trollbridge.yaml
+./bin/trollbridge init        # interactive in a TTY; default config otherwise
+./bin/trollbridge run         # listens on 127.0.0.1:8080
 ```
 
-For verbose per-request operational output:
+When `run` starts on a terminal, it prints a copy-pasteable
+"try this next" banner naming the listen address and the
+quickest test recipe.
+
+In another shell, send a request through the proxy:
 
 ```sh
-./bin/trollbridge run -c ~/.trollbridge/trollbridge.yaml --verbose
-# or, equivalently:
-./bin/trollbridge --log-level=debug run -c ~/.trollbridge/trollbridge.yaml
-# or, via env (works for any subcommand):
-TROLLBRIDGE_LOG_LEVEL=debug ./bin/trollbridge run -c ~/.trollbridge/trollbridge.yaml
+trollbridge test https://example.com
+# or, for any HTTP client in this shell:
+eval "$(trollbridge env)" && curl -sI https://example.com
 ```
 
-Operational lines carry a `request_id=` field that correlates with
-the same field in the audit log.
+`trollbridge env` reads the listen address from `trollbridge.yaml`
+in the current directory and emits upper- and lowercase
+`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` exports.
 
-Then in another shell, wire the client's proxy env:
-
-```sh
-eval "$(trollbridge env -c ~/.trollbridge/trollbridge.yaml)"
-curl https://example.com   # subject to your policy
-```
-
-`trollbridge env` reads the listen address from your config and emits
-the upper- and lowercase `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`
-exports a client needs.
+For verbose per-request operational output, run with `--verbose`,
+`--log-level=debug`, or `TROLLBRIDGE_LOG_LEVEL=debug`. Operational
+lines carry a `request_id=` field that correlates with the audit
+log.
 
 ## Approvals TUI
 
