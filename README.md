@@ -120,11 +120,15 @@ The control plane requires mTLS, signed by the same CA used for
 TLS interception. First-run ritual:
 
 ```sh
-./bin/trollbridge ca init                         # generate the CA
-./bin/trollbridge ca client-cert <op-name>        # mint your client cert
-mv <op-name>.crt ~/.trollbridge/controller-client.crt
-mv <op-name>.key ~/.trollbridge/controller-client.key
+sudo trollbridge ca init                          # generates /etc/trollbridge/trollbridge-ca.{crt,key}
+sudo trollbridge ca client-cert <op-name>         # mint your client cert
+sudo mv <op-name>.crt ~/.trollbridge/controller-client.crt
+sudo mv <op-name>.key ~/.trollbridge/controller-client.key
 ```
+
+The CA always lives at `/etc/trollbridge/trollbridge-ca.{crt,key}` —
+the canonical path is the same on every machine, so a config
+shared across hosts works without per-host edits.
 
 The CLI auto-loads the cert/key from `~/.trollbridge/`; override with
 `TROLLBRIDGE_CONTROLLER_CERT` / `TROLLBRIDGE_CONTROLLER_KEY`.
@@ -146,10 +150,12 @@ trollbridge ca install --apply        # searches canonical paths;
 #   set interception.enabled: true in trollbridge.yaml
 ```
 
-`trollbridge ca install` searches, in priority order, for the cert
-at `/etc/trollbridge/trollbridge-ca.crt`,
-`/usr/local/share/ca-certificates/trollbridge-ca.crt`, then
-`./trollbridge-ca.crt`. Pass `--cert <path>` to override.
+`trollbridge ca install` searches `/etc/trollbridge/trollbridge-ca.crt`
+(the canonical default; cross-machine stable) and
+`/usr/local/share/ca-certificates/trollbridge-ca.crt`. Pass
+`--cert <path>` to override; the printed install commands always
+use the absolute form so they paste cleanly into any shell or any
+machine.
 
 When `trollbridge run` is interactive, it presents a console
 prompt for live edits to `lists.allow` / `lists.deny` in

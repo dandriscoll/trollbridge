@@ -11,6 +11,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// DefaultCACertPath and DefaultCAKeyPath are the canonical locations
+// for the trollbridge CA. They are absolute paths so the same value
+// is valid on every machine: an operator who scp's a config from one
+// host to another finds the cert at the same place. Cwd-relative
+// paths (the prior default) are not cross-machine valid and were
+// removed in v0.4.7 (issue #14).
+const (
+	DefaultCACertPath = "/etc/trollbridge/trollbridge-ca.crt"
+	DefaultCAKeyPath  = "/etc/trollbridge/trollbridge-ca.key"
+	DefaultCADir      = "/etc/trollbridge"
+)
+
 func newCACmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ca",
@@ -239,10 +251,10 @@ func resolveCAArgs(configPath, certPath, keyPath, kt string) (string, string, ca
 		}
 	}
 	if certPath == "" {
-		certPath = "trollbridge-ca.crt"
+		certPath = DefaultCACertPath
 	}
 	if keyPath == "" {
-		keyPath = "trollbridge-ca.key"
+		keyPath = DefaultCAKeyPath
 	}
 	if kt == "" {
 		kt = "rsa-4096"

@@ -38,6 +38,43 @@ func TestInitWritesOnlyTrollbridgeYaml(t *testing.T) {
 	}
 }
 
+// TestInit_DefaultConfigUsesCanonicalCAPaths closes issue #14:
+// the non-interactive default config must use absolute, cross-machine
+// stable cert/key paths — not cwd-relative — so a config copied
+// between hosts works the same way on each.
+func TestInit_DefaultConfigUsesCanonicalCAPaths(t *testing.T) {
+	dir := t.TempDir()
+
+	cmd := newInitCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"-d", dir, "--non-interactive"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	cfg, err := config.Load(filepath.Join(dir, "trollbridge.yaml"))
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if got := cfg.Interception.CA.CertPath; got != DefaultCACertPath {
+		t.Errorf("default cert_path = %q, want %q (issue #14: cross-machine stable)", got, DefaultCACertPath)
+	}
+	if got := cfg.Interception.CA.KeyPath; got != DefaultCAKeyPath {
+		t.Errorf("default key_path = %q, want %q (issue #14)", got, DefaultCAKeyPath)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "trollbridge.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, banned := range []string{"./trollbridge-ca.crt", "./trollbridge-ca.key"} {
+		if strings.Contains(string(body), banned) {
+			t.Errorf("default config still contains cwd-relative %q; should use canonical absolute path (issue #14)", banned)
+		}
+	}
+}
+
 // TestInitDefaultHasNoIdentitiesOrPolicy asserts the parsed default
 // config carries an empty identities slice and an empty policy
 // include list. Job 053: trim unmotivated defaults from init output.

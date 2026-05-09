@@ -68,12 +68,14 @@ controller:
 mode: default-ask
 
 # Interception — TLS termination for HTTPS visibility. CA paths are
-# also used by the controller's mTLS listener.
+# also used by the controller's mTLS listener. Paths are absolute and
+# cross-machine stable: every host that loads this config will look
+# in /etc/trollbridge/ for the CA. Override per-machine if needed.
 interception:
   enabled: false
   ca:
-    cert_path: ./trollbridge-ca.crt
-    key_path:  ./trollbridge-ca.key
+    cert_path: /etc/trollbridge/trollbridge-ca.crt
+    key_path:  /etc/trollbridge/trollbridge-ca.key
   leaf_key_type: rsa-4096
 
 # Logging.
@@ -142,17 +144,12 @@ is passed, init writes the static default config without prompting.
 				}
 				ans = a
 				if ans.interception {
-					// Resolve the CA paths to absolutes so the running
-					// daemon finds them regardless of cwd. The relative
-					// `./trollbridge-ca.{crt,key}` defaults in the
-					// template only worked when the operator stayed in
-					// the dir they ran init from.
-					if abs, err := filepath.Abs(filepath.Join(dir, "trollbridge-ca.crt")); err == nil {
-						ans.caCertPath = abs
-					}
-					if abs, err := filepath.Abs(filepath.Join(dir, "trollbridge-ca.key")); err == nil {
-						ans.caKeyPath = abs
-					}
+					// Per-host stability: pin the CA paths to the
+					// canonical absolute path used everywhere else in
+					// trollbridge. The same path is valid on every
+					// host the config is shared with — issue #14.
+					ans.caCertPath = DefaultCACertPath
+					ans.caKeyPath = DefaultCAKeyPath
 				}
 				if ans.llmEnabled {
 					// LLM key lives next to the yaml. The interactive
@@ -186,11 +183,13 @@ is passed, init writes the static default config without prompting.
 
 			caGenerated := false
 			if interactive && ans.interception {
-				certPath := filepath.Join(dir, "trollbridge-ca.crt")
-				keyPath := filepath.Join(dir, "trollbridge-ca.key")
+				certPath := DefaultCACertPath
+				keyPath := DefaultCAKeyPath
 				caObj, err := bootstrapCA(certPath, keyPath, force)
 				if err != nil {
-					return &runtimeErr{fmt.Errorf("bootstrap CA: %w", err)}
+					return &runtimeErr{fmt.Errorf(
+						"bootstrap CA at %s: %w. Rerun as: sudo trollbridge init  (the canonical location is required for cross-machine validity; pass --cert / --key on a separate `trollbridge ca init` to use a custom location)",
+						DefaultCADir, err)}
 				}
 				fmt.Fprintln(out, "   generated CA:")
 				fmt.Fprintln(out, "     cert:", certPath)
@@ -249,7 +248,14 @@ func writeLLMKey(path, key string) error {
 
 // bootstrapCA wraps ca.Init for the interactive interception path.
 // Exposed as a package-level var so tests can stub it without
-// running RSA-4096 keygen.
+// running RSA-4096 keygen and without writing to /etc/trollbridge/.
+//
+// The production version also ensures the parent directory exists
+// — required when the canonical path is /etc/trollbridge/ on a
+// fresh host.
 var bootstrapCA = func(certPath, keyPath string, force bool) (*ca.CA, error) {
+	if err := os.MkdirAll(filepath.Dir(certPath), 0o755); err != nil {
+		return nil, err
+	}
 	return ca.Init(certPath, keyPath, ca.KeyTypeRSA4096, force)
 }

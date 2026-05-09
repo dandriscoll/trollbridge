@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -230,21 +231,34 @@ By default --apply prompts for confirmation; pass --yes to skip.
 Cert resolution (in priority order):
   1. --cert <path>           explicit, overrides everything
   2. --config <yaml>         the file's interception.ca.cert_path,
-                             if it exists
+                             if the file exists
   3. canonical system paths  /etc/trollbridge/trollbridge-ca.crt,
                              then /usr/local/share/ca-certificates/
-                             trollbridge-ca.crt, then ./trollbridge-ca.crt
-                             — first that exists wins.
+                             trollbridge-ca.crt — first that exists
+                             wins. Cwd is intentionally NOT searched:
+                             cert paths must be cross-machine stable.
+
+Whatever path is selected, the printed install commands use its
+absolute form so they remain valid when pasted into another shell
+or another machine.
 
 In a remote-mode topology (the trollbridge daemon runs on a
 different host than the consumer apps), copy the cert from the
-daemon host to one of the canonical paths above; this command
-will find it without --cert.`,
+daemon host to /etc/trollbridge/trollbridge-ca.crt on the consumer;
+this command will find it without --cert.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfgCert, _ := configCertPath(configPath)
 			cp, err := findInstallCert(certPath, cfgCert, os.Stat)
 			if err != nil {
 				return &configErr{err}
+			}
+			// Resolve to absolute so the printed install commands
+			// work when pasted from any cwd or any machine. Defends
+			// against operators passing --cert ./relative/path —
+			// without this, the printed `cp ./relative/path …`
+			// would break on paste.
+			if abs, aerr := filepath.Abs(cp); aerr == nil {
+				cp = abs
 			}
 			if applyFlag {
 				return applyInstall(
@@ -271,16 +285,14 @@ will find it without --cert.`,
 
 // installCertCandidates returns the canonical paths `ca install`
 // searches, in priority order, when neither --cert nor a config-
-// derived path is supplied. The order matches the operator
-// expectation that an explicit system install (under
-// /etc/trollbridge/) wins over a Debian-style drop-in (under
-// /usr/local/share/ca-certificates/) which wins over a laptop-dev
-// cwd file.
+// derived path is supplied. Cwd-relative paths are deliberately NOT
+// in this list — the cert location must be cross-machine stable, and
+// `./trollbridge-ca.crt` is not (issue #14). An operator who wants a
+// non-canonical path passes --cert <abs>.
 func installCertCandidates() []string {
 	return []string{
-		"/etc/trollbridge/trollbridge-ca.crt",
+		DefaultCACertPath,
 		"/usr/local/share/ca-certificates/trollbridge-ca.crt",
-		"trollbridge-ca.crt",
 	}
 }
 
@@ -315,8 +327,9 @@ func findInstallCert(explicit, configCert string, statFn func(string) (os.FileIn
 		searched = append([]string{configCert + " (from --config)"}, candidates...)
 	}
 	return "", fmt.Errorf(
-		"trollbridge CA cert not found. Searched:\n  - %s\nFix: pass --cert <path>, or place the cert at /usr/local/share/ca-certificates/trollbridge-ca.crt (then re-run). In a remote-mode topology, scp the cert from the trollbridge host to one of the searched paths.",
+		"trollbridge CA cert not found. Searched:\n  - %s\nFix: place the cert at %s (the canonical location), or pass --cert <absolute path>. In a remote-mode topology, scp the cert from the trollbridge host to %s on the consumer host.",
 		strings.Join(searched, "\n  - "),
+		DefaultCACertPath, DefaultCACertPath,
 	)
 }
 

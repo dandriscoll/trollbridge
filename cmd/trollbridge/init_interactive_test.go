@@ -24,15 +24,18 @@ type bootstrapCall struct {
 func withStubbedBootstrapCA(t *testing.T) *bootstrapCall {
 	t.Helper()
 	rec := &bootstrapCall{}
+	// Production paths default to /etc/trollbridge/ for cross-
+	// machine stability — unwritable in a unit-test runner. The
+	// stub records the requested paths but materializes the cert
+	// in a per-test temp dir so ca.Init succeeds without root.
+	tmp := t.TempDir()
 	prev := bootstrapCA
 	bootstrapCA = func(certPath, keyPath string, force bool) (*ca.CA, error) {
 		rec.certPath = certPath
 		rec.keyPath = keyPath
 		rec.force = force
 		rec.called = true
-		// Return a real (small) CA so SHA256Fingerprint() works in
-		// the next-steps output.
-		return ca.Init(certPath, keyPath, ca.KeyTypeECDSAP256, force)
+		return ca.Init(filepath.Join(tmp, "ca.crt"), filepath.Join(tmp, "ca.key"), ca.KeyTypeECDSAP256, force)
 	}
 	t.Cleanup(func() { bootstrapCA = prev })
 	return rec
@@ -91,11 +94,12 @@ func TestApplyAnswers_InterceptionEnabled(t *testing.T) {
 }
 
 // TestApplyAnswers_InterceptionAbsoluteCAPaths is the regression
-// guard for the follow-on bug surfaced by issue #8: when init
-// writes the CA outside cwd (because the dir default now points at
-// $HOME/.config/trollbridge/), the YAML's interception.ca paths
-// must be absolute, not relative to cwd. Otherwise the running
-// daemon (started from a different cwd) would not find the CA.
+// guard that confirms operator-supplied CA paths replace the
+// canonical defaults verbatim. The default itself is now absolute
+// (DefaultCACertPath, issue #14), so there is no relative path to
+// regress to — the absence-assertion below is kept for defense-in-
+// depth in case the template is ever rewritten with a relative
+// default.
 func TestApplyAnswers_InterceptionAbsoluteCAPaths(t *testing.T) {
 	out := applyAnswers(defaultConfigYAML, initAnswers{
 		topology:     "local",
@@ -112,6 +116,11 @@ func TestApplyAnswers_InterceptionAbsoluteCAPaths(t *testing.T) {
 	}
 	if strings.Contains(out, "    cert_path: ./trollbridge-ca.crt") {
 		t.Errorf("relative cert_path default should have been replaced")
+	}
+	// And the canonical default must not survive after the operator
+	// supplied a custom path.
+	if strings.Contains(out, "    cert_path: "+DefaultCACertPath) {
+		t.Errorf("canonical default cert_path should have been replaced by the operator-supplied path")
 	}
 }
 
@@ -444,8 +453,11 @@ func TestInit_InteractiveInterceptionTriggersCABootstrap(t *testing.T) {
 	if !rec.called {
 		t.Fatalf("bootstrapCA was not called; output:\n%s", out.String())
 	}
-	wantCert := filepath.Join(dir, "trollbridge-ca.crt")
-	wantKey := filepath.Join(dir, "trollbridge-ca.key")
+	// Cross-machine stable canonical path — see ca.go DefaultCACertPath.
+	// The cert location is intentionally NOT under the init dir; it
+	// is the same on every host (issue #14).
+	wantCert := DefaultCACertPath
+	wantKey := DefaultCAKeyPath
 	if rec.certPath != wantCert || rec.keyPath != wantKey {
 		t.Errorf("bootstrapCA called with %q/%q, want %q/%q", rec.certPath, rec.keyPath, wantCert, wantKey)
 	}

@@ -263,9 +263,13 @@ exit, instead of being a silent degradation at runtime.
 Skip if the user did not opt in. Otherwise:
 
 ```sh
-./bin/trollbridge ca init                # writes trollbridge-ca.{crt,key}
-./bin/trollbridge ca export --out trollbridge-ca.crt
+sudo ./bin/trollbridge ca init           # writes /etc/trollbridge/trollbridge-ca.{crt,key}
+sudo ./bin/trollbridge ca export --out /etc/trollbridge/trollbridge-ca.crt
 ```
+
+The canonical path `/etc/trollbridge/` is required for
+cross-machine validity — every host that loads the same
+`trollbridge.yaml` will look there. The CA write requires root.
 
 Then **the user** installs `trollbridge-ca.crt` into the client's
 trust store (OS-level, language runtime, browser — depends on what
@@ -274,30 +278,26 @@ agent. Tell the user the exact path and ask them to confirm before
 flipping the switch.
 
 **Local-host install (proxy and consumer apps run on the same
-machine).** From the same directory `ca init` was run in, point
-the user at:
+machine).**
 
 ```sh
-./bin/trollbridge ca install            # prints the OS-tailored install commands
-./bin/trollbridge ca install --apply    # runs them (requires root)
+sudo trollbridge ca install --apply    # requires root
 ```
 
 **Remote-mode install (proxy and consumer apps on different hosts).**
 The CA was created on the trollbridge host; the consumer host must
 trust it.
 
-1. From the trollbridge host: `scp trollbridge-ca.crt
-   <consumer-host>:/usr/local/share/ca-certificates/trollbridge-ca.crt`
-   (or to `/etc/trollbridge/trollbridge-ca.crt` if the operator
-   prefers).
+1. From the trollbridge host: `scp /etc/trollbridge/trollbridge-ca.crt
+   <consumer-host>:/etc/trollbridge/trollbridge-ca.crt`
 2. From the consumer host: `sudo trollbridge ca install --apply`
-   — the install command searches canonical paths and will find
-   the cert without `--cert`.
+   — finds the cert at the canonical path without `--cert`.
 
-`trollbridge ca install` searches, in priority order:
-`/etc/trollbridge/trollbridge-ca.crt`,
-`/usr/local/share/ca-certificates/trollbridge-ca.crt`, then
-`./trollbridge-ca.crt`. Pass `--cert <path>` to override.
+`trollbridge ca install` searches `/etc/trollbridge/trollbridge-ca.crt`
+(the canonical default) and `/usr/local/share/ca-certificates/trollbridge-ca.crt`.
+Cwd is not searched: cert paths must be cross-machine stable.
+Pass `--cert <absolute path>` to override; printed install commands
+always use the absolute form so they paste cleanly into any shell.
 
 In `trollbridge.yaml`:
 

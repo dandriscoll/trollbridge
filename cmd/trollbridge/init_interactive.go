@@ -103,7 +103,9 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 	fmt.Fprintln(out, "3) Enable TLS interception? (lets trollbridge see HTTPS request paths/bodies; requires installing a CA in the client trust store.)")
 	ans.interception = promptYesNo(r, out, "   interception", false)
 	if ans.interception {
-		fmt.Fprintln(out, "   → trollbridge will generate a CA at ./trollbridge-ca.{crt,key} after writing the config.")
+		fmt.Fprintln(out, "   → trollbridge will generate a CA at /etc/trollbridge/trollbridge-ca.{crt,key}.")
+		fmt.Fprintln(out, "   → If you are not running as root, re-run with sudo (the canonical")
+		fmt.Fprintln(out, "     location is required for cross-machine validity).")
 	}
 	fmt.Fprintln(out)
 
@@ -276,10 +278,10 @@ func applyAnswers(template string, ans initAnswers) string {
 	if ans.interception {
 		out = strings.Replace(out, "  enabled: false\n  ca:", "  enabled: true\n  ca:", 1)
 		if ans.caCertPath != "" {
-			out = strings.Replace(out, "    cert_path: ./trollbridge-ca.crt", "    cert_path: "+ans.caCertPath, 1)
+			out = strings.Replace(out, "    cert_path: "+DefaultCACertPath, "    cert_path: "+ans.caCertPath, 1)
 		}
 		if ans.caKeyPath != "" {
-			out = strings.Replace(out, "    key_path:  ./trollbridge-ca.key", "    key_path:  "+ans.caKeyPath, 1)
+			out = strings.Replace(out, "    key_path:  "+DefaultCAKeyPath, "    key_path:  "+ans.caKeyPath, 1)
 		}
 	}
 	if ans.llmEnabled {
