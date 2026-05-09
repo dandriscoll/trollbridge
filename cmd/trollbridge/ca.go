@@ -57,11 +57,15 @@ files that way (or symlinking) is the simplest install.`,
 			if name == "" {
 				return &configErr{fmt.Errorf("usage: trollbridge ca client-cert <name>")}
 			}
-			cp, kp, _, err := resolveCAArgs(configPath, "", "", "")
+			// Honor cfg.Interception.LeafKeyType from the config so
+			// `client-cert` issues leaves with the same key shape the
+			// rest of the proxy uses (issue #28). resolveCAArgs reads
+			// the field; client-cert previously discarded it.
+			cp, kp, ktype, err := resolveCAArgs(configPath, "", "", "")
 			if err != nil {
 				return &configErr{err}
 			}
-			caObj, err := ca.Load(cp, kp, ca.KeyTypeRSA4096, 0)
+			caObj, err := ca.Load(cp, kp, ktype, 0)
 			if err != nil {
 				return &runtimeErr{fmt.Errorf("load CA: %w; fix: trollbridge ca init", err)}
 			}

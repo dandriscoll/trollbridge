@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
@@ -326,6 +327,64 @@ func TestCAClientCert_DefaultPathsAndKeyMode(t *testing.T) {
 	}
 	if mode := info.Mode().Perm(); mode != 0o600 {
 		t.Errorf("client-cert key file mode = %o, want 0600", mode)
+	}
+}
+
+// TestCAClientCert_HonorsConfigLeafKeyType closes issue #28: the
+// client-cert RunE used to hard-code ca.KeyTypeRSA4096 and ignore
+// cfg.Interception.LeafKeyType. With leaf_key_type: ecdsa-p256 in
+// the config, the issued leaf key must parse as ECDSA.
+func TestCAClientCert_HonorsConfigLeafKeyType(t *testing.T) {
+	dir := chdirTemp(t)
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+	runCAInit(t, certPath, keyPath)
+
+	// Author a yaml with leaf_key_type explicitly ECDSA.
+	cfgPath := filepath.Join(dir, "trollbridge.yaml")
+	body := strings.Join([]string{
+		"trollbridge_version: 3",
+		"proxy: lo:8080",
+		"control: 0",
+		"mode: default-deny",
+		"controller: {auth: mtls}",
+		"approvals: {timeout_seconds: 60, on_timeout: deny, max_pending: 16}",
+		"interception:",
+		"  ca:",
+		"    cert_path: " + certPath,
+		"    key_path: " + keyPath,
+		"  leaf_key_type: ecdsa-p256",
+		"logging:",
+		"  audit_path: " + filepath.Join(dir, "audit.log"),
+		"",
+	}, "\n")
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newCAClientCertCmd()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"-c", cfgPath, "agent"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("ca client-cert: %v\n%s", err, buf.String())
+	}
+
+	keyPEMBytes, err := os.ReadFile(filepath.Join(dir, "agent.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(keyPEMBytes)
+	if block == nil {
+		t.Fatalf("could not decode key PEM:\n%s", keyPEMBytes)
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse PKCS8 key: %v", err)
+	}
+	if _, ok := key.(*ecdsa.PrivateKey); !ok {
+		t.Errorf("issued leaf key type = %T, want *ecdsa.PrivateKey (config's leaf_key_type was ecdsa-p256)", key)
 	}
 }
 
