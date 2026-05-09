@@ -15,6 +15,9 @@ deps.
 - [`DESIGN.md`](DESIGN.md) — full design document.
 - [`AGENTS.md`](AGENTS.md) — instructions for an LLM coding agent
   asked to set up trollbridge for you.
+- [`docs/proxied-agent.md`](docs/proxied-agent.md) — short
+  system-prompt fragment for an agent whose egress *goes through*
+  trollbridge (separate audience from `AGENTS.md`).
 - [`docs/deploy.md`](docs/deploy.md) — deployment recipes.
 - [`config.example.yaml`](config.example.yaml) — annotated config;
   the simple authoring surface lives inline as `lists.allow` /
