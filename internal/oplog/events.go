@@ -34,4 +34,5 @@ const (
 	PhaseForwarded    = "forwarded"
 	PhaseResponse     = "response"
 	PhaseError        = "error"
+	PhaseUpstreamDial = "upstream_dial"
 )

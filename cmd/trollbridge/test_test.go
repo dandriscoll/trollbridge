@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/ca"
 	"github.com/dandriscoll/trollbridge/internal/config"
 )
 
@@ -543,10 +544,113 @@ func TestTestCmd_HelpListsFlags(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("--help: %v", err)
 	}
-	for _, want := range []string{"--method", "--header", "--body", "--show-body", "--raw", "--timeout", "--no-decision", "--print-curl"} {
+	for _, want := range []string{"--method", "--header", "--body", "--show-body", "--raw", "--timeout", "--no-decision", "--print-curl", "--ca-file", "--cacert", "--verbose"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("--help missing %q", want)
 		}
+	}
+}
+
+// TestRunTest_CAFile_Override closes issue #32: when --ca-file is set,
+// the test client uses that CA for HTTPS verification regardless of
+// cfg.Interception.Enabled. We verify the wiring by passing a
+// nonexistent path and asserting the error names --ca-file (so the
+// operator can disambiguate from a config-derived CA load).
+func TestRunTest_CAFile_NotFound_ErrorNamesFlag(t *testing.T) {
+	cfgPath, _ := minimalTestYaml(t, "127.0.0.1", 1)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := buildTestRequest("https://example.com/", "GET", nil, "", "")
+	var buf bytes.Buffer
+	err = runTest(context.Background(), &buf, cfg, req,
+		testOpts{CAFile: "/nonexistent/ca.crt", Timeout: 1 * time.Second})
+	if err == nil {
+		t.Fatal("expected error from --ca-file pointing at missing file")
+	}
+	if !strings.Contains(err.Error(), "--ca-file") {
+		t.Errorf("error should name --ca-file so the operator knows the source: %v", err)
+	}
+}
+
+// TestRunTest_CAFile_PreambleSurfacesPath: when --ca-file loads, the
+// preamble names the resolved CA path so the operator does not have
+// to re-run with -v to know which CA the test client trusted.
+func TestRunTest_CAFile_PreambleSurfacesPath(t *testing.T) {
+	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	defer srv.Close()
+	host, port := splitHostPort(t, srv.URL)
+
+	cfgPath, _ := minimalTestYaml(t, host, port)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Write a real PEM-shaped (but otherwise stub) cert so the loader
+	// accepts it. We use a self-signed leaf for content-only purposes.
+	caPath := filepath.Join(t.TempDir(), "operator-ca.crt")
+	if err := os.WriteFile(caPath, fixtureSelfSignedCA(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := buildTestRequest("http://x.example/", "GET", nil, "", "")
+	var buf bytes.Buffer
+	if err := runTest(context.Background(), &buf, cfg, req,
+		testOpts{CAFile: caPath, NoDecision: true, ShowBody: 0}); err != nil {
+		t.Fatalf("runTest: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "ca-file:") {
+		t.Errorf("preamble missing ca-file line:\n%s", out)
+	}
+	if !strings.Contains(out, caPath) {
+		t.Errorf("preamble does not name the resolved CA path %q:\n%s", caPath, out)
+	}
+	// interception is off in the test config — note must be present
+	if !strings.Contains(out, "interception is off") {
+		t.Errorf("preamble note about interception-off should fire:\n%s", out)
+	}
+}
+
+// TestRunTest_Verbose_AttachesTraceEvents closes issue #33: --verbose
+// emits connection-level events. We exercise the plain-HTTP path
+// against the fake-proxy server and assert at least one trace line
+// (DNS or connect) shows up before the response.
+func TestRunTest_Verbose_AttachesTraceEvents(t *testing.T) {
+	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	defer srv.Close()
+	host, port := splitHostPort(t, srv.URL)
+
+	cfgPath, _ := minimalTestYaml(t, host, port)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := buildTestRequest("http://x.example/", "GET", nil, "", "")
+	var buf bytes.Buffer
+	if err := runTest(context.Background(), &buf, cfg, req,
+		testOpts{Verbose: true, NoDecision: true, ShowBody: 0}); err != nil {
+		t.Fatalf("runTest: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "verbose:") {
+		t.Errorf("verbose header missing:\n%s", out)
+	}
+	// At least one of the connection-level events should fire on a
+	// real net.Dial against the fake server.
+	any := false
+	for _, want := range []string{"connect_start", "connect_done", "wrote_headers", "first_byte"} {
+		if strings.Contains(out, want) {
+			any = true
+			break
+		}
+	}
+	if !any {
+		t.Errorf("expected at least one trace event in:\n%s", out)
 	}
 }
 
@@ -727,6 +831,25 @@ func TestTestCmd_PrintCurl_NoDaemonNeeded(t *testing.T) {
 	if !strings.Contains(out, "https_proxy='http://127.0.0.1:1'") {
 		t.Errorf("expected env-prefix line with proxy URL; got:\n%s", out)
 	}
+}
+
+// fixtureSelfSignedCA generates a fresh CA via the internal/ca
+// package and returns its PEM-encoded cert bytes. Suitable for
+// passing to runTest as the --ca-file value when the test only
+// needs a parseable PEM (not a chain that validates an upstream).
+func fixtureSelfSignedCA(t *testing.T) []byte {
+	t.Helper()
+	dir := t.TempDir()
+	certPath := filepath.Join(dir, "ca.crt")
+	keyPath := filepath.Join(dir, "ca.key")
+	if _, err := ca.Init(certPath, keyPath, ca.KeyTypeECDSAP256, false); err != nil {
+		t.Fatalf("ca.Init: %v", err)
+	}
+	pem, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem
 }
 
 func splitHostPort(t *testing.T, urlStr string) (string, int) {

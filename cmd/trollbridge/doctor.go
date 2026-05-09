@@ -23,13 +23,19 @@ var doctorAdvisor advisor.Provider
 
 func newDoctorCmd() *cobra.Command {
 	var configPath string
+	var verbose bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check the YAML and test the LLM connection.",
 		Long: `Doctor is a pre-flight check: it loads trollbridge.yaml, parses the
 rule files and lists, and — when llm.enabled — performs a real
 classification call against the configured provider with a synthetic
-input. Each check prints a status line; non-zero exit on any FAIL.`,
+input. Each check prints a status line; non-zero exit on any FAIL.
+
+With --verbose, doctor emits connection-level events (DNS lookup,
+TCP connect, TLS handshake) around the LLM call so an operator
+chasing a timeout can attribute the cost to network setup vs.
+provider response time.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if configPath == "" {
 				configPath = defaultConfigPath()
@@ -98,6 +104,13 @@ input. Each check prints a status line; non-zero exit on any FAIL.`,
 
 			ctx, cancel := context.WithTimeout(cmd.Context(), time.Duration(cfg.LLM.TimeoutSeconds)*time.Second+2*time.Second)
 			defer cancel()
+			if verbose {
+				// Attach an httptrace so the operator sees connection
+				// events around the Classify call. Issue #33 audit.
+				stub, _ := http.NewRequestWithContext(ctx, "POST", endpoint, nil)
+				traced := attachVerboseTrace(out, stub, time.Now())
+				ctx = traced.Context()
+			}
 
 			input := advisor.Input{
 				Method:         "GET",
@@ -133,6 +146,7 @@ input. Each check prints a status line; non-zero exit on any FAIL.`,
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print connection-level events around the LLM Classify call")
 	return cmd
 }
 

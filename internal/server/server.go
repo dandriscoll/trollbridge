@@ -684,13 +684,37 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-connection upstream dial. The debug record (visible under
+	// `trollbridge run -v`) carries timing so an operator chasing a
+	// timeout can attribute it to network setup vs. tunnel payload.
+	// Issue #33 audit.
+	dialStart := time.Now()
 	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)),
 		time.Duration(s.cfg.Forwarder.ConnectionAcquireTimeoutSeconds)*time.Second)
+	dialMS := time.Since(dialStart).Milliseconds()
+	connectRlog := s.opLog.With(
+		"request_id", requestID,
+		"identity", identityID,
+		"method", "CONNECT",
+		"host", host,
+		"port", port,
+	)
 	if err != nil {
+		connectRlog.Debug("upstream_dial",
+			"phase", oplog.PhaseUpstreamDial,
+			"ok", false,
+			"duration_ms", dialMS,
+			"error", err.Error(),
+		)
 		http.Error(w, "trollbridge: upstream dial failed: "+err.Error(), http.StatusBadGateway)
 		s.writeAudit(req, decision, "", 0, http.StatusBadGateway, 0, time.Since(start), err.Error())
 		return
 	}
+	connectRlog.Debug("upstream_dial",
+		"phase", oplog.PhaseUpstreamDial,
+		"ok", true,
+		"duration_ms", dialMS,
+	)
 
 	clientConn, _, err := hj.Hijack()
 	if err != nil {

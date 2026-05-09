@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/audit"
@@ -43,6 +45,8 @@ func newTestCmd() *cobra.Command {
 		timeoutSec int
 		noDecision bool
 		printCurl  bool
+		caFile     string
+		verbose    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "test <url>",
@@ -117,6 +121,8 @@ network reachability with the daemon.`,
 				Timeout:    to,
 				NoDecision: noDecision,
 				ConfigPath: configPath,
+				CAFile:     caFile,
+				Verbose:    verbose,
 			})
 		},
 	}
@@ -130,6 +136,9 @@ network reachability with the daemon.`,
 	cmd.Flags().IntVar(&timeoutSec, "timeout", testDefaultTimeoutSec, "per-request timeout in seconds (0 = no timeout)")
 	cmd.Flags().BoolVar(&noDecision, "no-decision", false, "skip audit-log decision correlation")
 	cmd.Flags().BoolVar(&printCurl, "print-curl", false, "print an equivalent curl command (proxy env embedded, and bare) instead of sending the request")
+	cmd.Flags().StringVar(&caFile, "ca-file", "", "trust this CA file for HTTPS (overrides interception.ca.cert_path; useful when interception is off and the upstream uses a private CA)")
+	cmd.Flags().StringVar(&caFile, "cacert", "", "alias for --ca-file (curl convention)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print connection-level events (DNS, connect, TLS handshake, first byte) before the response")
 	return cmd
 }
 
@@ -139,6 +148,15 @@ type testOpts struct {
 	Timeout    time.Duration
 	NoDecision bool
 	ConfigPath string
+	// CAFile, when non-empty, overrides cfg.Interception.CA.CertPath
+	// for the test client's TLS trust pool. Loaded regardless of
+	// cfg.Interception.Enabled — testers who use private upstreams
+	// without interception still need a way to trust them.
+	CAFile string
+	// Verbose attaches an httptrace.ClientTrace to the request so
+	// connection-level events (DNS, connect, TLS handshake, first
+	// byte) print to out before the response section.
+	Verbose bool
 }
 
 // requireURLArg replaces cobra.ExactArgs(1) so the user sees a usage
@@ -241,10 +259,23 @@ func runTest(ctx context.Context, out io.Writer, cfg *config.Config, req *http.R
 	}
 
 	tlsCfg := &tls.Config{}
-	if cfg.Interception.Enabled && cfg.Interception.CA.CertPath != "" {
+	caSource := ""
+	switch {
+	case opts.CAFile != "":
+		// Operator override (--ca-file). Load regardless of whether
+		// interception is enabled in the config — the operator may
+		// be testing a private CA-signed upstream directly.
+		pool, perr := loadInterceptionCA(opts.CAFile)
+		if perr != nil {
+			return &configErr{fmt.Errorf("--ca-file %s: %w", opts.CAFile, perr)}
+		}
+		tlsCfg.RootCAs = pool
+		caSource = opts.CAFile
+	case cfg.Interception.Enabled && cfg.Interception.CA.CertPath != "":
 		pool, perr := loadInterceptionCA(cfg.Interception.CA.CertPath)
 		if perr == nil {
 			tlsCfg.RootCAs = pool
+			caSource = cfg.Interception.CA.CertPath
 		} else {
 			fmt.Fprintf(os.Stderr, "trollbridge test: warning: configured interception CA at %s is unreadable (%v); falling back to system trust\n",
 				cfg.Interception.CA.CertPath, perr)
@@ -262,10 +293,28 @@ func runTest(ctx context.Context, out io.Writer, cfg *config.Config, req *http.R
 	}
 
 	printTestPreamble(out, req, proxyAddr, opts.ConfigPath, string(cfg.Mode), cfg.Interception.Enabled)
+	if caSource != "" {
+		// Surface which CA is in play so an operator who mismatches
+		// --ca-file with the upstream's signing CA sees the source
+		// in the transcript without having to re-run with -v. When
+		// --ca-file is set but interception is off, tag the line so
+		// the operator knows it applies to direct (non-intercepted)
+		// HTTPS to a host whose chain this CA validates.
+		tag := "ca-file:    "
+		if opts.CAFile != "" && !cfg.Interception.Enabled {
+			tag = "ca-file:    "
+			fmt.Fprintf(out, "%s%s (note: interception is off; --ca-file applies to direct HTTPS only)\n", tag, caSource)
+		} else {
+			fmt.Fprintf(out, "%s%s\n", tag, caSource)
+		}
+	}
 
 	startedAt := time.Now()
 	if ctx != nil {
 		req = req.WithContext(ctx)
+	}
+	if opts.Verbose {
+		req = attachVerboseTrace(out, req, startedAt)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -383,6 +432,96 @@ func annotateRequestErr(err error, proxyAddr string, interceptionOn bool, scheme
 		return fmt.Errorf("TLS handshake failed: %w", err)
 	}
 	return err
+}
+
+// attachVerboseTrace returns req with an httptrace.ClientTrace
+// installed in its context that prints connection-level events
+// to out as they fire. The events cover: DNS lookup, TCP connect,
+// TLS handshake (peer name + version + cipher), wrote-headers,
+// and first-byte. Times are deltas from startedAt for consistency
+// with the existing preamble's wall-clock.
+//
+// On a proxied HTTPS request, the events that fire are for the
+// proxy CONNECT — Go's stdlib httptrace does NOT see the inner
+// upstream handshake when a proxy is in place. The header above
+// the trace lines names that explicitly so the operator does not
+// misread the timing.
+func attachVerboseTrace(out io.Writer, req *http.Request, startedAt time.Time) *http.Request {
+	var mu sync.Mutex
+	headerPrinted := false
+	w := func(format string, a ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !headerPrinted {
+			fmt.Fprintln(out, "  verbose:    (trace events below; under HTTPS via proxy these reflect the proxy CONNECT)")
+			headerPrinted = true
+		}
+		fmt.Fprintf(out, "    "+format, a...)
+	}
+	since := func() time.Duration { return time.Since(startedAt).Round(time.Millisecond) }
+
+	trace := &httptrace.ClientTrace{
+		DNSStart: func(info httptrace.DNSStartInfo) {
+			w("dns_start      %s\n", info.Host)
+		},
+		DNSDone: func(info httptrace.DNSDoneInfo) {
+			ips := make([]string, 0, len(info.Addrs))
+			for _, a := range info.Addrs {
+				ips = append(ips, a.IP.String())
+			}
+			if info.Err != nil {
+				w("dns_done       err=%v   t=%s\n", info.Err, since())
+				return
+			}
+			w("dns_done       %s   t=%s\n", strings.Join(ips, ","), since())
+		},
+		ConnectStart: func(network, addr string) {
+			w("connect_start  %s/%s\n", network, addr)
+		},
+		ConnectDone: func(network, addr string, err error) {
+			if err != nil {
+				w("connect_done   %s/%s err=%v   t=%s\n", network, addr, err, since())
+				return
+			}
+			w("connect_done   %s/%s   t=%s\n", network, addr, since())
+		},
+		TLSHandshakeStart: func() {
+			w("tls_start      t=%s\n", since())
+		},
+		TLSHandshakeDone: func(state tls.ConnectionState, err error) {
+			if err != nil {
+				w("tls_done       err=%v   t=%s\n", err, since())
+				return
+			}
+			w("tls_done       version=%s cipher=%s server=%q   t=%s\n",
+				tlsVersionName(state.Version), tls.CipherSuiteName(state.CipherSuite),
+				state.ServerName, since())
+		},
+		WroteHeaders: func() {
+			w("wrote_headers  t=%s\n", since())
+		},
+		GotFirstResponseByte: func() {
+			w("first_byte     t=%s\n", since())
+		},
+	}
+	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+}
+
+// tlsVersionName turns the integer version into the operator-friendly
+// label. Stdlib does not expose this directly via tls.VersionName as
+// of Go 1.21; future versions may simplify this.
+func tlsVersionName(v uint16) string {
+	switch v {
+	case tls.VersionTLS10:
+		return "TLS1.0"
+	case tls.VersionTLS11:
+		return "TLS1.1"
+	case tls.VersionTLS12:
+		return "TLS1.2"
+	case tls.VersionTLS13:
+		return "TLS1.3"
+	}
+	return fmt.Sprintf("0x%04x", v)
 }
 
 func loadInterceptionCA(path string) (*x509.CertPool, error) {

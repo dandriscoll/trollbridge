@@ -221,14 +221,39 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	}
 
 	// Allow: dial origin under TLS with verification, forward.
+	// Per-request upstream TLS dial. The debug record (visible under
+	// `trollbridge run -v`) carries timing so an operator chasing a
+	// timeout can attribute it to network setup vs. payload transfer.
+	// Issue #33 audit.
 	originAddr := net.JoinHostPort(host, strconv.Itoa(port))
 	dialer := &net.Dialer{Timeout: time.Duration(s.cfg.Forwarder.ConnectionAcquireTimeoutSeconds) * time.Second}
+	dialStart := time.Now()
 	originConn, err := tls.DialWithDialer(dialer, "tcp", originAddr, &tls.Config{
 		ServerName: host,
 		NextProtos: []string{"http/1.1"},
 		MinVersion: tls.VersionTLS12,
 		RootCAs:    s.originRoots,
 	})
+	dialMS := time.Since(dialStart).Milliseconds()
+	dialRlog := s.opLog.With(
+		"request_id", req.ID,
+		"host", host,
+		"port", port,
+	)
+	if err != nil {
+		dialRlog.Debug("upstream_dial",
+			"phase", oplog.PhaseUpstreamDial,
+			"ok", false,
+			"duration_ms", dialMS,
+			"error", err.Error(),
+		)
+	} else {
+		dialRlog.Debug("upstream_dial",
+			"phase", oplog.PhaseUpstreamDial,
+			"ok", true,
+			"duration_ms", dialMS,
+		)
+	}
 	if err != nil {
 		body := "trollbridge: origin TLS verification failed: " + err.Error()
 		resp := &http.Response{
