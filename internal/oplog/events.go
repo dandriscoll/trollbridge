@@ -20,6 +20,24 @@ const (
 	EventAuditWriteFailure        = "audit_write_failure"
 	EventAuditEncodeFailure       = "audit_encode_failure"
 	EventControlPlaneError        = "control_plane_error"
+
+	// Ask-case lifecycle events. INFO-level for state transitions an
+	// operator should see by default (no --verbose); WARN for refusal
+	// states. Closes #36.
+	EventRequestHeld    = "request_held"     // INFO; holdAndWait after Enqueue success
+	EventHoldApproved   = "hold_approved"    // INFO; Queue.Approve
+	EventHoldDenied     = "hold_denied"      // INFO; Queue.Deny
+	EventHoldTimedOut   = "hold_timed_out"   // INFO; Queue.Wait timeout branch
+	EventHoldQueueFull  = "hold_queue_full"  // WARN; holdAndWait on ErrFull
+
+	// Advisor lifecycle events. The *_fail constants formalize the
+	// string literals introduced by issue #25.
+	EventAdvisorConsulted    = "advisor_consulted"     // INFO
+	EventAdvisorClassified   = "advisor_classified"    // INFO
+	EventAdvisorWireFail     = "advisor_wire_fail"     // WARN; #25
+	EventAdvisorSchemaFail   = "advisor_schema_fail"   // WARN; #25
+	EventAdvisorUnknownFail  = "advisor_unknown_fail"  // WARN; #25
+	EventAdvisorWireResponse = "advisor_wire_response" // DEBUG; HTTPClassifier per call
 )
 
 // Phase-name constants for the operational log's `phase=` field on

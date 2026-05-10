@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/dandriscoll/trollbridge/internal/hostlist"
+	"github.com/dandriscoll/trollbridge/internal/oplog"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/types"
 	"github.com/spf13/cobra"
@@ -95,7 +97,7 @@ provider response time.`,
 			authName := authNameFor(translator)
 			prov := doctorAdvisor
 			if prov == nil {
-				prov = buildDoctorProvider(cfg.LLM, translator, endpoint)
+				prov = buildDoctorProvider(cfg.LLM, translator, endpoint, doctorOpLog())
 			}
 
 			printDoctorLine(out, "llm",
@@ -188,7 +190,7 @@ func classifyAdvisorErr(err error) string {
 	return "unknown"
 }
 
-func buildDoctorProvider(llm config.LLM, t advisor.Translator, endpoint string) advisor.Provider {
+func buildDoctorProvider(llm config.LLM, t advisor.Translator, endpoint string, opLog *slog.Logger) advisor.Provider {
 	apiKey := ""
 	if llm.APIKeyPath != "" {
 		if data, err := os.ReadFile(llm.APIKeyPath); err == nil {
@@ -201,7 +203,28 @@ func buildDoctorProvider(llm config.LLM, t advisor.Translator, endpoint string) 
 		Model:      llm.Model,
 		Translator: t,
 		Client:     &http.Client{Timeout: time.Duration(llm.TimeoutSeconds) * time.Second},
+		OpLog:      opLog,
 	}
+}
+
+// doctorOpLog returns a stderr-bound slog.Logger at the resolved
+// log level so that running `trollbridge doctor --log-level=debug`
+// surfaces the new HTTPClassifier `event=advisor_wire_response`
+// records to the operator. Closes #36 wire-detail closure.
+func doctorOpLog() *slog.Logger {
+	levelVar := new(slog.LevelVar)
+	levelVar.Set(slog.LevelInfo)
+	if resolvedLogLevel != nil {
+		levelVar.Set(*resolvedLogLevel)
+	}
+	lg, err := oplog.New(oplog.StderrSink, levelVar)
+	if err != nil {
+		// oplog.New only fails on file-sink misconfiguration; stderr
+		// is unconditionally available, so this branch should not
+		// trigger. Returning nil keeps the HTTPClassifier nil-safe.
+		return nil
+	}
+	return lg
 }
 
 func validDoctorEffect(e string) bool {

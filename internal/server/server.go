@@ -118,6 +118,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		time.Duration(cfg.Approvals.TimeoutSeconds)*time.Second,
 		cfg.Approvals.OnTimeout,
 	)
+	q.SetLogger(opLog)
 	t := sessions.New()
 	s := &Server{
 		cfg:      cfg,
@@ -538,12 +539,34 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 	}
 	id, ch, err := s.queue.Enqueue(req, base)
 	if err != nil {
+		s.opLog.Warn("approval queue full; refusing request",
+			"event", oplog.EventHoldQueueFull,
+			"request_id", req.ID,
+			"identity", req.IdentityID,
+			"method", req.Method,
+			"scheme", req.Scheme,
+			"host", req.Host,
+			"port", req.Port,
+			"max_pending", s.cfg.Approvals.MaxPending,
+			"error", err.Error())
 		return types.Decision{
 			Effect: types.EffectAskUserResolvedDeny,
 			Source: types.SourceApprovalQueue,
 			Reason: "approval queue full: " + err.Error(),
 		}
 	}
+	s.opLog.Info("request held pending approval",
+		"event", oplog.EventRequestHeld,
+		"request_id", req.ID,
+		"identity", req.IdentityID,
+		"method", req.Method,
+		"scheme", req.Scheme,
+		"host", req.Host,
+		"port", req.Port,
+		"hold_id", id,
+		"source", string(base.Source),
+		"rule_id", base.RuleID,
+		"reason", base.Reason)
 	ctx := s.rootCtx
 	if ctx == nil {
 		ctx = context.Background()
@@ -968,6 +991,7 @@ func buildAdvisorProvider(llm config.LLM, opLog *slog.Logger) advisor.Provider {
 		APIKey:     apiKey,
 		Model:      llm.Model,
 		Translator: translator,
+		OpLog:      opLog,
 	}
 }
 

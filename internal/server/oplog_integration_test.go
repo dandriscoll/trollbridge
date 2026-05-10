@@ -383,6 +383,205 @@ func TestOpLog_DebugCarriesLifecycleOnIntercepted(t *testing.T) {
 	}
 }
 
+// TestOpLog_InfoCarriesAskCaseLifecycle closes the INFO-level
+// requirement of issue #36: an operator running `trollbridge run`
+// without --verbose must see request_held + hold_approved (and the
+// other resolution events) at INFO level. Uses a default-ask proxy
+// with a goroutine that approves the hold via the queue API so the
+// full lifecycle (held → approved → forward) lands in the captured
+// op-log.
+func TestOpLog_InfoCarriesAskCaseLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer origin.Close()
+	originHost, _, _ := net.SplitHostPort(strings.TrimPrefix(origin.URL, "http://"))
+
+	rulesPath := filepath.Join(dir, "rules.yaml")
+	rules := fmt.Sprintf("- id: a\n  match: {host: %s}\n  effect: ask_user\n", originHost)
+	if err := os.WriteFile(rulesPath, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	auditPath := filepath.Join(dir, "audit.jsonl")
+
+	cfg := &config.Config{
+		Proxy:      config.Bind{Host: "127.0.0.1", Port: 0},
+		Mode:       "default-deny",
+		Logging:    config.Logging{AuditPath: auditPath, AuditBufferSize: 64, AuditOverflow: "block"},
+		Approvals:  config.Approvals{TimeoutSeconds: 5, OnTimeout: "deny", MaxPending: 4},
+		Forwarder:  config.Forwarder{MaxIdleConns: 8, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
+		Shutdown:   config.Shutdown{GraceSeconds: 5},
+		Identities: []config.Identity{{ID: "test-client", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
+		Policy:     config.Policy{Include: []string{rulesPath}},
+	}
+	cfg.TrollbridgeVersion = config.SchemaVersion
+
+	engine, err := policy.NewEngine(cfg.Mode, cfg.ResolveIncludePaths(rulesPath), policy.KnownModifiers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditLog, err := audit.New(auditPath, cfg.Logging.AuditBufferSize, audit.OverflowMode(cfg.Logging.AuditOverflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opLog, opBuf := captureOpLog(slog.LevelInfo)
+	auditLog.SetOpLog(opLog)
+	srv, err := NewWithLoggers(cfg, engine, auditLog, opLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = srv.ServeOnListener(ctx, ln)
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	// Background approver: poll the queue until our hold appears,
+	// then approve it. Mirrors what `trollbridge approve` does on
+	// the operator's side.
+	approverDone := make(chan struct{})
+	go func() {
+		defer close(approverDone)
+		for i := 0; i < 100; i++ {
+			pending := srv.Queue().Pending()
+			if len(pending) > 0 {
+				srv.Queue().Approve(pending[0].ID, "once")
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	pURL, _ := url.Parse("http://" + ln.Addr().String())
+	c := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(pURL)},
+		Timeout:   3 * time.Second,
+	}
+	resp, err := c.Get(origin.URL + "/x")
+	if err != nil {
+		t.Fatalf("client.Do: %v (oplog=%s)", err, opBuf.String())
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	<-approverDone
+	time.Sleep(50 * time.Millisecond) // let the post-resolve log writes drain
+
+	out := opBuf.String()
+	for _, sub := range []string{
+		`level=INFO`,
+		`event=request_held`,
+		`event=hold_approved`,
+	} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("INFO ask-case oplog missing %q; full output:\n%s", sub, out)
+		}
+	}
+}
+
+// TestServer_HoldQueueFull_WarnsAndRefuses closes the
+// `event=hold_queue_full` WARN requirement of issue #36. With
+// Approvals.MaxPending = 1, two concurrent ask_user-rule requests
+// produce one held request and one refusal at the queue boundary;
+// the refusal must surface a WARN record naming the failure mode.
+func TestServer_HoldQueueFull_WarnsAndRefuses(t *testing.T) {
+	dir := t.TempDir()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	defer origin.Close()
+	originHost, _, _ := net.SplitHostPort(strings.TrimPrefix(origin.URL, "http://"))
+
+	rulesPath := filepath.Join(dir, "rules.yaml")
+	rules := fmt.Sprintf("- id: a\n  match: {host: %s}\n  effect: ask_user\n", originHost)
+	if err := os.WriteFile(rulesPath, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	auditPath := filepath.Join(dir, "audit.jsonl")
+
+	cfg := &config.Config{
+		Proxy:      config.Bind{Host: "127.0.0.1", Port: 0},
+		Mode:       "default-deny",
+		Logging:    config.Logging{AuditPath: auditPath, AuditBufferSize: 64, AuditOverflow: "block"},
+		Approvals:  config.Approvals{TimeoutSeconds: 10, OnTimeout: "deny", MaxPending: 1},
+		Forwarder:  config.Forwarder{MaxIdleConns: 8, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
+		Shutdown:   config.Shutdown{GraceSeconds: 5},
+		Identities: []config.Identity{{ID: "test-client", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
+		Policy:     config.Policy{Include: []string{rulesPath}},
+	}
+	cfg.TrollbridgeVersion = config.SchemaVersion
+
+	engine, err := policy.NewEngine(cfg.Mode, cfg.ResolveIncludePaths(rulesPath), policy.KnownModifiers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditLog, err := audit.New(auditPath, cfg.Logging.AuditBufferSize, audit.OverflowMode(cfg.Logging.AuditOverflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opLog, opBuf := captureOpLog(slog.LevelInfo)
+	auditLog.SetOpLog(opLog)
+	srv, err := NewWithLoggers(cfg, engine, auditLog, opLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = srv.ServeOnListener(ctx, ln)
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	pURL, _ := url.Parse("http://" + ln.Addr().String())
+	c := &http.Client{
+		Transport: &http.Transport{Proxy: http.ProxyURL(pURL), DisableKeepAlives: true},
+		Timeout:   2 * time.Second,
+	}
+	// Send the first request in a goroutine so it occupies the
+	// single hold slot. Send the second after a short delay; it
+	// hits ErrFull and refuses synchronously.
+	go func() {
+		req, _ := http.NewRequest("GET", origin.URL+"/first", nil)
+		_, _ = c.Do(req)
+	}()
+	time.Sleep(150 * time.Millisecond)
+	resp, err := c.Get(origin.URL + "/second")
+	if err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	out := opBuf.String()
+	if !strings.Contains(out, "level=WARN") {
+		t.Errorf("expected a WARN record; oplog:\n%s", out)
+	}
+	if !strings.Contains(out, "event=hold_queue_full") {
+		t.Errorf("expected event=hold_queue_full; oplog:\n%s", out)
+	}
+}
+
 // TestIntercept_TLSHandshakeFailureProducesAuditEntry closes the
 // gap noted in 002-brief item 4: a client that completes the
 // CONNECT handshake but then sends garbage bytes (instead of a

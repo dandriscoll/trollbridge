@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dandriscoll/trollbridge/internal/oplog"
 	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
@@ -100,9 +101,12 @@ type Service struct {
 }
 
 // Logger is a tiny subset of *slog.Logger used by the advisor for
-// failure tagging. Defined here so the advisor package does not
-// import log/slog directly through every call site.
+// lifecycle (Info), wire-detail (Debug), and failure (Warn) events.
+// *slog.Logger satisfies it. Defined here so the advisor package
+// does not import log/slog directly through every call site.
 type Logger interface {
+	Debug(msg string, args ...any)
+	Info(msg string, args ...any)
 	Warn(msg string, args ...any)
 }
 
@@ -182,6 +186,16 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 		in.DenyList = capList(lists.Deny, 200)
 	}
 
+	if s.opLog != nil {
+		s.opLog.Info("advisor consulted",
+			"event", oplog.EventAdvisorConsulted,
+			"request_id", req.ID,
+			"identity", req.IdentityID,
+			"method", req.Method,
+			"scheme", req.Scheme,
+			"host", req.Host,
+			"port", req.Port)
+	}
 	cctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 	out, err := s.prov.Classify(cctx, in)
@@ -198,6 +212,16 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 			Reason: "advisor validation failed: " + err.Error(),
 		}, ""
 	}
+	if s.opLog != nil {
+		s.opLog.Info("advisor classified",
+			"event", oplog.EventAdvisorClassified,
+			"request_id", req.ID,
+			"host", req.Host,
+			"effect", string(d.Effect),
+			"confidence", string(out.Confidence),
+			"scope", out.Scope,
+			"advisor_id", advisorID)
+	}
 	s.cache.put(cacheKey, cacheValue{decision: d, advisorID: advisorID})
 	return d, advisorID
 }
@@ -212,12 +236,12 @@ func (s *Service) logFailure(err error, req *types.RequestEvent) {
 	if s.opLog == nil || err == nil {
 		return
 	}
-	event := "advisor_unknown_fail"
+	event := oplog.EventAdvisorUnknownFail
 	switch {
 	case errors.Is(err, ErrAdvisorWire):
-		event = "advisor_wire_fail"
+		event = oplog.EventAdvisorWireFail
 	case errors.Is(err, ErrAdvisorSchema):
-		event = "advisor_schema_fail"
+		event = oplog.EventAdvisorSchemaFail
 	}
 	s.opLog.Warn("advisor classify failed",
 		"event", event,
@@ -398,6 +422,13 @@ type HTTPClassifier struct {
 	Model      string
 	Translator Translator
 	Client     *http.Client
+	// OpLog, when set, receives a Debug `event=advisor_wire_response`
+	// record per Classify call carrying method, url, status, and a
+	// truncated body sample — so an operator running with
+	// --log-level=debug can diagnose 4xx/5xx wire failures without
+	// re-running `trollbridge doctor` and without parsing the
+	// returned err.Error() blob. Closes #36 wire-detail closure.
+	OpLog Logger
 }
 
 // Classify implements Provider. Translator builds the wire body
@@ -422,14 +453,46 @@ func (h *HTTPClassifier) Classify(ctx context.Context, in Input) (Output, error)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
+	dialStart := time.Now()
 	resp, err := h.Client.Do(req)
+	dialMS := time.Since(dialStart).Milliseconds()
 	if err != nil {
+		if h.OpLog != nil {
+			h.OpLog.Debug("advisor wire transport error",
+				"event", oplog.EventAdvisorWireResponse,
+				"method", "POST",
+				"url", h.Endpoint,
+				"duration_ms", dialMS,
+				"error", err.Error())
+		}
 		return Output{}, fmt.Errorf("%w: %v", ErrAdvisorWire, err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if h.OpLog != nil {
+			h.OpLog.Debug("advisor wire response body read error",
+				"event", oplog.EventAdvisorWireResponse,
+				"method", "POST",
+				"url", h.Endpoint,
+				"status", resp.StatusCode,
+				"duration_ms", dialMS,
+				"error", err.Error())
+		}
 		return Output{}, fmt.Errorf("%w: read response: %v", ErrAdvisorWire, err)
+	}
+	if h.OpLog != nil {
+		args := []any{
+			"event", oplog.EventAdvisorWireResponse,
+			"method", "POST",
+			"url", h.Endpoint,
+			"status", resp.StatusCode,
+			"duration_ms", dialMS,
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			args = append(args, "body_sample", truncateForLog(string(respBody), 256))
+		}
+		h.OpLog.Debug("advisor wire response", args...)
 	}
 	return h.Translator.ParseResponse(resp.StatusCode, respBody)
 }
