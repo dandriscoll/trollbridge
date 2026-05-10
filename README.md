@@ -244,10 +244,9 @@ allow:
 (3 patterns)
 ```
 
-Mutations write back to trollbridge.yaml in place via a
-yaml.v3 Node-API edit — comments outside the `lists:`
-subtree survive. The running daemon re-parses the file
-after each mutation. List mutation is human-only — the
+Mutations rewrite trollbridge.yaml in place; comments outside
+the `lists:` subtree survive. The running daemon re-parses the
+file after each mutation. List mutation is human-only — the
 LLM advisor cannot modify `lists.allow` / `lists.deny`
 under any circumstance.
 
