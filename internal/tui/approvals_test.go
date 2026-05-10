@@ -498,6 +498,51 @@ func TestRender_BothPanesHaveBorders(t *testing.T) {
 	}
 }
 
+// TestRender_NoTrailingNewlineFitsScreen pins the #50 fix: a render
+// frame must not end with a line terminator. With a trailing \n, the
+// terminal cursor advances past the bottom row and the screen scrolls
+// up by one line — dropping the top border off-screen and producing
+// the visible "one line down, one line up" twitch in tmux at every
+// 1.5 s refresh tick.
+//
+// The test drives render() directly (not runLoop) because the
+// trailing-newline contract is a property of one frame; runLoop emits
+// many concatenated frames.
+func TestRender_NoTrailingNewlineFitsScreen(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rows int
+	}{
+		{"24-row terminal", 24},
+		{"30-row terminal", 30},
+		{"40-row terminal", 40},
+		{"odd row count", 31},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := Model{
+				Cols:    100,
+				Rows:    tc.rows,
+				Focused: PaneApprovals,
+				Console: ConsoleModel{Prompt: "trollbridge> "},
+			}
+			var buf strings.Builder
+			if err := render(&buf, m); err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			frame := buf.String()
+			if strings.HasSuffix(frame, "\n") {
+				t.Errorf("frame ends with a line terminator (would scroll the top row off-screen)")
+			}
+			// The frame should contain m.Rows-1 inter-line newlines (one
+			// between each adjacent pair of rendered rows). Any other count
+			// means the frame doesn't fit the screen.
+			if got, want := strings.Count(frame, "\n"), tc.rows-1; got != want {
+				t.Errorf("frame has %d newlines; want %d (m.Rows-1)", got, want)
+			}
+		})
+	}
+}
+
 // TestInProcessClient_RoundtripsAgainstRealQueue closes the gap that
 // ships the proxy-host wedge described in job 091: the embedded TUI
 // in `trollbridge run` shares a process with the daemon and must be

@@ -445,7 +445,21 @@ func render(out io.Writer, m Model) error {
 	renderApprovalsPane(&b, m, topRows)
 	renderConsolePane(&b, m, bottomRows)
 
-	_, err := io.WriteString(out, b.String())
+	// Strip the very last line terminator so the cursor settles on
+	// the bottom row instead of one past it. With the trailing \n the
+	// terminal scrolls up by one row at the end of every frame —
+	// dropping the top border off-screen and producing the visible
+	// "one line down, one line up" twitch in tmux at every refresh
+	// tick (closes #50).
+	frame := b.String()
+	switch {
+	case strings.HasSuffix(frame, "\r\n"):
+		frame = frame[:len(frame)-2]
+	case strings.HasSuffix(frame, "\n"):
+		frame = frame[:len(frame)-1]
+	}
+
+	_, err := io.WriteString(out, frame)
 	return err
 }
 
