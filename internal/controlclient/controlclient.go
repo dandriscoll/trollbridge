@@ -104,6 +104,25 @@ func controllerURL(cfg *config.Config, path string) string {
 	return "https://" + cfg.Control.ClientAddr() + path
 }
 
+// Preflight tries to construct the mTLS client without sending a
+// request — it loads the operator cert + key and the trollbridge
+// CA, returning the same error httpsClient would return on the
+// first real call. Used by `trollbridge attach` to fail loudly to
+// stderr *before* the TUI takes over the screen, so the operator
+// is not stuck reading a truncated footer line (#46).
+func Preflight(cfg *config.Config) error {
+	_, err := httpsClient(cfg)
+	return err
+}
+
+// CertPaths returns the operator-cert / key / CA paths the client
+// would use, applying the same env-var-then-default resolution as
+// httpsClient. Returned for diagnostic messages only — callers
+// must not load files directly; use Preflight to validate.
+func CertPaths(cfg *config.Config) (cert, key, ca string, err error) {
+	return resolveCertPaths(cfg)
+}
+
 // httpsClient returns an http.Client configured with the operator's
 // client cert + the daemon's CA. Cert and CA paths come from env
 // vars (TROLLBRIDGE_CONTROLLER_CERT / _KEY / _CA) or, when unset, the

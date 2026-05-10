@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"os"
 
 	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/dandriscoll/trollbridge/internal/console"
+	"github.com/dandriscoll/trollbridge/internal/controlclient"
 	"github.com/dandriscoll/trollbridge/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -47,6 +50,18 @@ Keys:
 			if err != nil {
 				return &configErr{err}
 			}
+			// Fail loudly to stderr *before* entering the TUI when
+			// the mTLS client cert / key / CA cannot be loaded.
+			// The TUI footer truncates long error messages at
+			// terminal width, hiding both the path the binary
+			// expected and the suggested fix command — so an
+			// operator who hits this gets stuck staring at a
+			// "load operator cert (/home/dan/.trollbridge/controlle…"
+			// fragment with no way to dismiss or read more (#46).
+			if err := controlclient.Preflight(cfg); err != nil {
+				printAttachCertError(cmd.ErrOrStderr(), cfg, err)
+				return &configErr{err}
+			}
 			backend := &console.Backend{LocalOnly: false}
 			if err := tui.RunOperator(cmd.Context(), tui.NewHTTPClient(cfg), os.Stdin, os.Stdout, backend, ""); err != nil {
 				return &runtimeErr{err}
@@ -56,4 +71,37 @@ Keys:
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	return cmd
+}
+
+// printAttachCertError writes a multi-line, untruncated description
+// of an mTLS preflight failure to stderr. Names the paths tried,
+// whether each came from a TROLLBRIDGE_CONTROLLER_* env override or
+// the default ~/.trollbridge/ location, and the operator's next
+// steps. Operators see this in their normal shell — not in the
+// TUI footer that would truncate at terminal width.
+func printAttachCertError(out io.Writer, cfg *config.Config, cause error) {
+	cert, key, ca, _ := controlclient.CertPaths(cfg)
+	envSet := func(name string) string {
+		if v, ok := os.LookupEnv(name); ok && v != "" {
+			return " (from $" + name + ")"
+		}
+		return ""
+	}
+	fmt.Fprintln(out, "trollbridge attach: cannot reach the control plane.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  cause:")
+	fmt.Fprintf(out, "    %s\n", cause.Error())
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  paths tried:")
+	fmt.Fprintf(out, "    cert: %s%s\n", cert, envSet("TROLLBRIDGE_CONTROLLER_CERT"))
+	fmt.Fprintf(out, "    key:  %s%s\n", key, envSet("TROLLBRIDGE_CONTROLLER_KEY"))
+	fmt.Fprintf(out, "    ca:   %s%s\n", ca, envSet("TROLLBRIDGE_CONTROLLER_CA"))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  fix:")
+	fmt.Fprintln(out, "    1. On the proxy host, generate an operator client cert:")
+	fmt.Fprintln(out, "         trollbridge ca client-cert <name>")
+	fmt.Fprintln(out, "    2. Copy controller-client.crt and controller-client.key")
+	fmt.Fprintln(out, "       into ~/.trollbridge/ on this host (or set the")
+	fmt.Fprintln(out, "       TROLLBRIDGE_CONTROLLER_CERT/_KEY env vars).")
+	fmt.Fprintln(out, "    3. Re-run `trollbridge attach`.")
 }
