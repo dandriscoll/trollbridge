@@ -455,7 +455,7 @@ func TestOpLog_InfoCarriesAskCaseLifecycle(t *testing.T) {
 		for i := 0; i < 100; i++ {
 			pending := srv.Queue().Pending()
 			if len(pending) > 0 {
-				srv.Queue().Approve(pending[0].ID, "once")
+				srv.Queue().Approve(pending[0].ID, "once", "test")
 				return
 			}
 			time.Sleep(20 * time.Millisecond)

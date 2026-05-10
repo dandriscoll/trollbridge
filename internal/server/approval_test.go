@@ -120,13 +120,13 @@ func (h *approvalHarness) listPending() []map[string]any {
 }
 
 func (h *approvalHarness) approve(id, scope string) {
-	if !h.srv.Queue().Approve(id, scope) {
+	if !h.srv.Queue().Approve(id, scope, "test") {
 		h.t.Fatalf("approve %s: hold not found", id)
 	}
 }
 
 func (h *approvalHarness) deny(id, reason string) {
-	h.srv.Queue().Deny(id, reason)
+	h.srv.Queue().Deny(id, reason, "test")
 }
 
 func TestApproval_ApprovedRequestUnblocks(t *testing.T) {

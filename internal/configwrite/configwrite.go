@@ -224,6 +224,12 @@ func atomicWrite(path string, data []byte, fallbackMode os.FileMode) error {
 		os.Remove(tmpPath)
 		return err
 	}
+	// fsync the file before close so the new bytes survive a crash
+	// between rename and the next checkpoint. Cheap; matches the
+	// "flushed right away" wording in #49. Errors here are not fatal —
+	// some filesystems / mounts (e.g. tmpfs in some configurations)
+	// return ENOSYS or EINVAL; treat as best-effort.
+	_ = tmp.Sync()
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
 		return err
@@ -235,6 +241,12 @@ func atomicWrite(path string, data []byte, fallbackMode os.FileMode) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		os.Remove(tmpPath)
 		return errors.Join(err, fmt.Errorf("rename %s -> %s", tmpPath, path))
+	}
+	// fsync the parent directory so the rename itself is durable.
+	// Best-effort; same caveat as the file fsync above.
+	if d, err := os.Open(dir); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
 	}
 	return nil
 }

@@ -15,11 +15,13 @@ import (
 
 	"github.com/dandriscoll/trollbridge/internal/audit"
 	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/configwrite"
 	"github.com/dandriscoll/trollbridge/internal/console"
 	"github.com/dandriscoll/trollbridge/internal/oplog"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/server"
 	"github.com/dandriscoll/trollbridge/internal/tui"
+	"github.com/dandriscoll/trollbridge/internal/types"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -110,6 +112,72 @@ func newRunCmd() *cobra.Command {
 				return &configErr{err}
 			}
 
+			// Persist manual approve/deny decisions back to
+			// lists.allow / lists.deny in trollbridge.yaml (closes
+			// #49). Wired at the queue layer so that both in-process
+			// (TUI) and attach-mode (mTLS control plane) approvals
+			// converge here. The callback runs on the proxy host
+			// (the queue lives in the daemon process), so the
+			// proxy-host-vs-consumer-host distinction is satisfied
+			// automatically.
+			absPersistPath, persistErr := filepath.Abs(configPath)
+			if persistErr != nil {
+				absPersistPath = configPath
+			}
+			srv.Queue().SetDecisionPersist(func(req *types.RequestEvent, effect types.Effect, source string) {
+				pattern := derivePersistPattern(req)
+				if pattern == "" {
+					return
+				}
+				var (
+					changed bool
+					werr    error
+					event   string
+					reason  string
+				)
+				switch effect {
+				case types.EffectAllow:
+					changed, werr = configwrite.AddAllow(absPersistPath, pattern)
+					event = oplog.EventAllowlistAdded
+					reason = "manual_approval"
+				case types.EffectDeny:
+					changed, werr = configwrite.AddDeny(absPersistPath, pattern)
+					event = oplog.EventDenylistAdded
+					reason = "manual_denial"
+				default:
+					return
+				}
+				if werr != nil {
+					opLog.Warn("list persist failure",
+						"event", oplog.EventListPersistFailure,
+						"pattern", pattern,
+						"source", source,
+						"reason", reason,
+						"error", werr.Error(),
+						"config_path", absPersistPath)
+					return
+				}
+				if !changed {
+					return
+				}
+				opLog.Info("list persisted",
+					"event", event,
+					"pattern", pattern,
+					"source", source,
+					"reason", reason,
+					"host", req.Host,
+					"port", req.Port,
+					"config_path", absPersistPath)
+				freshCfg, lerr := config.Load(configPath)
+				if lerr != nil {
+					opLog.Error("list-reload re-parse failed",
+						"event", oplog.EventAllowlistReloadFailure,
+						"error", lerr.Error())
+					return
+				}
+				_ = srv.ReloadListsFromConfig(freshCfg)
+			})
+
 			// SIGHUP triggers YAML rule reload.
 			hup := make(chan os.Signal, 1)
 			signal.Notify(hup, syscall.SIGHUP)
@@ -160,7 +228,7 @@ func newRunCmd() *cobra.Command {
 								"error", fmt.Sprintf("%v", r))
 						}
 					}()
-					if err := tui.RunOperator(ctx, tui.NewInProcessClient(srv.Queue()), os.Stdin, os.Stdout, backend, welcome); err != nil {
+					if err := tui.RunOperator(ctx, tui.NewInProcessClient(srv.Queue()), os.Stdin, os.Stdout, backend, welcome, cancel); err != nil {
 						opLog.Warn("operator UI exited",
 							"event", oplog.EventOperatorUIError,
 							"error", err.Error())
@@ -224,8 +292,27 @@ func newRunCmd() *cobra.Command {
 				}
 			}
 
-			if err := srv.ListenAndServe(ctx); err != nil {
-				return &runtimeErr{err}
+			serveErr := srv.ListenAndServe(ctx)
+			// Symmetric counterpart to event=startup: one INFO line on
+			// graceful exit so an operator tailing the oplog (especially
+			// under systemd, journalctl, or k8s where the process is
+			// not in the foreground) can answer "did the proxy stop
+			// cleanly or get killed?" Wires the previously dead
+			// oplog.EventShutdown constant. Fires regardless of
+			// serveErr — the daemon is exiting either way; the field
+			// distinguishes clean (no err) from error exit.
+			shutdownAttrs := []any{
+				"event", oplog.EventShutdown,
+				"version", server.Version,
+				"install_mode", installMode,
+			}
+			if serveErr != nil {
+				shutdownAttrs = append(shutdownAttrs, "error", serveErr.Error())
+			}
+			opLog.Info("shutdown", shutdownAttrs...)
+
+			if serveErr != nil {
+				return &runtimeErr{serveErr}
 			}
 			return nil
 		},
@@ -343,4 +430,45 @@ func printRunStartupBanner(out io.Writer, addr, mode string) {
 	w("  eval \"$(trollbridge env)\" && curl -sI https://example.com\n")
 	w("\n")
 	w("Stop with Ctrl-C.\n")
+}
+
+// derivePersistPattern returns the lists.allow / lists.deny pattern
+// that should be written when an operator manually approves or denies
+// the held request `req`. The user picked "full URL for now" — until
+// LLM-driven generalization lands as a follow-up, the pattern is the
+// most-specific form the request supports:
+//
+//   - CONNECT (HTTPS pass-through, no path): "<host>:<port>"
+//     matches the typed-REPL `allow api.github.com:443` precedent.
+//   - intercepted HTTPS or plain HTTP: "<scheme>://<host>:<port><path>"
+//     where <scheme> is "http" or "https" (collapsing the internal
+//     "https-tunneled" / "https-intercepted" telemetry strings).
+//
+// The narrow grain means a sibling path on the same host re-prompts;
+// that is the explicit trade — operator chose "full URL" to ship now
+// and surface generalization as a follow-up enhancement (#49 comment
+// trail).
+func derivePersistPattern(req *types.RequestEvent) string {
+	if req == nil || req.Host == "" {
+		return ""
+	}
+	host := req.Host
+	port := req.Port
+	if req.Method == "CONNECT" || req.Path == "" {
+		if port == 0 {
+			return host
+		}
+		return fmt.Sprintf("%s:%d", host, port)
+	}
+	scheme := req.Scheme
+	switch scheme {
+	case "https-tunneled", "https-intercepted":
+		scheme = "https"
+	case "":
+		scheme = "http"
+	}
+	if port != 0 {
+		return fmt.Sprintf("%s://%s:%d%s", scheme, host, port, req.Path)
+	}
+	return fmt.Sprintf("%s://%s%s", scheme, host, req.Path)
 }

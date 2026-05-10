@@ -85,7 +85,7 @@ func TestApprove_ResolvesWait(t *testing.T) {
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		if !q.Approve(id, "session") {
+		if !q.Approve(id, "session", "test") {
 			t.Errorf("Approve returned false")
 		}
 	}()
@@ -102,7 +102,7 @@ func TestApprove_ResolvesWait(t *testing.T) {
 func TestDeny_ResolvesWait(t *testing.T) {
 	q := New(8, time.Minute, "deny")
 	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
-	go q.Deny(id, "spam")
+	go q.Deny(id, "spam", "test")
 	d := q.Wait(context.Background(), id, ch)
 	if d.Effect != types.EffectAskUserResolvedDeny {
 		t.Errorf("effect: got %s, want resolved_deny", d.Effect)
@@ -192,7 +192,7 @@ func TestQueue_ApproveEmitsInfoEvent(t *testing.T) {
 	log := &recordingLogger{}
 	q.SetLogger(log)
 	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
-	go q.Approve(id, "session")
+	go q.Approve(id, "session", "test")
 	_ = q.Wait(context.Background(), id, ch)
 	if len(log.calls) != 1 {
 		t.Fatalf("want 1 Info call, got %d (%v)", len(log.calls), log.calls)
@@ -214,7 +214,7 @@ func TestQueue_DenyEmitsInfoEvent(t *testing.T) {
 	log := &recordingLogger{}
 	q.SetLogger(log)
 	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
-	go q.Deny(id, "manual block")
+	go q.Deny(id, "manual block", "test")
 	_ = q.Wait(context.Background(), id, ch)
 	if len(log.calls) != 1 || !hasArg(log.calls[0].args, "event", "hold_denied") {
 		t.Errorf("expected one hold_denied Info; got %v", log.calls)
@@ -245,7 +245,87 @@ func TestQueue_TimeoutEmitsInfoEvent(t *testing.T) {
 func TestQueue_NoLoggerDoesNotPanic(t *testing.T) {
 	q := New(8, 50*time.Millisecond, "deny")
 	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
-	go q.Approve(id, "")
+	go q.Approve(id, "", "test")
 	_ = q.Wait(context.Background(), id, ch)
 	// Reaching here is the assertion.
+}
+
+// TestQueue_PersistCallbackFiresOnApprove pins #49: after a manual
+// approve, the DecisionPersist callback runs with the held request,
+// EffectAllow, and the source string the caller passed.
+func TestQueue_PersistCallbackFiresOnApprove(t *testing.T) {
+	q := New(8, time.Minute, "deny")
+	type call struct {
+		req    *types.RequestEvent
+		effect types.Effect
+		source string
+	}
+	var got []call
+	q.SetDecisionPersist(func(req *types.RequestEvent, effect types.Effect, source string) {
+		got = append(got, call{req: req, effect: effect, source: source})
+	})
+	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	go q.Approve(id, "once", "tui")
+	_ = q.Wait(context.Background(), id, ch)
+	// The Approve goroutine fires the callback synchronously after
+	// the resolveCh send; give it a moment to land.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for len(got) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(got) != 1 {
+		t.Fatalf("persist callback fired %d time(s); want 1", len(got))
+	}
+	if got[0].effect != types.EffectAllow {
+		t.Errorf("effect = %v, want %v", got[0].effect, types.EffectAllow)
+	}
+	if got[0].source != "tui" {
+		t.Errorf("source = %q, want %q", got[0].source, "tui")
+	}
+	if got[0].req == nil || got[0].req.Host == "" {
+		t.Errorf("req or req.Host missing: %+v", got[0].req)
+	}
+}
+
+// TestQueue_PersistCallbackFiresOnDeny — symmetric to approve.
+func TestQueue_PersistCallbackFiresOnDeny(t *testing.T) {
+	q := New(8, time.Minute, "deny")
+	var lastEffect types.Effect
+	var lastSource string
+	q.SetDecisionPersist(func(req *types.RequestEvent, effect types.Effect, source string) {
+		lastEffect = effect
+		lastSource = source
+	})
+	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	go q.Deny(id, "blocked by policy", "attach")
+	_ = q.Wait(context.Background(), id, ch)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for lastSource == "" && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if lastEffect != types.EffectDeny {
+		t.Errorf("effect = %v, want %v", lastEffect, types.EffectDeny)
+	}
+	if lastSource != "attach" {
+		t.Errorf("source = %q, want %q", lastSource, "attach")
+	}
+}
+
+// TestQueue_PersistCallbackDoesNotFireOnTimeout — auto-resolution
+// must not persist (only manual decisions should). Closes the design's
+// "auto-allow timeout case" edge case.
+func TestQueue_PersistCallbackDoesNotFireOnTimeout(t *testing.T) {
+	q := New(8, 50*time.Millisecond, "allow")
+	var fired bool
+	q.SetDecisionPersist(func(req *types.RequestEvent, effect types.Effect, source string) {
+		fired = true
+	})
+	_, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id := q.Pending()[0].ID
+	_ = q.Wait(context.Background(), id, ch)
+	// Give the callback a moment in case the deny path mistakenly invokes it.
+	time.Sleep(100 * time.Millisecond)
+	if fired {
+		t.Errorf("persist callback fired on auto-timeout; should fire only on manual approve/deny")
+	}
 }

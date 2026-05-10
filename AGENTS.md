@@ -132,6 +132,14 @@ should be a major version. The constants live in
   by `approvals.timeout_seconds` / `approvals.signal_after_seconds`.
   The `event=startup install_mode=daemon …` line names the run mode
   for log-tailing operators.
+- **Manual approve / deny decisions persist.** Pressing `a` / `d` in
+  the operator UI (or POSTing to `/v1/holds/<id>/approve|deny` over
+  the mTLS control plane) writes the request's URL pattern to
+  `lists.allow` / `lists.deny` in `trollbridge.yaml` and re-parses
+  the lists in-process. `event=allowlist_added` / `event=denylist_added`
+  fire at INFO; `event=list_persist_failure` at WARN on write failure.
+  Wired at the queue layer (`Queue.SetDecisionPersist`) so both
+  in-process TUI and attach-mode go through the same hook.
 
 ## Common producer workflows
 

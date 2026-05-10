@@ -22,6 +22,23 @@ type Logger interface {
 	Info(msg string, args ...any)
 }
 
+// DecisionPersist is invoked after a manual operator decision lands.
+// It runs on the proxy host (the queue lives in the proxy daemon's
+// process) and is the single hook for persisting approve/deny
+// decisions — both the local-TUI in-process path and the mTLS
+// control-plane (`trollbridge attach`) path converge at the queue,
+// so a single callback covers both.
+//
+// `effect` is `EffectAllow` for approve and `EffectDeny` for deny.
+// `source` is `"tui"` for in-process or `"attach"` for control-plane;
+// callers pass it explicitly so the persistence layer can attribute
+// the change in oplog without inferring from goroutine identity.
+//
+// Auto-resolution paths (timeout, shutdown drain) bypass this hook:
+// they send the resolution directly down `resolveCh` rather than
+// calling Approve/Deny, so only manual decisions persist.
+type DecisionPersist func(req *types.RequestEvent, effect types.Effect, source string)
+
 // Hold is a request waiting for operator action.
 type Hold struct {
 	ID        string
@@ -58,11 +75,19 @@ type Queue struct {
 	// opLog, when set, receives Info events on hold lifecycle
 	// transitions (approve, deny, timeout). nil-safe.
 	opLog Logger
+
+	// persistCb, when set, fires synchronously after a manual
+	// approve/deny lands. nil-safe.
+	persistCb DecisionPersist
 }
 
 // SetLogger wires an optional logger that the queue uses to emit
 // hold-lifecycle Info events.
 func (q *Queue) SetLogger(l Logger) { q.opLog = l }
+
+// SetDecisionPersist wires the post-decision persistence hook. See
+// DecisionPersist.
+func (q *Queue) SetDecisionPersist(cb DecisionPersist) { q.persistCb = cb }
 
 // New constructs a Queue.
 func New(maxPending int, timeout time.Duration, onTimeout string) *Queue {
@@ -162,8 +187,11 @@ func (q *Queue) Wait(ctx context.Context, id string, ch <-chan types.Decision) t
 }
 
 // Approve resolves the hold with an allow decision. Returns
-// false if the hold was not found.
-func (q *Queue) Approve(id, scope string) bool {
+// false if the hold was not found. `source` is "tui" for an
+// in-process operator UI approval or "attach" for an mTLS
+// control-plane approval; it propagates to the DecisionPersist
+// callback for source attribution in oplog.
+func (q *Queue) Approve(id, scope, source string) bool {
 	q.mu.Lock()
 	h, ok := q.items[id]
 	q.mu.Unlock()
@@ -193,11 +221,15 @@ func (q *Queue) Approve(id, scope string) bool {
 			"port", h.Request.Port,
 			"scope", scope)
 	}
+	if q.persistCb != nil {
+		q.persistCb(h.Request, types.EffectAllow, source)
+	}
 	return true
 }
 
-// Deny resolves the hold with a deny decision.
-func (q *Queue) Deny(id, reason string) bool {
+// Deny resolves the hold with a deny decision. `source` is "tui" or
+// "attach"; see Approve.
+func (q *Queue) Deny(id, reason, source string) bool {
 	q.mu.Lock()
 	h, ok := q.items[id]
 	q.mu.Unlock()
@@ -224,6 +256,9 @@ func (q *Queue) Deny(id, reason string) bool {
 			"host", h.Request.Host,
 			"port", h.Request.Port,
 			"reason", reason)
+	}
+	if q.persistCb != nil {
+		q.persistCb(h.Request, types.EffectDeny, source)
 	}
 	return true
 }

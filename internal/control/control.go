@@ -204,13 +204,13 @@ func (s *Server) holdAction(w http.ResponseWriter, r *http.Request) {
 
 	switch action {
 	case "approve":
-		if !s.queue.Approve(id, body.Scope) {
+		if !s.queue.Approve(id, body.Scope, "attach") {
 			http.Error(w, "hold not found", http.StatusNotFound)
 			return
 		}
 		writeJSON(w, map[string]string{"status": "approved", "id": id, "scope": body.Scope})
 	case "deny":
-		if !s.queue.Deny(id, body.Reason) {
+		if !s.queue.Deny(id, body.Reason, "attach") {
 			http.Error(w, "hold not found", http.StatusNotFound)
 			return
 		}

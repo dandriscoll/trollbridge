@@ -33,6 +33,14 @@ const (
 	EventHoldQueueFull  = "hold_queue_full"  // WARN; holdAndWait on ErrFull
 	EventHoldSignaled   = "hold_signaled"    // INFO; #43 — hold elapsed signal_after_seconds; consumer got 471 + hold-id; queue continues to track resolution
 
+	// Decision persistence (#49). Fired by the daemon's queue-level
+	// DecisionPersist callback after a manual approve/deny. Both
+	// in-process TUI and attach-mode control-plane decisions
+	// converge through this hook.
+	EventAllowlistAdded     = "allowlist_added"      // INFO; manual approve persisted to lists.allow
+	EventDenylistAdded      = "denylist_added"       // INFO; manual deny persisted to lists.deny
+	EventListPersistFailure = "list_persist_failure" // WARN; configwrite returned an error
+
 	// Advisor lifecycle events. The *_fail constants formalize the
 	// string literals introduced by issue #25.
 	EventAdvisorConsulted    = "advisor_consulted"     // INFO

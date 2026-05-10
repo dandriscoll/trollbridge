@@ -74,7 +74,7 @@ func (c *inProcessClient) Approve(id string) error {
 	if c.q == nil {
 		return errors.New("approvals queue not initialized")
 	}
-	if !c.q.Approve(id, "once") {
+	if !c.q.Approve(id, "once", "tui") {
 		return fmt.Errorf("hold not found: %s", id)
 	}
 	return nil
@@ -84,7 +84,7 @@ func (c *inProcessClient) Deny(id, reason string) error {
 	if c.q == nil {
 		return errors.New("approvals queue not initialized")
 	}
-	if !c.q.Deny(id, reason) {
+	if !c.q.Deny(id, reason, "tui") {
 		return fmt.Errorf("hold not found: %s", id)
 	}
 	return nil
@@ -103,11 +103,22 @@ func NewInProcessClient(q *approvals.Queue) ControlClient {
 // chooses the ControlClient: NewInProcessClient(queue) for the
 // embedded path (`trollbridge run`), NewHTTPClient(cfg) for the
 // remote path (`trollbridge attach`).
-func RunOperator(ctx context.Context, client ControlClient, in, out *os.File, backend *console.Backend, welcome string) (err error) {
-	return runWithClient(ctx, in, out, client, backend, welcome)
+//
+// requestShutdown, when non-nil, is invoked when the operator exits
+// the TUI via Ctrl-C / `q` / `quit` — before RunOperator returns.
+// In `trollbridge run` and `trollbridge quickstart` the caller passes
+// the parent context's cancel function so the embedded operator UI
+// can take down the proxy on a single Ctrl-C; without it the first
+// Ctrl-C is consumed by the TUI's raw-mode stdin (terminal does not
+// emit SIGINT) and the daemon stays blocked in ListenAndServe until
+// a second press, after the TUI has restored cooked mode (closes #48).
+// `trollbridge attach` passes nil — its TUI is a remote client, not
+// the daemon.
+func RunOperator(ctx context.Context, client ControlClient, in, out *os.File, backend *console.Backend, welcome string, requestShutdown func()) (err error) {
+	return runWithClient(ctx, in, out, client, backend, welcome, requestShutdown)
 }
 
-func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, backend *console.Backend, welcome string) (err error) {
+func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, backend *console.Backend, welcome string, requestShutdown func()) (err error) {
 	if !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(out.Fd())) {
 		return errors.New("trollbridge ui: stdin/stdout is not a terminal")
 	}
@@ -137,11 +148,15 @@ func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, 
 		rows = 24
 	}
 
-	return runLoop(ctx, client, backend, in, out, out, cols, rows, welcome)
+	return runLoop(ctx, client, backend, in, out, out, cols, rows, welcome, requestShutdown)
 }
 
 // runLoop is the testable inner loop. resize may be nil in tests.
-func runLoop(ctx context.Context, client ControlClient, backend *console.Backend, in io.Reader, out io.Writer, resize *os.File, cols, rows int, welcome string) error {
+// requestShutdown, when non-nil, is invoked when the loop exits via
+// operator-initiated quit (CmdQuit) — see RunOperator for rationale.
+// It is NOT invoked when the loop exits because ctx is already done
+// (the parent is already shutting down for another reason).
+func runLoop(ctx context.Context, client ControlClient, backend *console.Backend, in io.Reader, out io.Writer, resize *os.File, cols, rows int, welcome string, requestShutdown func()) error {
 	model := Model{
 		Selected: -1,
 		Cols:     cols,
@@ -192,11 +207,17 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 		_ = render(out, model)
 
 		if model.Quit {
+			if requestShutdown != nil {
+				requestShutdown()
+			}
 			return nil
 		}
 
 		switch c := cmd.(type) {
 		case CmdQuit:
+			if requestShutdown != nil {
+				requestShutdown()
+			}
 			return nil
 		case CmdRefresh:
 			go func() {

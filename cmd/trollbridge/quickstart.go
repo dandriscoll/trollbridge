@@ -12,11 +12,13 @@ import (
 
 	"github.com/dandriscoll/trollbridge/internal/audit"
 	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/configwrite"
 	"github.com/dandriscoll/trollbridge/internal/console"
 	"github.com/dandriscoll/trollbridge/internal/oplog"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/server"
 	"github.com/dandriscoll/trollbridge/internal/tui"
+	"github.com/dandriscoll/trollbridge/internal/types"
 	"github.com/spf13/cobra"
 )
 
@@ -173,6 +175,66 @@ func runProxyLoop(cmd *cobra.Command, configPath string, verbose bool) error {
 		return &configErr{err}
 	}
 
+	// Persist manual approve/deny decisions (#49). See run.go for the
+	// long form of this comment; quickstart inherits the same shape.
+	absPersistPath, persistErr := filepath.Abs(configPath)
+	if persistErr != nil {
+		absPersistPath = configPath
+	}
+	srv.Queue().SetDecisionPersist(func(req *types.RequestEvent, effect types.Effect, source string) {
+		pattern := derivePersistPattern(req)
+		if pattern == "" {
+			return
+		}
+		var (
+			changed bool
+			werr    error
+			event   string
+			reason  string
+		)
+		switch effect {
+		case types.EffectAllow:
+			changed, werr = configwrite.AddAllow(absPersistPath, pattern)
+			event = oplog.EventAllowlistAdded
+			reason = "manual_approval"
+		case types.EffectDeny:
+			changed, werr = configwrite.AddDeny(absPersistPath, pattern)
+			event = oplog.EventDenylistAdded
+			reason = "manual_denial"
+		default:
+			return
+		}
+		if werr != nil {
+			opLog.Warn("list persist failure",
+				"event", oplog.EventListPersistFailure,
+				"pattern", pattern,
+				"source", source,
+				"reason", reason,
+				"error", werr.Error(),
+				"config_path", absPersistPath)
+			return
+		}
+		if !changed {
+			return
+		}
+		opLog.Info("list persisted",
+			"event", event,
+			"pattern", pattern,
+			"source", source,
+			"reason", reason,
+			"host", req.Host,
+			"port", req.Port,
+			"config_path", absPersistPath)
+		freshCfg, lerr := config.Load(configPath)
+		if lerr != nil {
+			opLog.Error("list-reload re-parse failed",
+				"event", oplog.EventAllowlistReloadFailure,
+				"error", lerr.Error())
+			return
+		}
+		_ = srv.ReloadListsFromConfig(freshCfg)
+	})
+
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
@@ -211,7 +273,7 @@ func runProxyLoop(cmd *cobra.Command, configPath string, verbose bool) error {
 						"error", fmt.Sprintf("%v", r))
 				}
 			}()
-			if err := tui.RunOperator(ctx, tui.NewInProcessClient(srv.Queue()), os.Stdin, os.Stdout, backend, welcome); err != nil {
+			if err := tui.RunOperator(ctx, tui.NewInProcessClient(srv.Queue()), os.Stdin, os.Stdout, backend, welcome, cancel); err != nil {
 				opLog.Warn("operator UI exited",
 					"event", oplog.EventOperatorUIError,
 					"error", err.Error())
@@ -237,8 +299,18 @@ func runProxyLoop(cmd *cobra.Command, configPath string, verbose bool) error {
 		printRunStartupBanner(cmd.OutOrStdout(), srv.Addr(), string(cfg.Mode))
 	}
 
-	if err := srv.ListenAndServe(ctx); err != nil {
-		return &runtimeErr{err}
+	serveErr := srv.ListenAndServe(ctx)
+	shutdownAttrs := []any{
+		"event", oplog.EventShutdown,
+		"version", server.Version,
+		"install_mode", "interactive",
+	}
+	if serveErr != nil {
+		shutdownAttrs = append(shutdownAttrs, "error", serveErr.Error())
+	}
+	opLog.Info("shutdown", shutdownAttrs...)
+	if serveErr != nil {
+		return &runtimeErr{serveErr}
 	}
 	return nil
 }

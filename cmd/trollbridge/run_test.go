@@ -4,7 +4,63 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/dandriscoll/trollbridge/internal/types"
 )
+
+// TestDerivePersistPattern pins #49's "full URL for now" choice. The
+// table covers each request shape the daemon sees.
+func TestDerivePersistPattern(t *testing.T) {
+	cases := []struct {
+		name string
+		req  *types.RequestEvent
+		want string
+	}{
+		{
+			name: "CONNECT https tunneled",
+			req:  &types.RequestEvent{Method: "CONNECT", Scheme: "https-tunneled", Host: "api.github.com", Port: 443},
+			want: "api.github.com:443",
+		},
+		{
+			name: "CONNECT no port",
+			req:  &types.RequestEvent{Method: "CONNECT", Scheme: "https-tunneled", Host: "api.github.com"},
+			want: "api.github.com",
+		},
+		{
+			name: "intercepted https with path",
+			req:  &types.RequestEvent{Method: "GET", Scheme: "https-intercepted", Host: "api.github.com", Port: 443, Path: "/v1/foo"},
+			want: "https://api.github.com:443/v1/foo",
+		},
+		{
+			name: "plain http with path",
+			req:  &types.RequestEvent{Method: "POST", Scheme: "http", Host: "api.example.com", Port: 80, Path: "/v2/bar"},
+			want: "http://api.example.com:80/v2/bar",
+		},
+		{
+			name: "missing scheme defaults to http",
+			req:  &types.RequestEvent{Method: "GET", Host: "api.example.com", Port: 8080, Path: "/baz"},
+			want: "http://api.example.com:8080/baz",
+		},
+		{
+			name: "nil request",
+			req:  nil,
+			want: "",
+		},
+		{
+			name: "empty host",
+			req:  &types.RequestEvent{Method: "GET", Scheme: "https", Port: 443, Path: "/"},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := derivePersistPattern(tc.req)
+			if got != tc.want {
+				t.Errorf("derivePersistPattern(%+v) = %q, want %q", tc.req, got, tc.want)
+			}
+		})
+	}
+}
 
 // TestPrintRunStartupBanner_NamesAddrModeAndCommands closes issue #15:
 // when `trollbridge run` starts on a TTY, the operator sees a one-

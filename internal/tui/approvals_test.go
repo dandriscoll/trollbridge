@@ -68,7 +68,7 @@ func TestRunLoop_ApproveFlowEndToEnd(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runLoop(ctx, client, &console.Backend{LocalOnly: false}, pr, &stdout, nil, 100, 30, "")
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: false}, pr, &stdout, nil, 100, 30, "", nil)
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -124,7 +124,7 @@ func TestRunLoop_QuitOnCtxCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- runLoop(ctx, client, &console.Backend{LocalOnly: false}, pr, &stdout, nil, 80, 24, "")
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: false}, pr, &stdout, nil, 80, 24, "", nil)
 	}()
 
 	time.Sleep(80 * time.Millisecond)
@@ -156,7 +156,7 @@ func TestRunLoop_TabSwitchesFocusAndConsoleExecutes(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil)
 	}()
 
 	time.Sleep(60 * time.Millisecond)
@@ -208,7 +208,7 @@ func TestRunLoop_WelcomeAppearsInScrollback(t *testing.T) {
 	done := make(chan error, 1)
 	welcome := "trollbridge is listening on 127.0.0.1:8080 (mode: default-deny).\n"
 	go func() {
-		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, welcome)
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, welcome, nil)
 	}()
 	time.Sleep(80 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03}) // Ctrl-C
@@ -240,7 +240,7 @@ func TestRunLoop_DefaultStartHintWhenNoWelcome(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runLoop(ctx, client, &console.Backend{LocalOnly: false}, pr, &stdout, nil, 100, 30, "")
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: false}, pr, &stdout, nil, 100, 30, "", nil)
 	}()
 	time.Sleep(80 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03})
@@ -273,7 +273,7 @@ func TestRunLoop_TabFlipsConsoleBorderToCyan(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil)
 	}()
 	time.Sleep(60 * time.Millisecond)
 	_, _ = pw.Write([]byte{'\t'})
@@ -323,7 +323,7 @@ func TestRender_TabHintAppearsInFocusedPaneTopBorder(t *testing.T) {
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil)
 		}()
 		time.Sleep(80 * time.Millisecond)
 		_, _ = pw.Write([]byte{0x03})
@@ -361,7 +361,7 @@ func TestRender_TabHintAppearsInFocusedPaneTopBorder(t *testing.T) {
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil)
 		}()
 		time.Sleep(60 * time.Millisecond)
 		_, _ = pw.Write([]byte{'\t'}) // focus console
@@ -403,7 +403,7 @@ func TestRender_BottomBorderCarriesKeybindings(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil)
 	}()
 	time.Sleep(80 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03})
@@ -447,7 +447,7 @@ func TestRender_GlobalHintRowDeleted(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil)
 	}()
 	time.Sleep(80 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03})
@@ -473,7 +473,7 @@ func TestRender_BothPanesHaveBorders(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil)
 	}()
 	time.Sleep(80 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03})

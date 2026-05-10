@@ -112,6 +112,16 @@ The approvals list refreshes automatically as the queue changes;
 one-shot `trollbridge approve <id>` / `trollbridge deny <id>` remain
 available for scripted use.
 
+Manual approve / deny decisions are **sticky**: pressing `a` writes
+the request's URL pattern to `lists.allow` in `trollbridge.yaml`
+(and pressing `d` writes to `lists.deny`), then re-loads the lists
+in-process so the next request to the same URL matches the rule and
+skips the queue (closes #49). The pattern is the request's full URL
+today (`https://api.example.com:443/path` for HTTP, `host:port` for
+CONNECT); LLM-driven generalization is planned. To approve once
+without persisting, edit the YAML by hand or use the typed REPL
+`allow <pattern>` for a more general match.
+
 The TUI assumes a UTF-8 terminal; on `LANG=C` or environments without
 box-drawing rune support, run with `--no-console` (see *Daemon mode*
 below).
