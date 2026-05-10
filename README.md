@@ -139,7 +139,7 @@ endpoints work *only* through the proxy, so a misconfigured client
 that drops `HTTP_PROXY` cannot accidentally reach a real host. The
 endpoints are open (no auth); the CA cert is public-by-design.
 
-## Configuration (schema v3)
+## Configuration
 
 `trollbridge.yaml` is organised around four operator decisions:
 
