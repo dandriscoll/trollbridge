@@ -160,11 +160,13 @@ func TestAdvisor_DeniesViaAskLLMRule(t *testing.T) {
 	}
 }
 
-// TestAdvisor_DoesNotElevateAskUser is the non-elevation guard test.
-// A rule with effect: ask_user MUST land in the approval queue
-// regardless of what the advisor recommends; the advisor isn't
-// even consulted.
-func TestAdvisor_DoesNotElevateAskUser(t *testing.T) {
+// TestAdvisor_AskUserNowConsultsAdvisor pins the #53 contract: when
+// an ask_user rule fires AND an advisor is configured, the advisor
+// IS consulted (in parallel with the human approval queue). A
+// confident advisor verdict resolves the hold without operator
+// action. Pre-#53 the advisor was gated to ask_llm rules only and
+// ask_user requests bypassed the LLM entirely.
+func TestAdvisor_AskUserNowConsultsAdvisor(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer origin.Close()
 	originHost, _, _ := net.SplitHostPort(strings.TrimPrefix(origin.URL, "http://"))
@@ -174,43 +176,62 @@ func TestAdvisor_DoesNotElevateAskUser(t *testing.T) {
   match: {host: %s}
   effect: ask_user
 `, originHost)
-	// Advisor would say allow if asked. We expect it NOT to be
-	// asked because the rule says ask_user.
 	prov := &advisor.MockProvider{Output: advisor.Output{
 		Effect: "allow", Confidence: "high",
 	}}
-	// Approval queue with 1-second timeout to deny.
 	srv, addr, _, cancel, done := bootAdvisorProxy(t, rules, prov)
 	defer func() { cancel(); <-done }()
 	_ = srv
 
 	pURL, _ := url.Parse("http://" + addr)
 	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pURL)}, Timeout: 10 * time.Second}
-	respCh := make(chan *http.Response, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		resp, err := c.Get(origin.URL)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		respCh <- resp
-	}()
-
-	// Wait for timeout (5s in cfg) → 403.
-	select {
-	case resp := <-respCh:
-		if resp.StatusCode != StatusTrollbridgeDeclined {
-			t.Errorf("status: got %d, want %d after operator timeout", resp.StatusCode, StatusTrollbridgeDeclined)
-		}
-		resp.Body.Close()
-	case err := <-errCh:
-		t.Fatalf("client error: %v", err)
-	case <-time.After(8 * time.Second):
-		t.Fatal("client never resolved (advisor should NOT have elevated to allow)")
+	resp, err := c.Get(origin.URL)
+	if err != nil {
+		t.Fatalf("client: %v", err)
 	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status: got %d, want 200 (advisor confidently allowed)", resp.StatusCode)
+	}
+	if prov.Calls != 1 {
+		t.Errorf("advisor was called %d times; expected 1 (#53: ask_user now consults advisor)", prov.Calls)
+	}
+}
 
-	if prov.Calls != 0 {
-		t.Errorf("advisor was called %d times; expected 0 (rule is ask_user)", prov.Calls)
+// TestAdvisor_AskUserUnconfidentFallsToOperator pins the other half
+// of #53: when the advisor is unconfident (or returns ask_user), the
+// hold remains for the operator. The configured timeout fires and
+// the request is denied.
+func TestAdvisor_AskUserUnconfidentFallsToOperator(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer origin.Close()
+	originHost, _, _ := net.SplitHostPort(strings.TrimPrefix(origin.URL, "http://"))
+
+	rules := fmt.Sprintf(`
+- id: must-ask-operator
+  match: {host: %s}
+  effect: ask_user
+`, originHost)
+	// Advisor returns low confidence — should NOT auto-resolve.
+	prov := &advisor.MockProvider{Output: advisor.Output{
+		Effect: "allow", Confidence: "low",
+	}}
+	srv, addr, _, cancel, done := bootAdvisorProxy(t, rules, prov)
+	defer func() { cancel(); <-done }()
+	_ = srv
+
+	pURL, _ := url.Parse("http://" + addr)
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pURL)}, Timeout: 10 * time.Second}
+	resp, err := c.Get(origin.URL)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != StatusTrollbridgeDeclined {
+		t.Errorf("status: got %d, want %d (operator timeout after advisor unconfident)",
+			resp.StatusCode, StatusTrollbridgeDeclined)
+	}
+	if prov.Calls != 1 {
+		t.Errorf("advisor was called %d times; expected 1 (consulted but unconfident)", prov.Calls)
 	}
 }

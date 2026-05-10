@@ -515,47 +515,10 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 // `llm_input_hash`. This couples advisor input to the audit
 // record without threading a side-channel.
 func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types.Decision {
-	if base.Effect == types.EffectAskLLM && s.advisor != nil {
-		ctx := s.rootCtx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		hdrs := map[string]string{}
-		for k := range req.Headers {
-			v := req.Headers.Get(k)
-			switch strings.ToLower(k) {
-			case "authorization", "cookie", "proxy-authorization":
-				hdrs[k] = "<redacted>"
-			default:
-				hdrs[k] = v
-			}
-		}
-		// Build read-only list context the advisor sees as input.
-		// The advisor MAY recommend actions based on these; the
-		// advisor MUST NOT mutate them. List mutation is human-
-		// only (console + manual file edits).
-		lists := &advisor.ListContext{
-			Allow: rawPatterns(s.AllowList()),
-			Deny:  rawPatterns(s.DenyList()),
-		}
-		// Build the same Input the advisor sees, hash it, stash on
-		// the request so the audit-write path can record it.
-		input := advisor.Input{
-			Method: req.Method, Scheme: req.Scheme, Host: req.Host, Port: req.Port,
-			Path: req.Path, HeadersRedacted: hdrs, Identity: req.IdentityID,
-			RuleSetVersion: s.engine.RuleSetVersion(),
-			AllowList:      lists.Allow,
-			DenyList:       lists.Deny,
-		}
-		req.Headers.Set("X-Trollbridge-LLM-Input-Hash", advisor.CanonicalizeInput(input))
-
-		d, _ := s.advisor.Classify(ctx, req, s.engine.RuleSetVersion(), nil, hdrs, lists)
-		if d.Effect == types.EffectAllow || d.Effect == types.EffectDeny {
-			return d
-		}
-		// Advisor said ask_user (or fell back). Continue to queue.
-		base = d
-	}
+	// Per #53: enqueue first so the operator can see and intervene on
+	// the hold immediately. Then consult the advisor in parallel.
+	// Whichever resolver fires first (advisor confident, operator
+	// approve/deny, queue timeout) wins via the queue's resolveCh.
 	id, ch, err := s.queue.Enqueue(req, base)
 	if err != nil {
 		s.opLog.Warn("approval queue full; refusing request",
@@ -587,6 +550,15 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 		"source", string(base.Source),
 		"rule_id", base.RuleID,
 		"reason", base.Reason)
+
+	// Kick off the advisor for both ask_user and ask_llm holds when
+	// an advisor is configured. The hash header is set synchronously
+	// here so writeAudit's later read does not race the goroutine.
+	if s.advisor != nil && (base.Effect == types.EffectAskUser || base.Effect == types.EffectAskLLM) {
+		hdrs, lists, input := s.buildAdvisorInputs(req)
+		req.Headers.Set("X-Trollbridge-LLM-Input-Hash", advisor.CanonicalizeInput(input))
+		go s.consultAdvisorForHold(req, id, hdrs, lists)
+	}
 	ctx := s.rootCtx
 	if ctx == nil {
 		ctx = context.Background()
@@ -965,6 +937,52 @@ func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryReda
 			"request_id", req.ID, "error", err.Error())
 	}
 	s.ops.Resolve(req.ID, opStatusFromAudit(entry))
+}
+
+// buildAdvisorInputs assembles the advisor's read-only context: a
+// header map with credential headers redacted, the current allow/
+// deny list snapshot, and the canonical Input the advisor will see.
+// Pure helper — no mutation of req. Used by holdAndWait to build the
+// inputs synchronously before kicking off the advisor goroutine
+// (closes #53).
+func (s *Server) buildAdvisorInputs(req *types.RequestEvent) (map[string]string, *advisor.ListContext, advisor.Input) {
+	hdrs := map[string]string{}
+	for k := range req.Headers {
+		v := req.Headers.Get(k)
+		switch strings.ToLower(k) {
+		case "authorization", "cookie", "proxy-authorization":
+			hdrs[k] = "<redacted>"
+		default:
+			hdrs[k] = v
+		}
+	}
+	lists := &advisor.ListContext{
+		Allow: rawPatterns(s.AllowList()),
+		Deny:  rawPatterns(s.DenyList()),
+	}
+	input := advisor.Input{
+		Method: req.Method, Scheme: req.Scheme, Host: req.Host, Port: req.Port,
+		Path: req.Path, HeadersRedacted: hdrs, Identity: req.IdentityID,
+		RuleSetVersion: s.engine.RuleSetVersion(),
+		AllowList:      lists.Allow,
+		DenyList:       lists.Deny,
+	}
+	return hdrs, lists, input
+}
+
+// consultAdvisorForHold runs the advisor for a held request and, if
+// it produces a confident allow/deny, resolves the hold via
+// queue.ResolveByAdvisor. Low-confidence / unavailable verdicts
+// leave the hold for human action (closes #53).
+func (s *Server) consultAdvisorForHold(req *types.RequestEvent, holdID string, hdrs map[string]string, lists *advisor.ListContext) {
+	ctx := s.rootCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	d, _ := s.advisor.Classify(ctx, req, s.engine.RuleSetVersion(), nil, hdrs, lists)
+	if d.Effect == types.EffectAllow || d.Effect == types.EffectDeny {
+		s.queue.ResolveByAdvisor(holdID, d)
+	}
 }
 
 // opURLForRequest renders the operator-facing URL for a request:

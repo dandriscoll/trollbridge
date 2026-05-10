@@ -187,10 +187,11 @@ func (q *Queue) Wait(ctx context.Context, id string, ch <-chan types.Decision) t
 }
 
 // Approve resolves the hold with an allow decision. Returns
-// false if the hold was not found. `source` is "tui" for an
-// in-process operator UI approval or "attach" for an mTLS
-// control-plane approval; it propagates to the DecisionPersist
-// callback for source attribution in oplog.
+// false if the hold was not found OR was already resolved by another
+// path (operator double-click, advisor goroutine winning the race).
+// `source` is "tui" for an in-process operator UI approval or
+// "attach" for an mTLS control-plane approval; it propagates to the
+// DecisionPersist callback for source attribution in oplog.
 func (q *Queue) Approve(id, scope, source string) bool {
 	q.mu.Lock()
 	h, ok := q.items[id]
@@ -201,13 +202,21 @@ func (q *Queue) Approve(id, scope, source string) bool {
 	if scope == "" {
 		scope = "once"
 	}
-	h.resolveCh <- types.Decision{
+	// Non-blocking send: the hold's resolveCh is cap-1; if a prior
+	// resolver already pushed (operator double-click; advisor
+	// goroutine resolved first), we drop the duplicate rather than
+	// deadlock. The Wait side reads exactly once.
+	select {
+	case h.resolveCh <- types.Decision{
 		Effect:    types.EffectAskUserResolvedAllow,
 		Source:    types.SourceApprovalQueue,
 		RuleID:    h.Decision.RuleID,
 		Reason:    "operator approved",
 		Scope:     scope,
 		Modifiers: append([]string(nil), h.Decision.Modifiers...),
+	}:
+	default:
+		return false
 	}
 	if q.opLog != nil {
 		q.opLog.Info("hold approved by operator",
@@ -228,7 +237,8 @@ func (q *Queue) Approve(id, scope, source string) bool {
 }
 
 // Deny resolves the hold with a deny decision. `source` is "tui" or
-// "attach"; see Approve.
+// "attach"; see Approve. Returns false if the hold was already
+// resolved (race with another Approve/Deny/ResolveByAdvisor).
 func (q *Queue) Deny(id, reason, source string) bool {
 	q.mu.Lock()
 	h, ok := q.items[id]
@@ -239,11 +249,15 @@ func (q *Queue) Deny(id, reason, source string) bool {
 	if reason == "" {
 		reason = "operator denied"
 	}
-	h.resolveCh <- types.Decision{
+	select {
+	case h.resolveCh <- types.Decision{
 		Effect: types.EffectAskUserResolvedDeny,
 		Source: types.SourceApprovalQueue,
 		RuleID: h.Decision.RuleID,
 		Reason: reason,
+	}:
+	default:
+		return false
 	}
 	if q.opLog != nil {
 		q.opLog.Info("hold denied by operator",
@@ -259,6 +273,53 @@ func (q *Queue) Deny(id, reason, source string) bool {
 	}
 	if q.persistCb != nil {
 		q.persistCb(h.Request, types.EffectDeny, source)
+	}
+	return true
+}
+
+// ResolveByAdvisor pushes the advisor's full Decision into the
+// hold's resolveCh non-blockingly. The advisor goroutine in
+// holdAndWait calls this when it produces a confident allow/deny
+// (closes #53). Returns false if the hold was not found OR was
+// already resolved by another path (operator winning the race).
+//
+// The Decision the advisor produces carries Source=SourceLLMAdvisor
+// and the AdvisorID it was emitted under, so the audit log
+// attributes the resolution to the LLM rather than the queue.
+func (q *Queue) ResolveByAdvisor(id string, d types.Decision) bool {
+	q.mu.Lock()
+	h, ok := q.items[id]
+	q.mu.Unlock()
+	if !ok {
+		return false
+	}
+	// Preserve the original rule id if the advisor's decision did
+	// not name one (the advisor speaks for itself; the rule that
+	// triggered the hold still applies as context).
+	if d.RuleID == "" {
+		d.RuleID = h.Decision.RuleID
+	}
+	select {
+	case h.resolveCh <- d:
+	default:
+		return false
+	}
+	if q.opLog != nil {
+		q.opLog.Info("hold resolved by advisor",
+			"event", oplog.EventHoldApproved, // reuse: same lifecycle slot
+			"hold_id", h.ID,
+			"request_id", h.Request.ID,
+			"identity", h.Request.IdentityID,
+			"method", h.Request.Method,
+			"scheme", h.Request.Scheme,
+			"host", h.Request.Host,
+			"port", h.Request.Port,
+			"effect", string(d.Effect),
+			"advisor_id", d.AdvisorID,
+			"resolved_by", "llm-advisor")
+	}
+	if q.persistCb != nil && (d.Effect == types.EffectAllow || d.Effect == types.EffectDeny) {
+		q.persistCb(h.Request, d.Effect, "llm-advisor")
 	}
 	return true
 }
