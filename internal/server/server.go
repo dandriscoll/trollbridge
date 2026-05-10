@@ -651,16 +651,35 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Headers:    r.Header.Clone(),
 		ClientAddr: r.RemoteAddr,
 	}
+	rlog := s.opLog.With(
+		"request_id", requestID,
+		"identity", identityID,
+		"method", "CONNECT",
+		"scheme", "https-tunneled",
+		"host", host,
+		"port", port,
+	)
+	rlog.Debug("received", "phase", oplog.PhaseReceived, "path", "")
 	// CONNECT only carries host:port, no path. Use "/" as the
 	// path for fast-path matching; only patterns with no path or
 	// path "/" or path-prefix can fire here. Scheme is unknown at
 	// CONNECT time; only patterns with no scheme constraint match.
 	decision, fastHit := s.fastPathDecide("", host, port, "/")
-	if !fastHit {
+	if fastHit {
+		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval,
+			"hit", true, "decision", string(decision.Effect),
+			"source", string(decision.Source), "rule_id", decision.RuleID)
+	} else {
+		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval, "hit", false)
 		decision = s.engine.Decide(req)
+		rlog.Debug("engine_eval", "phase", oplog.PhaseEngineEval,
+			"decision", string(decision.Effect),
+			"source", string(decision.Source), "rule_id", decision.RuleID)
 	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
+		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))
 		decision = s.holdAndWait(req, decision)
+		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
 	s.engine.History().Record(req, decision, time.Now().UTC())
 	if !(decision.Effect == types.EffectAllow || decision.Effect == types.EffectAskUserResolvedAllow) {
@@ -673,6 +692,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		status := statusFromEffect(decision.Effect)
 		w.WriteHeader(status)
 		_, _ = w.Write(body)
+		rlog.Debug("response", "phase", oplog.PhaseResponse,
+			"status", status, "bytes", len(body), "latency_ms", time.Since(start).Milliseconds())
 		s.writeAudit(req, decision, "", 0, status, 0, time.Since(start), "")
 		return
 	}
@@ -692,15 +713,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	upstream, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)),
 		time.Duration(s.cfg.Forwarder.ConnectionAcquireTimeoutSeconds)*time.Second)
 	dialMS := time.Since(dialStart).Milliseconds()
-	connectRlog := s.opLog.With(
-		"request_id", requestID,
-		"identity", identityID,
-		"method", "CONNECT",
-		"host", host,
-		"port", port,
-	)
 	if err != nil {
-		connectRlog.Debug("upstream_dial",
+		rlog.Debug("upstream_dial",
 			"phase", oplog.PhaseUpstreamDial,
 			"ok", false,
 			"duration_ms", dialMS,
@@ -710,7 +724,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		s.writeAudit(req, decision, "", 0, http.StatusBadGateway, 0, time.Since(start), err.Error())
 		return
 	}
-	connectRlog.Debug("upstream_dial",
+	rlog.Debug("upstream_dial",
 		"phase", oplog.PhaseUpstreamDial,
 		"ok", true,
 		"duration_ms", dialMS,
@@ -738,6 +752,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if s.shouldIntercept(host) {
 		// Phase 3: terminate TLS, dispatch per-request.
 		upstream.Close() // we'll dial upstream per-request
+		rlog.Debug("response", "phase", oplog.PhaseResponse,
+			"status", http.StatusOK, "bytes", 0, "latency_ms", time.Since(start).Milliseconds())
 		s.writeAudit(req, decision, "", 0, http.StatusOK, 0, time.Since(start), "")
 		_ = s.interceptCONNECT(clientConn, host, port, sess.ID, identityID)
 		return
@@ -746,6 +762,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	s.trackConn(upstream)
 	defer s.untrackConn(upstream)
 	bytesIn, bytesOut := pipeBidir(clientConn, upstream)
+	rlog.Debug("response", "phase", oplog.PhaseResponse,
+		"status", http.StatusOK, "bytes", bytesIn+bytesOut, "latency_ms", time.Since(start).Milliseconds())
 	s.writeAudit(req, decision, "", 0, http.StatusOK, bytesIn+bytesOut, time.Since(start), "")
 }
 

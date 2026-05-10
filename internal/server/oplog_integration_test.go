@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +21,7 @@ import (
 	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/audit"
+	"github.com/dandriscoll/trollbridge/internal/ca"
 	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 )
@@ -107,6 +110,102 @@ func bootHTTPProxyWithOpLog(t *testing.T, level slog.Level) (proxyAddr, originUR
 	return
 }
 
+// bootInterceptProxyWithOpLog mirrors bootInterceptProxy but
+// injects a captured op-log so lifecycle phase records on the
+// intercepted-inner path can be asserted.
+func bootInterceptProxyWithOpLog(t *testing.T, rules string, level slog.Level) (*interceptHarness, *bytes.Buffer) {
+	t.Helper()
+	dir := t.TempDir()
+	rulesPath := filepath.Join(dir, "rules.yaml")
+	if err := os.WriteFile(rulesPath, []byte(rules), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	auditPath := filepath.Join(dir, "audit.jsonl")
+
+	caCertPath := filepath.Join(dir, "ca.crt")
+	caKeyPath := filepath.Join(dir, "ca.key")
+	dbCA, err := ca.Init(caCertPath, caKeyPath, ca.KeyTypeECDSAP256, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	originSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "ok")
+	}))
+	t.Cleanup(originSrv.Close)
+	originURL := originSrv.URL
+	uHost := strings.TrimPrefix(originURL, "https://")
+	originHost, originPortStr, _ := net.SplitHostPort(uHost)
+	originPort := 0
+	fmt.Sscanf(originPortStr, "%d", &originPort)
+
+	cfg := &config.Config{
+		Proxy:     config.Bind{Host: "127.0.0.1", Port: 0},
+		Mode:      "default-deny",
+		Logging:   config.Logging{AuditPath: auditPath, AuditBufferSize: 64, AuditOverflow: "block"},
+		Approvals: config.Approvals{TimeoutSeconds: 5, OnTimeout: "deny", MaxPending: 4},
+		Forwarder: config.Forwarder{MaxIdleConns: 8, MaxIdleConnsPerHost: 2, ConnectionAcquireTimeoutSeconds: 5},
+		Shutdown:  config.Shutdown{GraceSeconds: 5},
+		Identities: []config.Identity{
+			{ID: "test-client", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}},
+		},
+		Policy: config.Policy{Include: []string{rulesPath}},
+		Interception: config.Interception{
+			Enabled:          true,
+			CA:               config.CACfg{CertPath: caCertPath, KeyPath: caKeyPath},
+			LeafKeyType:      "ecdsa-p256",
+			LeafCertTTLHours: 24,
+		},
+	}
+
+	engine, err := policy.NewEngine(cfg.Mode, []string{rulesPath}, policy.KnownModifiers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	auditLog, err := audit.New(auditPath, cfg.Logging.AuditBufferSize, audit.OverflowMode(cfg.Logging.AuditOverflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opLog, opBuf := captureOpLog(level)
+	auditLog.SetOpLog(opLog)
+	srv, err := NewWithLoggers(cfg, engine, auditLog, opLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(originSrv.Certificate())
+	srv.originRoots = pool
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = srv.ServeOnListener(ctx, ln)
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	h := &interceptHarness{
+		t:          t,
+		srv:        srv,
+		addr:       ln.Addr().String(),
+		auditPath:  auditPath,
+		dbCA:       dbCA,
+		cancel:     cancel,
+		done:       done,
+		originHost: originHost,
+		originPort: originPort,
+		originURL:  originURL,
+	}
+	return h, opBuf
+}
+
+// silence unused-import alarms if the imports above are unused on a
+// future trim; tls.Config + crypto/x509 are pulled in by the helper.
+var _ = tls.VersionTLS12
+
 // TestOpLog_DebugCarriesRequestIDOnPlainHTTP asserts that at debug
 // level a request emits operational lines correlated by request_id
 // AND that the same request_id appears in the audit JSONL — the
@@ -165,6 +264,121 @@ func TestOpLog_InfoSuppressesPhaseRecords(t *testing.T) {
 	for _, sub := range []string{"phase=received", "phase=fastpath_eval", "phase=response"} {
 		if strings.Contains(out, sub) {
 			t.Errorf("info-level op-log emitted debug phase %q; full output:\n%s", sub, out)
+		}
+	}
+}
+
+// TestOpLog_DebugCarriesLifecycleOnConnectDeny asserts that an
+// HTTPS CONNECT request emits the same lifecycle phase records
+// (received → fastpath_eval → engine_eval → response) at debug
+// level that plain HTTP emits — closing the gap reported in
+// issue #34. Default-deny mode lets us drive the deny path
+// without standing up an intercepted upstream.
+func TestOpLog_DebugCarriesLifecycleOnConnectDeny(t *testing.T) {
+	proxyAddr, _, opBuf, cleanup := bootHTTPProxyWithOpLog(t, slog.LevelDebug)
+	defer cleanup()
+
+	// Issue a CONNECT to a host the rules do not allow. Default-deny
+	// → 470 from the proxy; we don't follow up with a tunnel, just
+	// assert on the operational log.
+	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	connectReq := "CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\n\r\n"
+	if _, err := conn.Write([]byte(connectReq)); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	if _, err := br.ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	// Drain headers + body so the proxy finishes its writeAudit /
+	// debug emission before we read the buffer.
+	_, _ = io.Copy(io.Discard, br)
+	time.Sleep(100 * time.Millisecond)
+
+	out := opBuf.String()
+	for _, sub := range []string{
+		`method=CONNECT`,
+		`scheme=https-tunneled`,
+		`phase=received`,
+		`phase=fastpath_eval`,
+		`phase=engine_eval`,
+		`phase=response`,
+	} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("CONNECT op-log missing %q; full output:\n%s", sub, out)
+		}
+	}
+}
+
+// TestOpLog_InfoSuppressesPhaseRecordsOnConnect mirrors the HTTP
+// info-suppression assertion for CONNECT — protects against a
+// regression where the new debug records leak into info-level
+// steady-state logs.
+func TestOpLog_InfoSuppressesPhaseRecordsOnConnect(t *testing.T) {
+	proxyAddr, _, opBuf, cleanup := bootHTTPProxyWithOpLog(t, slog.LevelInfo)
+	defer cleanup()
+
+	conn, err := net.DialTimeout("tcp", proxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	connectReq := "CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\n\r\n"
+	if _, err := conn.Write([]byte(connectReq)); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(conn)
+	_, _ = br.ReadString('\n')
+	_, _ = io.Copy(io.Discard, br)
+	time.Sleep(100 * time.Millisecond)
+
+	out := opBuf.String()
+	for _, sub := range []string{
+		"phase=received", "phase=fastpath_eval", "phase=engine_eval", "phase=response",
+	} {
+		if strings.Contains(out, sub) {
+			t.Errorf("info-level CONNECT op-log emitted debug phase %q; full output:\n%s", sub, out)
+		}
+	}
+}
+
+// TestOpLog_DebugCarriesLifecycleOnIntercepted asserts the same
+// lifecycle phases on the intercepted-inner-request path
+// (`dispatchInterceptedRequest`). Pairs with the CONNECT test:
+// CONNECT covers the tunnel-establish decision; this covers the
+// per-inner-request decision under interception.
+func TestOpLog_DebugCarriesLifecycleOnIntercepted(t *testing.T) {
+	rules := `
+- id: a
+  match: {host: 127.0.0.1}
+  effect: allow
+`
+	h, opBuf := bootInterceptProxyWithOpLog(t, rules, slog.LevelDebug)
+
+	c := h.clientWithOurCA()
+	resp, err := c.Get(h.originURL + "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	time.Sleep(100 * time.Millisecond)
+	h.close()
+
+	out := opBuf.String()
+	for _, sub := range []string{
+		`scheme=https-intercepted`,
+		`phase=received`,
+		`phase=fastpath_eval`,
+		`phase=upstream_dial`,
+		`phase=response`,
+	} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("intercepted op-log missing %q; full output:\n%s", sub, out)
 		}
 	}
 }

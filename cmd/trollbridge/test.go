@@ -14,12 +14,15 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/audit"
 	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/controlclient"
 	"github.com/spf13/cobra"
 )
 
@@ -316,7 +319,20 @@ func runTest(ctx context.Context, out io.Writer, cfg *config.Config, req *http.R
 	if opts.Verbose {
 		req = attachVerboseTrace(out, req, startedAt)
 	}
+
+	// Concurrent hold-poller: while client.Do is awaiting a response,
+	// poll the daemon's /v1/holds and, if our in-flight request shows
+	// up there, surface the hold id and the approve/deny commands so
+	// the operator does not have to guess that the proxy is holding
+	// the request. For held HTTPS CONNECT this is the only signal —
+	// the proxy cannot return a 471 in-band on a tunnel that has not
+	// been established yet (see issue #35).
+	holdCtx, holdCancel := context.WithCancel(context.Background())
+	defer holdCancel()
+	go pollForHold(holdCtx, out, cfg, req)
+
 	resp, err := client.Do(req)
+	holdCancel()
 	if err != nil {
 		annotated := annotateRequestErr(err, proxyAddr, cfg.Interception.Enabled, req.URL.Scheme)
 		printTestError(out, annotated, proxyAddr, cfg.Interception.Enabled, req.URL.Scheme)
@@ -656,6 +672,90 @@ func extractHoldID(dec *audit.Entry) string {
 		return ""
 	}
 	return dec.RequestID
+}
+
+// pollForHold watches the daemon's /v1/holds while client.Do is in
+// flight and surfaces the matching hold to the operator the first
+// time it appears. For HTTPS CONNECT under default-ask this is the
+// only signal — the proxy holds the tunnel pre-200 and cannot
+// return a 471 in-band; without this the test client just times
+// out silently. The poller exits when ctx is cancelled (i.e. when
+// the request returns or errors) or when it has surfaced once.
+//
+// Failures to reach the control plane are silent: the test command
+// must continue to work on hosts without operator credentials.
+func pollForHold(ctx context.Context, out io.Writer, cfg *config.Config, req *http.Request) {
+	// Initial delay so we don't hit the control plane on every fast
+	// request. 750ms is below the typical first-byte budget for a
+	// LAN proxy and well below client.Timeout's default of 30s.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(750 * time.Millisecond):
+	}
+
+	host := req.URL.Hostname()
+	port := holdPortFromURL(req.URL)
+	wantConnect := strings.EqualFold(req.URL.Scheme, "https")
+	wantMethod := strings.ToUpper(req.Method)
+
+	tick := time.NewTicker(750 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		body, err := controlclient.Get(cfg, "/v1/holds")
+		if err == nil {
+			var holds []approvals.Snapshot
+			if jerr := json.Unmarshal(body, &holds); jerr == nil {
+				for _, h := range holds {
+					if !holdMatches(h, host, port, wantConnect, wantMethod) {
+						continue
+					}
+					fmt.Fprintf(out, "  held:       request held by proxy — id=%s\n", h.ID)
+					fmt.Fprintf(out, "              approve via: trollbridge approve %s\n", h.ID)
+					fmt.Fprintf(out, "              deny via:    trollbridge deny %s\n", h.ID)
+					return
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// holdPortFromURL returns the port the proxy will see in /v1/holds
+// for req.URL. Empty Port() means the scheme default — 443 for HTTPS,
+// 80 otherwise. Matches splitHostPort on the proxy side.
+func holdPortFromURL(u *url.URL) int {
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
+	}
+	if strings.EqualFold(u.Scheme, "https") {
+		return 443
+	}
+	return 80
+}
+
+// holdMatches reports whether snapshot h corresponds to the test
+// request currently in flight. For HTTPS the proxy records the held
+// CONNECT (Method="CONNECT", Scheme="https-tunneled"); for HTTP the
+// proxy records the inner method (Method=req.Method, Scheme="http").
+func holdMatches(h approvals.Snapshot, host string, port int, wantConnect bool, wantMethod string) bool {
+	if !strings.EqualFold(h.Host, host) {
+		return false
+	}
+	if h.Port != port {
+		return false
+	}
+	if wantConnect {
+		return strings.EqualFold(h.Method, "CONNECT")
+	}
+	return strings.EqualFold(h.Method, wantMethod)
 }
 
 // shellQuote wraps s in POSIX single quotes, escaping any internal

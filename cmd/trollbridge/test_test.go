@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/audit"
 	"github.com/dandriscoll/trollbridge/internal/ca"
 	"github.com/dandriscoll/trollbridge/internal/config"
@@ -288,6 +289,112 @@ func TestRunTest_DeclinedPath_470_SurfacesAllowHint(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in 470-decline transcript:\n%s", want, out)
 		}
+	}
+}
+
+// TestHoldMatches covers the matching predicate used by pollForHold:
+// HTTPS in-flight requests match the proxy's CONNECT hold; HTTP
+// in-flight requests match the inner method. Closes issue #35's
+// matching contract.
+func TestHoldMatches(t *testing.T) {
+	connectHold := approvals.Snapshot{Method: "CONNECT", Scheme: "https-tunneled", Host: "github.com", Port: 443}
+	httpHold := approvals.Snapshot{Method: "GET", Scheme: "http", Host: "api.example.com", Port: 80}
+	otherHostHold := approvals.Snapshot{Method: "CONNECT", Scheme: "https-tunneled", Host: "other.example", Port: 443}
+
+	cases := []struct {
+		name        string
+		h           approvals.Snapshot
+		host        string
+		port        int
+		wantConnect bool
+		wantMethod  string
+		want        bool
+	}{
+		{"https request matches connect hold", connectHold, "github.com", 443, true, "GET", true},
+		{"https request mismatches host", connectHold, "elsewhere.com", 443, true, "GET", false},
+		{"https request mismatches port", connectHold, "github.com", 8443, true, "GET", false},
+		{"https request rejects http hold for same host", httpHold, "api.example.com", 80, true, "GET", false},
+		{"http get matches inner method", httpHold, "api.example.com", 80, false, "GET", true},
+		{"http get rejects connect hold", connectHold, "github.com", 443, false, "GET", false},
+		{"http post mismatches get", httpHold, "api.example.com", 80, false, "POST", false},
+		{"https request rejects unrelated host", otherHostHold, "github.com", 443, true, "GET", false},
+		{"case-insensitive host", connectHold, "GitHub.com", 443, true, "GET", true},
+		{"case-insensitive method", httpHold, "api.example.com", 80, false, "get", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := holdMatches(tc.h, tc.host, tc.port, tc.wantConnect, tc.wantMethod)
+			if got != tc.want {
+				t.Errorf("holdMatches(%+v, %q, %d, %v, %q) = %v, want %v",
+					tc.h, tc.host, tc.port, tc.wantConnect, tc.wantMethod, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHoldPortFromURL covers the scheme-default behaviour pollForHold
+// uses to determine the proxy's recorded port.
+func TestHoldPortFromURL(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want int
+	}{
+		{"https://github.com/", 443},
+		{"http://github.com/", 80},
+		{"https://github.com:8443/", 8443},
+		{"http://github.com:8080/", 8080},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			u, err := url.Parse(tc.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := holdPortFromURL(u); got != tc.want {
+				t.Errorf("holdPortFromURL(%q) = %d, want %d", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPollForHold_ExitsOnContextCancel verifies pollForHold does
+// not leak when the surrounding request returns before a hold is
+// surfaced. The failure mode this catches: a goroutine that keeps
+// hitting the control plane after the test command has already
+// rendered its result.
+func TestPollForHold_ExitsOnContextCancel(t *testing.T) {
+	// Point controller-cert env vars at non-existent paths so
+	// controlclient.Get errors immediately on every tick. pollForHold
+	// must still exit cleanly when ctx is cancelled.
+	t.Setenv("TROLLBRIDGE_CONTROLLER_CERT", "/nonexistent/cert")
+	t.Setenv("TROLLBRIDGE_CONTROLLER_KEY", "/nonexistent/key")
+	t.Setenv("TROLLBRIDGE_CONTROLLER_CA", "/nonexistent/ca")
+
+	cfgPath, _ := minimalTestYaml(t, "127.0.0.1", 1)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := buildTestRequest("https://github.com/", "GET", nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		var buf bytes.Buffer
+		pollForHold(ctx, &buf, cfg, req)
+		close(done)
+	}()
+	// Cancel before the initial 750ms delay elapses; pollForHold
+	// must return promptly.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pollForHold did not exit after context cancel")
 	}
 }
 

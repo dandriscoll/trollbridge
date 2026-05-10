@@ -185,12 +185,32 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		req.BodySize = int64(len(bodyBuf))
 	}
 
+	rlog := s.opLog.With(
+		"request_id", req.ID,
+		"identity", identityID,
+		"method", r.Method,
+		"scheme", "https-intercepted",
+		"host", host,
+		"port", port,
+	)
+	rlog.Debug("received", "phase", oplog.PhaseReceived, "path", req.Path)
+
 	decision, fastHit := s.fastPathDecide("https", host, port, req.Path)
-	if !fastHit {
+	if fastHit {
+		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval,
+			"hit", true, "decision", string(decision.Effect),
+			"source", string(decision.Source), "rule_id", decision.RuleID)
+	} else {
+		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval, "hit", false)
 		decision = s.engine.Decide(req)
+		rlog.Debug("engine_eval", "phase", oplog.PhaseEngineEval,
+			"decision", string(decision.Effect),
+			"source", string(decision.Source), "rule_id", decision.RuleID)
 	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
+		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))
 		decision = s.holdAndWait(req, decision)
+		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
 	s.engine.History().Record(req, decision, time.Now().UTC())
 
@@ -216,6 +236,8 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 			ContentLength: int64(len(body)),
 		}
 		_ = resp.Write(tlsConn)
+		rlog.Debug("response", "phase", oplog.PhaseResponse,
+			"status", status, "bytes", len(body), "latency_ms", time.Since(start).Milliseconds())
 		s.writeAuditWithBody(req, decision, bodyBuf, status, 0, time.Since(start), "")
 		return nil
 	}
@@ -235,20 +257,15 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		RootCAs:    s.originRoots,
 	})
 	dialMS := time.Since(dialStart).Milliseconds()
-	dialRlog := s.opLog.With(
-		"request_id", req.ID,
-		"host", host,
-		"port", port,
-	)
 	if err != nil {
-		dialRlog.Debug("upstream_dial",
+		rlog.Debug("upstream_dial",
 			"phase", oplog.PhaseUpstreamDial,
 			"ok", false,
 			"duration_ms", dialMS,
 			"error", err.Error(),
 		)
 	} else {
-		dialRlog.Debug("upstream_dial",
+		rlog.Debug("upstream_dial",
 			"phase", oplog.PhaseUpstreamDial,
 			"ok", true,
 			"duration_ms", dialMS,
@@ -312,6 +329,8 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		s.writeAuditWithBody(req, decision, bodyBuf, resp.StatusCode, 0, time.Since(start), err.Error())
 		return err
 	}
+	rlog.Debug("response", "phase", oplog.PhaseResponse,
+		"status", resp.StatusCode, "bytes", resp.ContentLength, "latency_ms", time.Since(start).Milliseconds())
 	s.writeAuditWithBody(req, decision, bodyBuf, resp.StatusCode, resp.ContentLength, time.Since(start), "")
 	return nil
 }
