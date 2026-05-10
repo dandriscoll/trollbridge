@@ -31,8 +31,8 @@ internal/server/        # proxy core: dispatcher, intercept, refusal
 internal/advisor/       # LLM advisor: translators (anthropic, aoai), HTTPClassifier
 internal/policy/        # rule engine, history, time windows
 internal/config/        # YAML schema (v3) + loader + Bind parser
-internal/console/       # TTY REPL invoked by `trollbridge run`
-internal/control/       # mTLS control plane (approve/deny/sessions/tui)
+internal/console/       # operator command backend (allow/deny/list/test/doctor); driven by tui's console pane
+internal/control/       # mTLS control plane (approve/deny/sessions/attach)
 internal/controlclient/ # client side of the control plane
 internal/ca/            # CA generation, leaf signing, fingerprinting
 internal/hostlist/      # allow/deny pattern matcher
@@ -42,8 +42,8 @@ internal/redact/        # body / query redaction
 internal/identity/      # identity resolver (mTLS / bearer / source IP)
 internal/sessions/      # per-client session tracker
 internal/types/         # shared types (Effect, Decision, RequestEvent)
-internal/tui/           # bubble-tea approvals UI
-internal/configwrite/   # in-place yaml.v3 Node-API edits (REPL writes)
+internal/tui/           # unified two-pane operator UI (approvals + console); raw alt-screen, hand-rolled ANSI
+internal/configwrite/   # in-place yaml.v3 Node-API edits (console-pane writes)
 internal/envprint/      # render shell exports for HTTP(S)_PROXY
 packaging/              # systemd unit, Dockerfile, Incus cloud-init, firewall
 scripts/release.sh      # end-to-end release flow (bump → tag → build → publish)

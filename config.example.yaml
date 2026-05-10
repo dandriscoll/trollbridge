@@ -109,7 +109,7 @@ llm:
     looks like data exfiltration to an unfamiliar destination. When
     uncertain, answer ask_user with a short reason.
 
-# Controller — operator-facing control plane (approve/deny/tui).
+# Controller — operator-facing control plane (approve/deny/attach).
 # mTLS is enforced (the only supported mode in v2). Client certs
 # are issued by the same CA used for TLS interception:
 #

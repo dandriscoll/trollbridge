@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/oplog"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/server"
+	"github.com/dandriscoll/trollbridge/internal/tui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -86,9 +88,9 @@ func newRunCmd() *cobra.Command {
 			defer cancel()
 
 			// Fast-path lists are inline in trollbridge.yaml's
-			// `lists.allow` / `lists.deny`. The console REPL writes
+			// `lists.allow` / `lists.deny`. The console pane writes
 			// new patterns back to the file via configwrite and
-			// triggers an in-process re-parse via console.Config.
+			// triggers an in-process re-parse via the OnReload hook.
 			if err := srv.SetLists(cfg.Lists.Allow, cfg.Lists.Deny); err != nil {
 				return &configErr{err}
 			}
@@ -106,26 +108,41 @@ func newRunCmd() *cobra.Command {
 				}
 			}()
 
-			// Console REPL when stdin is a tty. REPL mutations write
-			// back to trollbridge.yaml and trigger an in-process
-			// re-parse of the lists.
+			// Operator UI: the unified two-pane TUI when stdin is a
+			// tty. The console pane reuses the same Backend that drove
+			// the line-based REPL; it now runs character-by-character
+			// inside the alt-screen UI alongside the approvals pane.
 			if !noConsole && console.IsInteractive(os.Stdin) {
+				backend := &console.Backend{
+					ConfigPath: configPath,
+					LocalOnly:  true,
+					OnReload: func() {
+						freshCfg, err := config.Load(configPath)
+						if err != nil {
+							opLog.Error("list-reload re-parse failed",
+								"event", oplog.EventAllowlistReloadFailure,
+								"error", err.Error())
+							return
+						}
+						_ = srv.ReloadListsFromConfig(freshCfg)
+					},
+					OnTest:   replTestFn(configPath),
+					OnDoctor: replDoctorFn(configPath),
+				}
+				welcome := buildRunWelcome(srv.Addr(), string(cfg.Mode))
 				go func() {
-					_ = console.Run(ctx, console.Config{
-						ConfigPath: configPath,
-						OnReload: func() {
-							freshCfg, err := config.Load(configPath)
-							if err != nil {
-								opLog.Error("list-reload re-parse failed",
-									"event", oplog.EventAllowlistReloadFailure,
-									"error", err.Error())
-								return
-							}
-							_ = srv.ReloadListsFromConfig(freshCfg)
-						},
-						OnTest:   replTestFn(configPath),
-						OnDoctor: replDoctorFn(configPath),
-					})
+					defer func() {
+						if r := recover(); r != nil {
+							opLog.Warn("operator UI crashed",
+								"event", oplog.EventOperatorUIError,
+								"error", fmt.Sprintf("%v", r))
+						}
+					}()
+					if err := tui.RunOperator(ctx, cfg, os.Stdin, os.Stdout, backend, welcome); err != nil {
+						opLog.Warn("operator UI exited",
+							"event", oplog.EventOperatorUIError,
+							"error", err.Error())
+					}
 				}()
 			}
 
@@ -143,7 +160,12 @@ func newRunCmd() *cobra.Command {
 				)
 			}
 
-			if isStdoutTTY() {
+			// Banner content has moved into the operator UI's console
+			// pane scrollback for TTY runs (so the operator sees it
+			// inside the same screen as the prompt). Keep the banner
+			// path for non-tty stdin + TTY stdout — useful in scripts
+			// that wrap `run` and want the listen address visible.
+			if isStdoutTTY() && (noConsole || !console.IsInteractive(os.Stdin)) {
 				printRunStartupBanner(cmd.OutOrStdout(), srv.Addr(), string(cfg.Mode))
 			}
 
@@ -154,12 +176,12 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml (default: $TROLLBRIDGE_CONFIG, then ./trollbridge.yaml)")
-	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the interactive console even when stdin is a tty")
+	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the operator UI even when stdin is a tty")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "alias for --log-level=debug; emits per-request lifecycle records on the operational log")
 	return cmd
 }
 
-// replTestFn returns a closure that the console REPL invokes for
+// replTestFn returns a closure that the console pane invokes for
 // `test <url>` (issue #31). Mirrors the CLI's runTest pipeline,
 // minus the audit-log decision correlation: the REPL is in-process
 // with the same daemon writing the audit log, so racing the polling
@@ -172,8 +194,6 @@ func replTestFn(configPath string) func(io.Writer, string) error {
 		if err != nil {
 			return err
 		}
-		// Allow `[METHOD] <url>` for symmetry with the CLI's most
-		// common forms, while staying minimal.
 		method := "GET"
 		urlStr := strings.TrimSpace(urlArg)
 		if i := strings.IndexAny(urlStr, " \t"); i > 0 {
@@ -197,11 +217,10 @@ func replTestFn(configPath string) func(io.Writer, string) error {
 	}
 }
 
-// replDoctorFn returns the closure invoked for the REPL's `doctor`
-// command. It re-uses the CLI doctor implementation by spinning up
-// a fresh cobra command and binding its stdout/stderr to the REPL
-// writer — keeps the implementation single-source and lets the user
-// see the same status lines the CLI prints.
+// replDoctorFn returns the closure invoked for the console pane's
+// `doctor` command. It re-uses the CLI doctor implementation by
+// spinning up a fresh cobra command and binding its stdout/stderr
+// to the writer the TUI passes in.
 func replDoctorFn(configPath string) func(io.Writer) error {
 	return func(out io.Writer) error {
 		cmd := newDoctorCmd()
@@ -226,29 +245,28 @@ var isStdoutTTY = func() bool {
 	return term.IsTerminal(int(os.Stdout.Fd()))
 }
 
-// printRunStartupBanner writes a one-screen "you're up — try this
-// next" block to out, suitable for human operators who just ran
-// `trollbridge run` on a terminal. The banner names the listen
-// address, the policy mode (so a default-deny operator knows why
-// their first curl will be refused), and copy-pasteable next-step
-// commands.
-//
-// The function is suppressed by the caller when stdout is not a
-// TTY; the structured "listening" log line still fires for
-// log-consumers in non-TTY environments.
+// buildRunWelcome renders the "you're up — try this next" content
+// that used to print as a banner before run blocked. The same lines
+// now go into the operator UI's console-pane scrollback so the
+// operator sees them inside the alt-screen layout.
+func buildRunWelcome(addr, mode string) string {
+	var buf bytes.Buffer
+	printRunStartupBanner(&buf, addr, mode)
+	return buf.String()
+}
+
+// printRunStartupBanner writes the run startup content to out. It is
+// used for non-tty stdin + TTY stdout (where the operator UI is not
+// drawn, but the operator wanted to see the listen address) and as
+// the source of the welcome scrollback inside the operator UI.
 func printRunStartupBanner(out io.Writer, addr, mode string) {
 	w := func(format string, a ...any) { fmt.Fprintf(out, format, a...) }
-	w("\n")
 	w("trollbridge is listening on %s (mode: %s).\n", addr, mode)
 	w("\n")
 	if mode == "default-deny" {
-		// Closes #16: a first-time operator under default-deny will
-		// see their first request declined. Tell them up front that
-		// the decline is the policy doing its job, and how to allow
-		// the host they want to test.
 		w("Note: default-deny means your first request will be declined (HTTP 470).\n")
 		w("That is the proxy enforcing the policy, not a bug. To allow a host,\n")
-		w("either add it to lists.allow in trollbridge.yaml or, in this REPL,\n")
+		w("either add it to lists.allow in trollbridge.yaml or, in this UI,\n")
 		w("type: allow <hostname>\n")
 		w("\n")
 	}
@@ -259,5 +277,4 @@ func printRunStartupBanner(out io.Writer, addr, mode string) {
 	w("  eval \"$(trollbridge env)\" && curl -sI https://example.com\n")
 	w("\n")
 	w("Stop with Ctrl-C.\n")
-	w("\n")
 }

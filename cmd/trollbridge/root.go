@@ -177,7 +177,7 @@ conditions. See DESIGN.md for the full specification.`,
 		op(newSessionsCmd(), groupAudit),
 		op(newApproveCmd(), groupAudit),
 		op(newDenyCmd(), groupAudit),
-		op(newTUICmd(), groupAudit),
+		op(newAttachCmd(), groupAudit),
 
 		op(newCACmd(), groupCA),
 	)

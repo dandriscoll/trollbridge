@@ -20,6 +20,7 @@ const (
 	EventAuditWriteFailure        = "audit_write_failure"
 	EventAuditEncodeFailure       = "audit_encode_failure"
 	EventControlPlaneError        = "control_plane_error"
+	EventOperatorUIError          = "operator_ui_error"
 
 	// Ask-case lifecycle events. INFO-level for state transitions an
 	// operator should see by default (no --verbose); WARN for refusal

@@ -1548,47 +1548,55 @@ trollbridge MUST NOT silently honor any env var that overrides
 security-relevant config (mode, interception, CA paths). These are
 file-only.
 
-### 13.7 Interactive console
+### 13.7 Operator UI
 
 When `trollbridge run` is invoked with stdin attached to a
-terminal, trollbridge MUST start an interactive REPL on stdin
-that lets the operator mutate the flat allow / deny lists in
-flight. The console is silently disabled when stdin is not a
-tty (systemd, Docker without `-it`, Incus exec without a pty)
-so service deployments are unaffected. The `--no-console` flag
-disables it explicitly.
+terminal, trollbridge MUST draw an alt-screen two-pane operator
+UI on stdout that lets the operator both review held requests
+and mutate the flat allow / deny lists in flight. The UI is
+silently disabled when stdin is not a tty (systemd, Docker
+without `-it`, Incus exec without a pty) so service deployments
+are unaffected. The `--no-console` flag disables it explicitly.
 
-Commands:
+Layout:
 
-- `allow <pattern>` — append `<pattern>` to the first
-  configured allow file, validating the pattern first. The
-  file is re-sorted (§10.8.3); the watcher (§10.8.2) picks up
-  the modification and reloads the in-memory list.
-- `deny <pattern>` — same for the first configured deny file.
-- `remove <pattern>` — remove the matching line (case-
-  insensitive on the pattern field) from any configured
-  allow/deny file. Removes from BOTH if the pattern appears
-  in both.
-- `list [allow|deny|all]` — print the current patterns.
-- `reload` — no-op (the watcher reloads on mtime change
-  automatically); kept for operator muscle memory.
-- `help` — list the commands.
-- `quit` / `exit` — leave the console; the proxy keeps
-  running.
+- **Approvals pane (top)** — lists pending holds, refreshing
+  automatically as the queue changes. Keys: `a` approve, `d` deny,
+  `↑↓` (or `j`/`k`) select, `r` refresh now, `q` (or `Esc`) quit.
+- **Console pane (bottom)** — operator commands as a typed prompt:
+  - `allow <pattern>` — append `<pattern>` to the first configured
+    allow file, validating the pattern first. The file is re-
+    sorted (§10.8.3); the running daemon re-parses it on each write.
+  - `deny <pattern>` — same for the first configured deny file.
+  - `remove <pattern>` — remove the matching line (case-insensitive
+    on the pattern field) from any configured allow/deny file.
+    Removes from BOTH if the pattern appears in both.
+  - `list [allow|deny|all]` — print the current patterns.
+  - `reload` — re-parse the config into the running matcher.
+  - `test [METHOD] <url>` — send one request through the proxy and
+    print the response (proxy-host only).
+  - `doctor` — run the same checks as `trollbridge doctor`.
+  - `help` — list the commands.
+  - `quit` / `exit` — leave the UI; the proxy keeps running.
+- **Tab** switches focus between the panes; the focused pane's
+  header is bold and the unfocused pane's is dim. **Ctrl-C** quits
+  from any focus.
 
-EOF (Ctrl-D) on stdin also exits the console.
+The operator UI runs in raw mode in the terminal alt-screen so the
+host shell's scrollback is preserved on exit. The list files are
+written via in-place yaml.v3 Node-API edits (comments outside the
+`lists:` subtree survive); the running daemon re-parses the file
+after each mutation.
 
-The console writes the list files using an atomic
-write-temp-then-rename. Concurrent edits by the operator's
-text editor race with the same rename; either side may win,
-the watcher picks up the result, and the in-memory list is
-reloaded.
-
-The console MUST NOT be reachable from the network. The
-control-plane HTTP API (§13.4 `approvals.control_listen`) is
-the network-facing operator surface for approvals; flat-list
-mutation is intentionally console-only because it is
-load-bearing security state.
+The operator UI MUST NOT be reachable from the network. The
+control-plane HTTP API (§13.4 `approvals.control_listen`) is the
+network-facing operator surface for approvals — `trollbridge
+attach` drives the same UI remotely over that API, with the
+local-host commands (`allow`, `deny`, `remove`, `list`, `reload`,
+`test`, `doctor`) gated to a one-line "not available in attach
+mode" hint until the control plane exposes them. Flat-list
+mutation is intentionally local-only because it is load-bearing
+security state.
 
 ---
 

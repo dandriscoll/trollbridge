@@ -2,7 +2,7 @@
 // use to talk to the running daemon's control API. The control plane
 // is mTLS-locked; this client loads the operator's client cert + key
 // from disk (or env-var-overridden paths) and chains against the
-// daemon's CA cert. Used by approve/deny/decisions/sessions/tui.
+// daemon's CA cert. Used by approve/deny/decisions/sessions/attach.
 package controlclient
 
 import (

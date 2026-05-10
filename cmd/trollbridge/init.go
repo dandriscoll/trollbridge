@@ -59,7 +59,7 @@ llm:
     credentials or contacts cloud metadata services. When uncertain,
     answer ask_user.
 
-# Controller — operator-facing control plane (approve/deny/tui).
+# Controller — operator-facing control plane (approve/deny/attach).
 # mTLS is enforced; client certs are issued by the same CA used for
 # TLS interception (trollbridge ca client-cert <name>).
 controller:

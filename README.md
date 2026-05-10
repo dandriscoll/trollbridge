@@ -82,19 +82,35 @@ For verbose per-request operational output, run with `--verbose`,
 lines carry a `request_id=` field that correlates with the audit
 log.
 
-## Approvals TUI
+## Operator UI
 
-When the policy holds a request for operator approval, list and
-resolve held requests in real time with:
+When `trollbridge run` starts on a terminal, it draws a two-pane
+operator UI in the alt-screen: the upper pane lists pending holds
+(approve / deny in real time), and the lower pane is the operator
+console (`allow`, `deny`, `remove`, `list`, `reload`, `test`,
+`doctor`, `help`, `quit`).
+
+Keys:
+
+- `Tab` — switch focus between the approvals pane and the console pane
+- approvals pane: `a` approve · `d` deny · `↑↓` (or `j`/`k`) select · `r` refresh now · `q` (or `Esc`) quit
+- console pane: type a command, `Enter` to run, `Backspace` to edit, `Ctrl-U` to clear the line, `Esc` to return to the approvals pane
+- anywhere: `Ctrl-C` quit
+
+The approvals list refreshes automatically as the queue changes;
+one-shot `trollbridge approve <id>` / `trollbridge deny <id>` remain
+available for scripted use.
+
+To drive the same UI from another terminal — over the daemon's mTLS
+control plane — run:
 
 ```sh
-trollbridge tui -c ~/.trollbridge/trollbridge.yaml
+trollbridge attach -c ~/.trollbridge/trollbridge.yaml
 ```
 
-Keys: `a` approve · `d` deny · `↑↓` (or `j`/`k`) select · `r` refresh
-now · `q` quit. The list refreshes automatically as the queue
-changes; one-shot `trollbridge approve <id>` / `trollbridge deny <id>`
-remain available for scripted use.
+In `attach`, the approvals pane is fully functional; list editing,
+test, and doctor commands stay on the proxy host (the console pane
+prints a one-line "not available in attach mode" hint).
 
 ## Configuration (schema v3)
 
@@ -186,9 +202,9 @@ trollbridge ca install --apply        # searches canonical paths;
 use the absolute form so they paste cleanly into any shell or any
 machine.
 
-When `trollbridge run` is interactive, it presents a console
-prompt for live edits to `lists.allow` / `lists.deny` in
-trollbridge.yaml:
+When `trollbridge run` is interactive, the operator UI's console
+pane (Tab to focus) accepts live edits to `lists.allow` /
+`lists.deny` in trollbridge.yaml:
 
 ```
 trollbridge> allow api.github.com

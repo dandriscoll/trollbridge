@@ -476,11 +476,17 @@ Tell the user the four day-to-day commands:
   saved rule.
 - `trollbridge deny <hold-id> [--reason "…"]` — resolve a held
   request as denied; the reason lands in the audit log.
-- The interactive console — when `trollbridge run` is run on a
-  terminal (TTY), it offers a `trollbridge>` prompt for
+- The operator UI — when `trollbridge run` is run on a terminal
+  (TTY), it draws a two-pane alt-screen UI. The upper pane lists
+  pending holds (`a` approve, `d` deny, `↑↓` select, `r` refresh).
+  Press `Tab` to focus the lower console pane and type
   `allow <pattern>` / `deny <pattern>` / `remove <pattern>` /
-  `list [allow|deny]`. Edits go to the first configured allow / deny
-  file and the file watcher reloads within ~1 second.
+  `list [allow|deny]` / `test <url>` / `doctor`. Edits go to the
+  first configured allow / deny file and the running daemon
+  re-parses the file on each mutation.
+- `trollbridge attach -c <config>` — drive the same UI from another
+  terminal over the daemon's mTLS control plane. Approvals work
+  remotely; list editing / test / doctor stay on the proxy host.
 
 If `approvals.control_listen` is non-localhost the operator must
 enable bearer-token auth on the control plane. The CLI subcommands

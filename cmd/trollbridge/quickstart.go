@@ -16,6 +16,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/oplog"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/server"
+	"github.com/dandriscoll/trollbridge/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -185,20 +186,36 @@ func runProxyLoop(cmd *cobra.Command, configPath string, verbose bool) error {
 	}()
 
 	if console.IsInteractive(os.Stdin) {
+		backend := &console.Backend{
+			ConfigPath: configPath,
+			LocalOnly:  true,
+			OnReload: func() {
+				freshCfg, err := config.Load(configPath)
+				if err != nil {
+					opLog.Error("list-reload re-parse failed",
+						"event", oplog.EventAllowlistReloadFailure,
+						"error", err.Error())
+					return
+				}
+				_ = srv.ReloadListsFromConfig(freshCfg)
+			},
+			OnTest:   replTestFn(configPath),
+			OnDoctor: replDoctorFn(configPath),
+		}
+		welcome := buildRunWelcome(srv.Addr(), string(cfg.Mode))
 		go func() {
-			_ = console.Run(ctx, console.Config{
-				ConfigPath: configPath,
-				OnReload: func() {
-					freshCfg, err := config.Load(configPath)
-					if err != nil {
-						opLog.Error("list-reload re-parse failed",
-							"event", oplog.EventAllowlistReloadFailure,
-							"error", err.Error())
-						return
-					}
-					_ = srv.ReloadListsFromConfig(freshCfg)
-				},
-			})
+			defer func() {
+				if r := recover(); r != nil {
+					opLog.Warn("operator UI crashed",
+						"event", oplog.EventOperatorUIError,
+						"error", fmt.Sprintf("%v", r))
+				}
+			}()
+			if err := tui.RunOperator(ctx, cfg, os.Stdin, os.Stdout, backend, welcome); err != nil {
+				opLog.Warn("operator UI exited",
+					"event", oplog.EventOperatorUIError,
+					"error", err.Error())
+			}
 		}()
 	}
 
@@ -216,7 +233,7 @@ func runProxyLoop(cmd *cobra.Command, configPath string, verbose bool) error {
 		)
 	}
 
-	if isStdoutTTY() {
+	if isStdoutTTY() && !console.IsInteractive(os.Stdin) {
 		printRunStartupBanner(cmd.OutOrStdout(), srv.Addr(), string(cfg.Mode))
 	}
 
