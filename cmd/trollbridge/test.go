@@ -166,6 +166,17 @@ type testOpts struct {
 	// body cannot push the status / decision / reason lines off
 	// screen (closes #40); the CLI leaves it 0 (byte-cap only).
 	MaxBodyLines int
+	// MaxHeaders, when > 0, caps the response-header block to a
+	// curated subset (Content-Type, Content-Length) plus the first
+	// (MaxHeaders - len(curated)) headers in alphabetical order; the
+	// remainder is summarized as "(N more headers omitted)". The REPL's
+	// small console pane sets this for the same reason MaxBodyLines
+	// exists — chatty endpoints emit 10+ headers (Set-Cookie,
+	// Cache-Control, X-Frame-Options, …) that scroll status / decision
+	// / reason lines off the small pane (closes #40). The CLI leaves
+	// it 0 (no cap). MaxHeaders is independent of the Raw flag: --raw
+	// governs the response body only.
+	MaxHeaders int
 }
 
 // requireURLArg replaces cobra.ExactArgs(1) so the user sees a usage
@@ -630,11 +641,50 @@ func renderResult(out io.Writer, req *http.Request, proxyAddr string, resp *http
 		}
 		if len(keys) > 0 {
 			sort.Strings(keys)
+			// MaxHeaders cap: the REPL's small console pane sets this
+			// so 10+ response headers (Set-Cookie, Cache-Control,
+			// X-Frame-Options, …) cannot scroll status / decision off
+			// screen. Curate the most operator-useful keys first
+			// (Content-Type, Content-Length), then alphabetical of the
+			// remainder, up to the cap. The summary line names how many
+			// were omitted.
+			shown := keys
+			omitted := 0
+			if opts.MaxHeaders > 0 && len(keys) > opts.MaxHeaders {
+				curated := []string{}
+				rest := []string{}
+				for _, k := range keys {
+					if k == "Content-Type" || k == "Content-Length" {
+						curated = append(curated, k)
+					} else {
+						rest = append(rest, k)
+					}
+				}
+				// curated is already in alphabetical order because Content-Length < Content-Type lexicographically only if we re-sort; simpler: re-sort curated.
+				sort.Strings(curated)
+				cap := opts.MaxHeaders
+				if len(curated) > cap {
+					curated = curated[:cap]
+				}
+				room := cap - len(curated)
+				if room > len(rest) {
+					room = len(rest)
+				}
+				if room < 0 {
+					room = 0
+				}
+				shown = append(curated, rest[:room]...)
+				omitted = len(keys) - len(shown)
+				sort.Strings(shown)
+			}
 			w("  headers:\n")
-			for _, k := range keys {
+			for _, k := range shown {
 				for _, v := range resp.Header.Values(k) {
 					w("    %s: %s\n", k, v)
 				}
+			}
+			if omitted > 0 {
+				w("    (%d more headers omitted; run trollbridge test from a shell for full set)\n", omitted)
 			}
 		}
 	}

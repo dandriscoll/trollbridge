@@ -125,6 +125,13 @@ should be a major version. The constants live in
   tags, builds the four-arch matrix, pushes, and publishes the GH
   release in one go. `--bump patch|minor|major --yes` for
   non-interactive.
+- **Daemon-mode runs use `--no-console`.** `trollbridge run
+  --no-console` suppresses the operator UI and is the deployment
+  shape for systemd / supervisor / container hosts. Approvals are
+  driven from another host via `trollbridge attach` or auto-resolved
+  by `approvals.timeout_seconds` / `approvals.signal_after_seconds`.
+  The `event=startup install_mode=daemon …` line names the run mode
+  for log-tailing operators.
 
 ## Common producer workflows
 

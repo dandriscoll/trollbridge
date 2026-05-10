@@ -259,10 +259,11 @@ func TestRunLoop_DefaultStartHintWhenNoWelcome(t *testing.T) {
 	}
 }
 
-// TestRunLoop_TabFlipsConsoleHeaderToBold verifies the rendered
-// console-pane header is bold when focused (after Tab) — the focus
-// indicator lives in ANSI escapes only.
-func TestRunLoop_TabFlipsConsoleHeaderToBold(t *testing.T) {
+// TestRunLoop_TabFlipsConsoleBorderToCyan verifies the rendered
+// console-pane top border is cyan when focused (after Tab). The
+// focus signal is the bright-cyan border color (\x1b[36m) on the
+// border row that contains the pane label.
+func TestRunLoop_TabFlipsConsoleBorderToCyan(t *testing.T) {
 	client := &stubClient{listFn: func() ([]approvals.Snapshot, error) { return nil, nil }}
 	pr, pw := io.Pipe()
 	var stdout strings.Builder
@@ -289,22 +290,32 @@ func TestRunLoop_TabFlipsConsoleHeaderToBold(t *testing.T) {
 	}
 
 	out := stdout.String()
-	// After Tab, the console header is rendered with the bold ANSI
-	// escape `\x1b[1m` and the focus-indicator prefix "▶ "; the
-	// approvals header is dim `\x1b[2m` with a non-indicator "  "
-	// space prefix. We look for the bold escape immediately
-	// preceding the focused console title.
-	if !strings.Contains(out, "\x1b[1m▶ console") {
-		t.Errorf("console header not bold-with-indicator after Tab; first 400: %q", first(out, 400))
+	// Find the LAST render frame's console top border — after Tab the
+	// console pane is focused and its top border carries the cyan
+	// escape. The approvals pane is unfocused → dim grey.
+	rows := strings.Split(out, "\r\n")
+	var consoleRow string
+	for _, row := range rows {
+		if strings.Contains(row, "console") && strings.Contains(row, "╭") {
+			consoleRow = row // keep last match — the post-Tab frame
+		}
+	}
+	if consoleRow == "" {
+		t.Fatalf("no console top-border row found in output; first 400: %q", first(out, 400))
+	}
+	if !strings.Contains(consoleRow, "\x1b[36m") {
+		t.Errorf("console top border not cyan-focused after Tab; row: %q", consoleRow)
 	}
 }
 
-// TestRender_GlobalHintNamesNextPane pins the #41 fix: the global
-// hint must name the pane Tab will focus TO, not just say "switch
-// panes." When approvals is focused the hint reads "focus console";
-// when console is focused it reads "focus approvals."
-func TestRender_GlobalHintNamesNextPane(t *testing.T) {
-	t.Run("approvals focused → hint says focus console", func(t *testing.T) {
+// TestRender_TabHintAppearsInFocusedPaneTopBorder pins the #41 fix:
+// the [Tab] focus <pane> cue lives in the focused pane's top border
+// at top-right, naming the pane Tab will focus TO. When approvals is
+// focused the cue reads "focus console" on the approvals pane's top
+// border; when console is focused it reads "focus approvals" on the
+// console pane's top border.
+func TestRender_TabHintAppearsInFocusedPaneTopBorder(t *testing.T) {
+	t.Run("approvals focused → cue on approvals top border", func(t *testing.T) {
 		client := &stubClient{listFn: func() ([]approvals.Snapshot, error) { return nil, nil }}
 		pr, pw := io.Pipe()
 		var stdout strings.Builder
@@ -321,11 +332,28 @@ func TestRender_GlobalHintNamesNextPane(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatalf("runLoop did not exit")
 		}
-		if !strings.Contains(stdout.String(), "[Tab] focus console") {
-			t.Errorf("hint missing 'focus console'; first 600: %q", first(stdout.String(), 600))
+		out := stdout.String()
+		if !strings.Contains(out, "[Tab] focus console") {
+			t.Errorf("cue missing 'focus console'; first 600: %q", first(out, 600))
+		}
+		// The cue must live on the same row as the approvals pane top
+		// border (corners ╭ and ╮) — i.e. in the top border itself, not
+		// on a separate global row.
+		rows := strings.Split(out, "\r\n")
+		found := false
+		for _, row := range rows {
+			if strings.Contains(row, "[Tab] focus console") &&
+				strings.Contains(row, "╭") && strings.Contains(row, "╮") &&
+				strings.Contains(row, "approvals") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("'[Tab] focus console' cue not on approvals top-border row; output: %q", first(out, 800))
 		}
 	})
-	t.Run("console focused → hint says focus approvals", func(t *testing.T) {
+	t.Run("console focused → cue on console top border", func(t *testing.T) {
 		client := &stubClient{listFn: func() ([]approvals.Snapshot, error) { return nil, nil }}
 		pr, pw := io.Pipe()
 		var stdout strings.Builder
@@ -344,10 +372,130 @@ func TestRender_GlobalHintNamesNextPane(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatalf("runLoop did not exit")
 		}
-		if !strings.Contains(stdout.String(), "[Tab] focus approvals") {
-			t.Errorf("hint missing 'focus approvals' after Tab; first 600: %q", first(stdout.String(), 600))
+		out := stdout.String()
+		if !strings.Contains(out, "[Tab] focus approvals") {
+			t.Errorf("cue missing 'focus approvals' after Tab; first 600: %q", first(out, 600))
+		}
+		rows := strings.Split(out, "\r\n")
+		found := false
+		for _, row := range rows {
+			if strings.Contains(row, "[Tab] focus approvals") &&
+				strings.Contains(row, "╭") && strings.Contains(row, "╮") &&
+				strings.Contains(row, "console") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("'[Tab] focus approvals' cue not on console top-border row; output: %q", first(out, 800))
 		}
 	})
+}
+
+// TestRender_BottomBorderCarriesKeybindings asserts the per-pane
+// keybinding hints live on the pane's bottom border (the row carrying
+// ╰ and ╯), not on a separate footer row.
+func TestRender_BottomBorderCarriesKeybindings(t *testing.T) {
+	client := &stubClient{listFn: func() ([]approvals.Snapshot, error) { return nil, nil }}
+	pr, pw := io.Pipe()
+	var stdout strings.Builder
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+	}()
+	time.Sleep(80 * time.Millisecond)
+	_, _ = pw.Write([]byte{0x03})
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("runLoop did not exit")
+	}
+	out := stdout.String()
+	rows := strings.Split(out, "\r\n")
+
+	approvalsBottomFound := false
+	consoleBottomFound := false
+	for _, row := range rows {
+		if strings.Contains(row, "[a] approve") &&
+			strings.Contains(row, "╰") && strings.Contains(row, "╯") {
+			approvalsBottomFound = true
+		}
+		if strings.Contains(row, "[Ctrl-C] quit") &&
+			strings.Contains(row, "╰") && strings.Contains(row, "╯") {
+			consoleBottomFound = true
+		}
+	}
+	if !approvalsBottomFound {
+		t.Errorf("'[a] approve' not on approvals bottom-border row; output: %q", first(out, 1200))
+	}
+	if !consoleBottomFound {
+		t.Errorf("'[Ctrl-C] quit' not on console bottom-border row; output: %q", first(out, 1200))
+	}
+}
+
+// TestRender_GlobalHintRowDeleted confirms the prior global bottom
+// hint row is gone. Its unique separator was "•  [Ctrl-C]" which only
+// appeared on that one row; the [Ctrl-C] quit text now appears on the
+// console pane's bottom border (without the • separator).
+func TestRender_GlobalHintRowDeleted(t *testing.T) {
+	client := &stubClient{listFn: func() ([]approvals.Snapshot, error) { return nil, nil }}
+	pr, pw := io.Pipe()
+	var stdout strings.Builder
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+	}()
+	time.Sleep(80 * time.Millisecond)
+	_, _ = pw.Write([]byte{0x03})
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("runLoop did not exit")
+	}
+	if strings.Contains(stdout.String(), "•  [Ctrl-C]") {
+		t.Errorf("global hint row separator '•  [Ctrl-C]' still in output; should be deleted")
+	}
+}
+
+// TestRender_BothPanesHaveBorders is the sweep test: each of the four
+// rounded corner runes appears exactly twice — once per pane. Catches
+// "we forgot the console pane's top border" (count=1) or "duplicated
+// the approvals border" (count=3) regressions.
+func TestRender_BothPanesHaveBorders(t *testing.T) {
+	client := &stubClient{listFn: func() ([]approvals.Snapshot, error) { return nil, nil }}
+	pr, pw := io.Pipe()
+	var stdout strings.Builder
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+	}()
+	time.Sleep(80 * time.Millisecond)
+	_, _ = pw.Write([]byte{0x03})
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("runLoop did not exit")
+	}
+	out := stdout.String()
+	// Take only the LAST render frame: \x1b[H\x1b[2J clears the screen
+	// each frame. Counting across all frames would conflate redraws.
+	parts := strings.Split(out, "\x1b[H\x1b[2J")
+	if len(parts) < 2 {
+		t.Fatalf("no render frame found in output; first 400: %q", first(out, 400))
+	}
+	last := parts[len(parts)-1]
+	for _, corner := range []string{"╭", "╮", "╰", "╯"} {
+		if got := strings.Count(last, corner); got != 2 {
+			t.Errorf("corner %q appears %d time(s) in last frame; want 2 (one per pane)",
+				corner, got)
+		}
+	}
 }
 
 // TestInProcessClient_RoundtripsAgainstRealQueue closes the gap that

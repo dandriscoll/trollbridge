@@ -127,6 +127,13 @@ func newRunCmd() *cobra.Command {
 			// tty. The console pane reuses the same Backend that drove
 			// the line-based REPL; it now runs character-by-character
 			// inside the alt-screen UI alongside the approvals pane.
+			tuiActive := !noConsole && console.IsInteractive(os.Stdin)
+			installMode := "daemon"
+			uiKind := "none"
+			if tuiActive {
+				installMode = "interactive"
+				uiKind = "tty"
+			}
 			if !noConsole && console.IsInteractive(os.Stdin) {
 				backend := &console.Backend{
 					ConfigPath: configPath,
@@ -161,6 +168,34 @@ func newRunCmd() *cobra.Command {
 				}()
 			}
 
+			// Startup record: one INFO line naming the run mode so an
+			// operator tailing the oplog (especially under systemd
+			// where there is no operator UI) can answer "what is this
+			// process?" from the first record. install_mode names the
+			// operator-UI axis (interactive | daemon); ui names the
+			// terminal axis (tty | none); default_decision and
+			// on_timeout name the security-policy posture so a
+			// default-ask + ui=none + on_timeout=deny deployment is
+			// unambiguous in a single line. Key naming: install_mode
+			// (not mode) avoids colliding with the existing mode= key
+			// on event=config_loaded and event=listening, which carry
+			// cfg.Mode (default-deny|allow|ask) — three lines fire
+			// microseconds apart and a single key would carry two
+			// ontologies.
+			startupAttrs := []any{
+				"event", oplog.EventStartup,
+				"version", server.Version,
+				"install_mode", installMode,
+				"ui", uiKind,
+				"default_decision", string(cfg.Mode),
+				"approvals", "in-process",
+				"on_timeout", cfg.Approvals.OnTimeout,
+			}
+			if !cfg.Control.Disabled() {
+				startupAttrs = append(startupAttrs, "attach_endpoint", cfg.Control.Addr())
+			}
+			opLog.Info("startup", startupAttrs...)
+
 			opLog.Info("listening",
 				"event", oplog.EventListening,
 				"addr", srv.Addr(),
@@ -182,6 +217,11 @@ func newRunCmd() *cobra.Command {
 			// that wrap `run` and want the listen address visible.
 			if isStdoutTTY() && (noConsole || !console.IsInteractive(os.Stdin)) {
 				printRunStartupBanner(cmd.OutOrStdout(), srv.Addr(), string(cfg.Mode))
+				if noConsole {
+					fmt.Fprintln(cmd.OutOrStdout(), "Daemon mode (--no-console): operator UI suppressed.")
+					fmt.Fprintln(cmd.OutOrStdout(), "Drive approvals from another host via 'trollbridge attach', or rely on")
+					fmt.Fprintln(cmd.OutOrStdout(), "approvals.timeout_seconds / approvals.signal_after_seconds.")
+				}
 			}
 
 			if err := srv.ListenAndServe(ctx); err != nil {
@@ -191,7 +231,7 @@ func newRunCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml (default: $TROLLBRIDGE_CONFIG, then ./trollbridge.yaml)")
-	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the operator UI even when stdin is a tty")
+	cmd.Flags().BoolVar(&noConsole, "no-console", false, "disable the operator UI even when stdin is a TTY (use for daemon-mode deployments; drive approvals via 'trollbridge attach' or approvals.timeout_seconds / approvals.signal_after_seconds)")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "alias for --log-level=debug; emits per-request lifecycle records on the operational log")
 	return cmd
 }
@@ -231,9 +271,14 @@ func replTestFn(configPath string) func(io.Writer, string) error {
 			// or `--show-body N` from a regular shell.
 			ShowBody:     512,
 			MaxBodyLines: 3,
-			Timeout:      15 * time.Second,
-			NoDecision:   true,
-			ConfigPath:   configPath,
+			// MaxHeaders mirrors the body cap for the response-header
+			// block — 10+ headers on a typical production endpoint
+			// scroll status / decision off the small pane. The shell
+			// CLI does not set MaxHeaders; default 0 = unlimited.
+			MaxHeaders: 4,
+			Timeout:    15 * time.Second,
+			NoDecision: true,
+			ConfigPath: configPath,
 		})
 	}
 }

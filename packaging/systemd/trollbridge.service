@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=trollbridge
 Group=trollbridge
-ExecStart=/usr/local/bin/trollbridge run --config /etc/trollbridge/trollbridge.yaml
+ExecStart=/usr/local/bin/trollbridge run --no-console --config /etc/trollbridge/trollbridge.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 # Operational log level: uncomment to override the default (info).
 # Valid values: debug | info | warn | error.

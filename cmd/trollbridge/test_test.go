@@ -463,6 +463,81 @@ func TestRunTest_HoldPath_471_SurfacesApproveHint(t *testing.T) {
 	}
 }
 
+// TestRunTest_MaxHeadersCap_CuratesAndSummarizes pins the #40
+// reactivation fix: when the REPL `test` runs in the small console
+// pane, response headers must not scroll status / decision / reason
+// off screen. testOpts.MaxHeaders = N keeps Content-Type and
+// Content-Length (curated) plus N - len(curated) more in alphabetical
+// order, then prints "(K more headers omitted)" for the rest.
+//
+// The standalone CLI does not set MaxHeaders; default 0 = unlimited.
+// All other tests in this file pass MaxHeaders implicitly as zero and
+// remain unaffected.
+func TestRunTest_MaxHeadersCap_CuratesAndSummarizes(t *testing.T) {
+	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Length", "11")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Set-Cookie", "session=abc")
+		w.Header().Set("Strict-Transport-Security", "max-age=63072000")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("X-Request-Id", "abc-123")
+		w.Header().Set("ETag", "\"deadbeef\"")
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, "hello world")
+	})
+	defer srv.Close()
+	host, port := splitHostPort(t, srv.URL)
+
+	cfgPath, auditPath := minimalTestYaml(t, host, port)
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := buildTestRequest("http://api.example.com/", "GET", nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendAuditEntry(t, auditPath, audit.Entry{
+		RequestID: "req-1", Method: "GET", Host: "api.example.com", Path: "/",
+		Decision: "allow", DecisionSource: "rule", RuleID: "r1",
+		ResponseStatus: 200, LatencyMS: 1,
+	})
+
+	var buf bytes.Buffer
+	if err := runTest(context.Background(), &buf, cfg, req, testOpts{
+		ShowBody:   4096,
+		MaxHeaders: 4,
+	}); err != nil {
+		t.Fatalf("runTest: %v", err)
+	}
+	out := buf.String()
+
+	// Curated headers must survive the cap.
+	for _, want := range []string{"Content-Type", "Content-Length"} {
+		if !strings.Contains(out, want+":") {
+			t.Errorf("expected curated header %q to be retained; out:\n%s", want, out)
+		}
+	}
+	// Headers over the cap must be omitted.
+	for _, banned := range []string{
+		"Set-Cookie:",
+		"Strict-Transport-Security:",
+		"X-Frame-Options:",
+		"X-Request-Id:",
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("expected %q to be over the cap and omitted; out:\n%s", banned, out)
+		}
+	}
+	// Summary line counts the omitted set.
+	if !strings.Contains(out, "more headers omitted") {
+		t.Errorf("expected '(N more headers omitted)' summary; out:\n%s", out)
+	}
+}
+
 func TestRunTest_AuditMissing_DegradesGracefully(t *testing.T) {
 	srv := fakeOriginAsProxy(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

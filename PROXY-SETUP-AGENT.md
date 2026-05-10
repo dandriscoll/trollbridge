@@ -518,7 +518,12 @@ which topology they chose in Step 0.
   `HTTPS_PROXY` in the agent container.
 - **Systemd host daemon** — `packaging/systemd/trollbridge.service`
   runs as a non-root user with `/etc/trollbridge/` as the config
-  root. `journalctl -u trollbridge` for the operational log.
+  root. The unit passes `--no-console` so the operator UI is
+  suppressed; approvals are driven from a separate host with
+  `trollbridge attach` or auto-resolved by `approvals.timeout_seconds`
+  / `approvals.signal_after_seconds`. `journalctl -u trollbridge`
+  for the operational log; the first INFO line is `event=startup
+  install_mode=daemon ui=none …` naming the run mode.
 - **Firewall snippets** — `packaging/firewall/` has `nftables.conf`
   and `iptables.sh`. The proxy is only as strong as the firewall;
   if the agent has any other path out, the policy doesn't bind.

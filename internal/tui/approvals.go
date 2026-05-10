@@ -393,8 +393,10 @@ func watchResize(ctx context.Context, out *os.File, events chan<- Event) {
 
 // render draws the current model to out using ANSI escapes. The
 // terminal is split horizontally: the upper half hosts the approvals
-// pane, the lower half hosts the console pane, and the bottom row
-// is a one-line global hint.
+// pane, the lower half hosts the console pane. Each pane carries its
+// own top + bottom border with embedded help; there is no separate
+// global hint row. On terminals narrower than borderMinThreshold the
+// renderer falls back to the no-border layout (header rows + content).
 func render(out io.Writer, m Model) error {
 	var b strings.Builder
 	b.WriteString("\x1b[H\x1b[2J") // home + clear
@@ -406,8 +408,7 @@ func render(out io.Writer, m Model) error {
 		m.Rows = 24
 	}
 
-	// Reserve one row for the global hint at the very bottom.
-	bodyRows := m.Rows - 1
+	bodyRows := m.Rows
 	if bodyRows < 4 {
 		bodyRows = 4
 	}
@@ -422,17 +423,87 @@ func render(out io.Writer, m Model) error {
 
 	renderApprovalsPane(&b, m, topRows)
 	renderConsolePane(&b, m, bottomRows)
-	renderGlobalHint(&b, m)
 
 	_, err := io.WriteString(out, b.String())
 	return err
 }
 
 func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
-	// "▶ " prefix on the focused pane header, "  " on the unfocused
-	// one keeps the title columns aligned and gives a focus
-	// indicator that survives terminals with weak bold rendering
-	// (closes #41).
+	focused := m.Focused == PaneApprovals
+	if m.Cols < borderMinThreshold {
+		renderApprovalsPaneNoBorder(b, m, rows)
+		return
+	}
+	label := formatPaneLabel(fmt.Sprintf("trollbridge approvals — %d pending", len(m.Holds)), focused)
+	rightHint := ""
+	if focused {
+		rightHint = formatTabHint(m.Focused)
+	}
+	b.WriteString(topBorder(label, rightHint, m.Cols, focused))
+
+	// Body: rows - 1 top border - 1 bottom border - 1 status row.
+	bodyLines := rows - 3
+	if bodyLines < 1 {
+		bodyLines = 1
+	}
+	inner := m.Cols - 2
+	if inner < 1 {
+		inner = 1
+	}
+	used := 0
+	if len(m.Holds) == 0 {
+		b.WriteString(bodyLine(padRight(runeTrunc("  (no pending holds — waiting for new requests)", inner), inner), m.Cols, focused))
+		used++
+	} else {
+		const idW, idtyW, hostW = 12, 14, 36
+		colHeader := fmt.Sprintf(" %-*s  %-*s  %-*s  %s",
+			idW, "ID", idtyW, "IDENTITY", hostW, "HOST:PORT", "PATH")
+		b.WriteString(bodyLine(padRight(runeTrunc(colHeader, inner), inner), m.Cols, focused))
+		used++
+		for i, h := range m.Holds {
+			if used >= bodyLines {
+				break
+			}
+			row := fmt.Sprintf(" %-*s  %-*s  %-*s  %s",
+				idW, runeTrunc(h.ID, idW),
+				idtyW, runeTrunc(h.IdentityID, idtyW),
+				hostW, runeTrunc(fmt.Sprintf("%s:%d", h.Host, h.Port), hostW),
+				h.Path,
+			)
+			row = padRight(runeTrunc(row, inner), inner)
+			if i == m.Selected {
+				row = "\x1b[7m" + row + "\x1b[0m"
+			}
+			b.WriteString(bodyLine(row, m.Cols, focused))
+			used++
+		}
+	}
+	for used < bodyLines {
+		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
+		used++
+	}
+
+	// Status row (lives inside the border, above the bottom border).
+	if m.LastErr != "" {
+		row := "\x1b[31m" + padRight(runeTrunc("error: "+m.LastErr, inner), inner) + "\x1b[0m"
+		b.WriteString(bodyLine(row, m.Cols, focused))
+	} else if m.LastInfo != "" {
+		row := "\x1b[32m" + padRight(runeTrunc(m.LastInfo, inner), inner) + "\x1b[0m"
+		b.WriteString(bodyLine(row, m.Cols, focused))
+	} else {
+		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
+	}
+
+	// Bottom border carries the keybindings on the right.
+	keys := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [q] quit"
+	b.WriteString(bottomBorder("", keys, m.Cols, focused))
+}
+
+// renderApprovalsPaneNoBorder is the cols < borderMinThreshold
+// fallback. Same shape as the pre-borders renderer (header row, body,
+// status row, footer row) so very narrow terminals still produce a
+// coherent display.
+func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 	header := fmt.Sprintf("trollbridge approvals — %d pending", len(m.Holds))
 	if m.Focused == PaneApprovals {
 		b.WriteString(boldLine("▶ "+header, m.Cols))
@@ -441,7 +512,6 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	}
 	b.WriteString("\r\n")
 
-	// Body lines: rows - 1 header - 2 footer (status + hint).
 	bodyLines := rows - 3
 	if bodyLines < 1 {
 		bodyLines = 1
@@ -486,7 +556,6 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		used++
 	}
 
-	// Status line.
 	if m.LastErr != "" {
 		b.WriteString("\x1b[31m")
 		b.WriteString(padRight(runeTrunc("error: "+m.LastErr, m.Cols), m.Cols))
@@ -500,7 +569,6 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString("\r\n")
 	}
 
-	// Pane footer: keybindings (active when focused, dim hint when not).
 	footer := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [q] quit"
 	b.WriteString("\x1b[2m")
 	b.WriteString(padRight(runeTrunc(footer, m.Cols), m.Cols))
@@ -508,6 +576,61 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 }
 
 func renderConsolePane(b *strings.Builder, m Model, rows int) {
+	focused := m.Focused == PaneConsole
+	if m.Cols < borderMinThreshold {
+		renderConsolePaneNoBorder(b, m, rows)
+		return
+	}
+	label := formatPaneLabel("console — type help", focused)
+	rightHint := ""
+	if focused {
+		rightHint = formatTabHint(m.Focused)
+	}
+	b.WriteString(topBorder(label, rightHint, m.Cols, focused))
+
+	// Body: rows - 1 top border - 1 bottom border - 1 prompt row.
+	bodyLines := rows - 3
+	if bodyLines < 1 {
+		bodyLines = 1
+	}
+	inner := m.Cols - 2
+	if inner < 1 {
+		inner = 1
+	}
+	scroll := m.Console.Scrollback
+	start := 0
+	if len(scroll) > bodyLines {
+		start = len(scroll) - bodyLines
+	}
+	used := 0
+	for _, line := range scroll[start:] {
+		b.WriteString(bodyLine(padRight(runeTrunc(line, inner), inner), m.Cols, focused))
+		used++
+	}
+	for used < bodyLines {
+		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
+		used++
+	}
+
+	// Prompt row: prompt + input + cursor (when focused). Lives inside
+	// the border, above the bottom border.
+	prompt := m.Console.Prompt
+	if prompt == "" {
+		prompt = "trollbridge> "
+	}
+	input := string(m.Console.Input)
+	visible := prompt + input
+	if focused {
+		visible += "█"
+	}
+	b.WriteString(bodyLine(padRight(runeTrunc(visible, inner), inner), m.Cols, focused))
+
+	// Bottom border carries the Ctrl-C quit hint on the left.
+	b.WriteString(bottomBorder("[Ctrl-C] quit", "", m.Cols, focused))
+}
+
+// renderConsolePaneNoBorder is the cols < borderMinThreshold fallback.
+func renderConsolePaneNoBorder(b *strings.Builder, m Model, rows int) {
 	header := "console — type help"
 	if m.Focused == PaneConsole {
 		b.WriteString(boldLine("▶ "+header, m.Cols))
@@ -516,12 +639,10 @@ func renderConsolePane(b *strings.Builder, m Model, rows int) {
 	}
 	b.WriteString("\r\n")
 
-	// Reserve 1 row for the prompt at the bottom of the pane.
 	bodyLines := rows - 2
 	if bodyLines < 1 {
 		bodyLines = 1
 	}
-
 	scroll := m.Console.Scrollback
 	start := 0
 	if len(scroll) > bodyLines {
@@ -539,8 +660,6 @@ func renderConsolePane(b *strings.Builder, m Model, rows int) {
 		used++
 	}
 
-	// Prompt line: prompt + input. When the console pane is focused,
-	// append a visible cursor block.
 	prompt := m.Console.Prompt
 	if prompt == "" {
 		prompt = "trollbridge> "
@@ -548,23 +667,10 @@ func renderConsolePane(b *strings.Builder, m Model, rows int) {
 	input := string(m.Console.Input)
 	visible := prompt + input
 	if m.Focused == PaneConsole {
-		visible += "█" // full block as a cursor
+		visible += "█"
 	}
 	b.WriteString(padRight(runeTrunc(visible, m.Cols), m.Cols))
 	b.WriteString("\r\n")
-}
-
-func renderGlobalHint(b *strings.Builder, m Model) {
-	// Name the pane Tab will move focus TO so the operator does not
-	// have to guess what "switch panes" means (closes #41).
-	target := "console"
-	if m.Focused == PaneConsole {
-		target = "approvals"
-	}
-	hint := fmt.Sprintf("[Tab] focus %s  •  [Ctrl-C] quit", target)
-	b.WriteString("\x1b[2m")
-	b.WriteString(padRight(runeTrunc(hint, m.Cols), m.Cols))
-	b.WriteString("\x1b[0m")
 }
 
 func boldLine(s string, cols int) string {

@@ -93,7 +93,13 @@ When `trollbridge run` starts on a terminal, it draws a two-pane
 operator UI in the alt-screen: the upper pane lists pending holds
 (approve / deny in real time), and the lower pane is the operator
 console (`allow`, `deny`, `remove`, `list`, `reload`, `test`,
-`doctor`, `help`, `quit`).
+`doctor`, `help`, `quit`). Each pane has its own rounded box-drawing
+chrome — the focused pane is rendered in bright cyan, the unfocused
+in dim grey. Per-pane keybindings live in the bottom border of each
+pane; the `[Tab] focus <pane>` cue lives in the focused pane's top
+border at top-right; the `[Ctrl-C] quit` cue lives in the console
+pane's bottom border at bottom-left. There is no separate hint row —
+every help string is adjacent to the surface it changes.
 
 Keys:
 
@@ -106,6 +112,10 @@ The approvals list refreshes automatically as the queue changes;
 one-shot `trollbridge approve <id>` / `trollbridge deny <id>` remain
 available for scripted use.
 
+The TUI assumes a UTF-8 terminal; on `LANG=C` or environments without
+box-drawing rune support, run with `--no-console` (see *Daemon mode*
+below).
+
 To drive the same UI from another terminal — over the daemon's mTLS
 control plane — run:
 
@@ -116,6 +126,18 @@ trollbridge attach -c ~/.trollbridge/trollbridge.yaml
 In `attach`, the approvals pane is fully functional; list editing,
 test, and doctor commands stay on the proxy host (the console pane
 prints a one-line "not available in attach mode" hint).
+
+### Daemon mode
+
+Pass `--no-console` to `trollbridge run` to suppress the operator UI.
+The proxy listens, accepts requests, holds approvals, and writes the
+operational log as in the interactive case — only the TUI is omitted.
+Approvals can be driven from another host via `trollbridge attach`,
+or auto-resolved by `approvals.timeout_seconds` (default-deny on
+timeout) and `approvals.signal_after_seconds` (471 hold-signal to the
+consumer at the configured cutoff). On startup the proxy emits one
+INFO line — `event=startup install_mode=daemon ui=none default_decision=… approvals=in-process on_timeout=… [attach_endpoint=…]` —
+naming the install mode for log-tailing operators.
 
 ## Self-describing endpoints
 
