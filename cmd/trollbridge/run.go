@@ -62,6 +62,21 @@ func newRunCmd() *cobra.Command {
 				return &configErr{err}
 			}
 
+			// Log the absolute path of the config file we actually
+			// loaded (#45). When two trollbridge.yaml files exist
+			// (cwd-local and ~/.config/), this single INFO line
+			// removes the entire class of "I edited config X but the
+			// proxy uses config Y" diagnostic friction.
+			absConfigPath, absErr := filepath.Abs(configPath)
+			if absErr != nil {
+				absConfigPath = configPath
+			}
+			opLog.Info("config loaded",
+				"event", oplog.EventConfigLoaded,
+				"path", absConfigPath,
+				"mode", string(cfg.Mode),
+			)
+
 			engine, err := policy.NewEngine(
 				cfg.Mode,
 				cfg.ResolveIncludePaths(configPath),

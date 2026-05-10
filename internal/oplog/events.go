@@ -5,6 +5,7 @@ package oplog
 const (
 	EventStartup                  = "startup"
 	EventShutdown                 = "shutdown"
+	EventConfigLoaded             = "config_loaded"
 	EventListening                = "listening"
 	EventControlListening         = "control_listening"
 	EventRuleReload               = "rule_reload"
