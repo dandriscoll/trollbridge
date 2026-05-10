@@ -160,6 +160,12 @@ type testOpts struct {
 	// connection-level events (DNS, connect, TLS handshake, first
 	// byte) print to out before the response section.
 	Verbose bool
+	// MaxBodyLines, when > 0, caps the rendered body at the first N
+	// newline-bounded lines after the ShowBody byte cap is applied.
+	// The REPL's small console pane sets this so a chatty endpoint's
+	// body cannot push the status / decision / reason lines off
+	// screen (closes #40); the CLI leaves it 0 (byte-cap only).
+	MaxBodyLines int
 }
 
 // requireURLArg replaces cobra.ExactArgs(1) so the user sees a usage
@@ -650,6 +656,9 @@ func renderResult(out io.Writer, req *http.Request, proxyAddr string, resp *http
 		shown = shown[:opts.ShowBody]
 		truncated = true
 	}
+	if opts.MaxBodyLines > 0 {
+		shown, truncated = capBodyLines(shown, opts.MaxBodyLines, truncated)
+	}
 	w("  body (%d bytes shown of %d):\n", len(shown), len(body))
 	_, _ = out.Write(shown)
 	if len(shown) > 0 && shown[len(shown)-1] != '\n' {
@@ -658,6 +667,27 @@ func renderResult(out io.Writer, req *http.Request, proxyAddr string, resp *http
 	if truncated {
 		w("  (truncated; use --raw or --show-body N to see more)\n")
 	}
+}
+
+// capBodyLines trims a body byte slice to at most N newline-bounded
+// lines, returning the new slice and a truncated flag that or's
+// with whatever the caller already had. Used by the REPL test path
+// to keep the response body from pushing status/decision lines off
+// the small console pane.
+func capBodyLines(body []byte, maxLines int, alreadyTruncated bool) ([]byte, bool) {
+	if maxLines <= 0 || len(body) == 0 {
+		return body, alreadyTruncated
+	}
+	count := 0
+	for i, c := range body {
+		if c == '\n' {
+			count++
+			if count >= maxLines {
+				return body[:i+1], true
+			}
+		}
+	}
+	return body, alreadyTruncated
 }
 
 func emptyToDash(s string) string {

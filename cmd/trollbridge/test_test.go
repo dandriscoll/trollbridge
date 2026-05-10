@@ -84,6 +84,41 @@ func fakeOriginAsProxy(handler http.HandlerFunc) *httptest.Server {
 	return httptest.NewServer(handler)
 }
 
+// TestCapBodyLines pins the line-cap behavior for the REPL's
+// `test` command (closes #40). Pre-fix, `replTestFn` set
+// ShowBody: 1024 with no line cap, so a chatty endpoint's body
+// blew the operator's status/decision lines off the small
+// console pane.
+func TestCapBodyLines(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		max         int
+		alreadyTrun bool
+		wantBody    string
+		wantTrun    bool
+	}{
+		{"empty body untouched", "", 3, false, "", false},
+		{"max=0 untouched", "a\nb\nc\nd\n", 0, false, "a\nb\nc\nd\n", false},
+		{"under cap untouched", "a\nb\n", 5, false, "a\nb\n", false},
+		{"exactly cap untouched", "a\nb\nc\n", 3, false, "a\nb\nc\n", true},
+		{"over cap truncates", "a\nb\nc\nd\ne\n", 3, false, "a\nb\nc\n", true},
+		{"already truncated stays truncated", "a\nb\n", 5, true, "a\nb\n", true},
+		{"long single line not split", "no newlines at all", 3, false, "no newlines at all", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, gotTrun := capBodyLines([]byte(tc.body), tc.max, tc.alreadyTrun)
+			if string(got) != tc.wantBody {
+				t.Errorf("body = %q, want %q", got, tc.wantBody)
+			}
+			if gotTrun != tc.wantTrun {
+				t.Errorf("truncated = %v, want %v", gotTrun, tc.wantTrun)
+			}
+		})
+	}
+}
+
 func TestBuildTestRequest_FlagsAndHeaders(t *testing.T) {
 	req, err := buildTestRequest("http://example.com/foo", "post",
 		[]string{"X-A: one", "X-B:two", "Content-Type: application/json"},

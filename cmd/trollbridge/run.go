@@ -209,10 +209,16 @@ func replTestFn(configPath string) func(io.Writer, string) error {
 			return err
 		}
 		return runTest(context.Background(), out, cfg, req, testOpts{
-			ShowBody:   1024,
-			Timeout:    15 * time.Second,
-			NoDecision: true,
-			ConfigPath: configPath,
+			// 512 bytes / 3 lines keeps the response body from
+			// pushing status, decision, reason, and hint lines off
+			// the small console pane (closes #40). Operators who
+			// need the full body run `trollbridge test <url> --raw`
+			// or `--show-body N` from a regular shell.
+			ShowBody:     512,
+			MaxBodyLines: 3,
+			Timeout:      15 * time.Second,
+			NoDecision:   true,
+			ConfigPath:   configPath,
 		})
 	}
 }
