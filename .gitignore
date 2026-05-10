@@ -10,6 +10,13 @@ trollbridge.audit.jsonl
 llm.key
 *.key
 
+# Local dev artifacts produced by `trollbridge init` / `trollbridge
+# ca init` running in the repo root (not the example forms, which
+# are tracked).
+trollbridge.yaml
+rules.yaml
+*.crt
+
 # Go workspace
 /vendor/
 /go.work.sum
