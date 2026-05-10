@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -227,7 +228,12 @@ func (q *Queue) Deny(id, reason string) bool {
 	return true
 }
 
-// Pending returns a JSON-friendly list of currently held requests.
+// Pending returns a JSON-friendly list of currently held requests
+// in stable, oldest-first order (by CreatedAt, then by ID for the
+// vanishingly rare tie). Stability matters because the TUI's
+// approvals pane indexes the operator's selection into this slice;
+// a reordered list moves the cursor under the operator and causes
+// approve/deny to land on the wrong hold (closes #39).
 func (q *Queue) Pending() []Snapshot {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -246,6 +252,12 @@ func (q *Queue) Pending() []Snapshot {
 			RuleID:     h.Decision.RuleID,
 		})
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out
 }
 

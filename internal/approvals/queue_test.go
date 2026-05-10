@@ -15,6 +15,44 @@ func newReq() *types.RequestEvent {
 	}
 }
 
+// TestPending_StableOrderAcrossCalls pins the contract behind the
+// fix for #39: `Pending()` must return holds in a stable
+// oldest-first order so the TUI's selection-by-index does not jump
+// when nothing has changed. Pre-fix, `for _, h := range q.items`
+// over a Go map produced a different order on every call.
+func TestPending_StableOrderAcrossCalls(t *testing.T) {
+	q := New(16, time.Minute, "deny")
+	// Enqueue with a forced 1ms gap so CreatedAt orders unambiguously.
+	want := []string{}
+	for i := 0; i < 5; i++ {
+		id, _, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+		if err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+		want = append(want, id)
+		time.Sleep(time.Millisecond)
+	}
+	first := q.Pending()
+	if len(first) != len(want) {
+		t.Fatalf("len(first) = %d, want %d", len(first), len(want))
+	}
+	for i, h := range first {
+		if h.ID != want[i] {
+			t.Errorf("first[%d].ID = %s, want %s (oldest-first)", i, h.ID, want[i])
+		}
+	}
+	// Call Pending() many times; every call must return the same
+	// order. Pre-fix this would flake on map-iteration randomness.
+	for round := 0; round < 50; round++ {
+		got := q.Pending()
+		for i := range got {
+			if got[i].ID != first[i].ID {
+				t.Fatalf("round %d index %d: got %s want %s", round, i, got[i].ID, first[i].ID)
+			}
+		}
+	}
+}
+
 func TestEnqueue_ReturnsHoldID(t *testing.T) {
 	q := New(8, time.Minute, "deny")
 	id, ch, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})

@@ -145,8 +145,25 @@ func applyTick(m Model, e TickResult) (Model, Cmd) {
 		m.LastErr = "control API: " + truncate(e.Err.Error(), 200)
 		return m, CmdNone{}
 	}
+	// Preserve the operator's selection across reorders by tracking
+	// the previously-selected hold's ID into the new list (closes #39).
+	// If the prior hold has resolved, fall through to clampSelection
+	// which picks a sane index.
+	prevID := ""
+	if m.Selected >= 0 && m.Selected < len(m.Holds) {
+		prevID = m.Holds[m.Selected].ID
+	}
 	m.Holds = e.Holds
 	m.LastErr = ""
+	if prevID != "" {
+		m.Selected = -1
+		for i, h := range m.Holds {
+			if h.ID == prevID {
+				m.Selected = i
+				break
+			}
+		}
+	}
 	clampSelection(&m)
 	return m, CmdNone{}
 }

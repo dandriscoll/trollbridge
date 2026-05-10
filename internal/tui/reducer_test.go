@@ -12,6 +12,39 @@ func snap(id, host string) approvals.Snapshot {
 	return approvals.Snapshot{ID: id, Host: host, Port: 443}
 }
 
+// TestApply_TickPreservesSelectionByID closes the second half of
+// the #39 fix: when a tick replaces the holds slice in a different
+// order, Selected must follow the same hold by ID rather than
+// stay pinned to a stale index.
+func TestApply_TickPreservesSelectionByID(t *testing.T) {
+	a, b, c := snap("a", "h1"), snap("b", "h2"), snap("c", "h3")
+	m := Model{Holds: []approvals.Snapshot{a, b, c}, Selected: 1}
+	// Same set of holds, different order. Pre-fix Selected would
+	// stay at 1 and now point at hold "a" or "c" — wrong hold.
+	got, _ := Apply(m, TickResult{Holds: []approvals.Snapshot{c, b, a}})
+	if got.Selected != 1 {
+		t.Fatalf("Selected = %d, want 1 (hold b's new index)", got.Selected)
+	}
+	if got.Holds[got.Selected].ID != "b" {
+		t.Errorf("hold at Selected = %s, want b", got.Holds[got.Selected].ID)
+	}
+}
+
+// TestApply_TickResolvedHoldDropsSelection covers the case where
+// the previously-selected hold has been resolved by another
+// channel (operator pressed approve elsewhere, advisor resolved):
+// Selected falls through to clampSelection and lands on a sane
+// neighbor rather than dangling.
+func TestApply_TickResolvedHoldDropsSelection(t *testing.T) {
+	a, b, c := snap("a", "h1"), snap("b", "h2"), snap("c", "h3")
+	m := Model{Holds: []approvals.Snapshot{a, b, c}, Selected: 1} // selecting b
+	// b has resolved; tick brings only a and c.
+	got, _ := Apply(m, TickResult{Holds: []approvals.Snapshot{a, c}})
+	if got.Selected < 0 || got.Selected >= len(got.Holds) {
+		t.Fatalf("Selected = %d out of range for %d holds", got.Selected, len(got.Holds))
+	}
+}
+
 func TestApply_TickPopulatesHoldsAndClearsError(t *testing.T) {
 	m := Model{LastErr: "stale"}
 	got, _ := Apply(m, TickResult{Holds: []approvals.Snapshot{snap("a", "x")}})
