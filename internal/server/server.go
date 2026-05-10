@@ -30,6 +30,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/oplog"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/redact"
+	"github.com/dandriscoll/trollbridge/internal/selfdescribe"
 	"github.com/dandriscoll/trollbridge/internal/sessions"
 	"github.com/dandriscoll/trollbridge/internal/types"
 
@@ -61,8 +62,9 @@ type Server struct {
 
 	listsMu      sync.Mutex
 
-	transport *http.Transport
-	opLog     *slog.Logger
+	transport    *http.Transport
+	opLog        *slog.Logger
+	selfDescribe http.Handler
 
 	connsMu sync.Mutex
 	conns   map[net.Conn]struct{}
@@ -209,6 +211,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		MaxIdleConnsPerHost: cfg.Forwarder.MaxIdleConnsPerHost,
 		IdleConnTimeout:     90 * time.Second,
 	}
+	s.selfDescribe = selfdescribe.Handler(cfg, cfg.Proxy.Addr(), opLog)
 	s.httpSrv = &http.Server{
 		Addr:              cfg.Proxy.Addr(),
 		Handler:           http.HandlerFunc(s.serveHTTP),
@@ -349,8 +352,14 @@ func (s *Server) Addr() string { return s.httpSrv.Addr }
 // Engine exposes the underlying engine for SIGHUP reloads.
 func (s *Server) Engine() *policy.Engine { return s.engine }
 
-// serveHTTP dispatches CONNECT vs. plain HTTP.
+// serveHTTP dispatches CONNECT vs. plain HTTP. Requests targeting
+// the self-describe magic host are short-circuited to the embedded
+// asset handler before they enter the policy engine.
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodConnect && selfdescribe.IsMagicHost(r) {
+		s.selfDescribe.ServeHTTP(w, r)
+		return
+	}
 	if r.Method == http.MethodConnect {
 		s.handleConnect(w, r)
 		return

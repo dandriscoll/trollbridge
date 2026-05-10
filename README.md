@@ -15,8 +15,13 @@ deps.
 - [`DESIGN.md`](DESIGN.md) — full design document.
 - [`AGENTS.md`](AGENTS.md) — for coding agents working *on* the
   trollbridge codebase (build, test, conventions).
-- [`SETUP-AGENT.md`](SETUP-AGENT.md) — self-contained instructions
-  for an agent **installing** trollbridge for a user.
+- [`PROXY-SETUP-AGENT.md`](PROXY-SETUP-AGENT.md) — self-contained
+  instructions for an agent **installing** the trollbridge proxy
+  on a host.
+- [`CLIENT-SETUP-AGENT.md`](CLIENT-SETUP-AGENT.md) — self-contained
+  instructions for an agent **pointing its own egress** at a
+  running trollbridge (also fetchable from the running proxy at
+  `http://config.trollbridge.dev/setup/instructions.md`).
 - [`PROXIED-AGENT.md`](PROXIED-AGENT.md) — self-contained
   system-prompt fragment for an agent whose egress **goes through**
   trollbridge.
@@ -111,6 +116,28 @@ trollbridge attach -c ~/.trollbridge/trollbridge.yaml
 In `attach`, the approvals pane is fully functional; list editing,
 test, and doctor commands stay on the proxy host (the console pane
 prints a one-line "not available in attach mode" hint).
+
+## Self-describing endpoints
+
+Once `trollbridge run` is up, an agent that has only the proxy's
+address can fetch everything else it needs to bootstrap from the
+proxy itself. The proxy intercepts requests where
+`Host: config.trollbridge.dev` and serves bundled assets instead
+of forwarding:
+
+```sh
+# With HTTP_PROXY=http://<proxy-host>:<port> set:
+curl http://config.trollbridge.dev/setup                    # index
+curl http://config.trollbridge.dev/setup/proxied-agent.md   # PROXIED-AGENT.md
+curl http://config.trollbridge.dev/setup/instructions.md    # CLIENT-SETUP-AGENT.md
+curl http://config.trollbridge.dev/setup/env                # shell exports
+curl http://config.trollbridge.dev/setup/ca.crt             # CA cert (PEM); 404 if interception is off
+```
+
+`config.trollbridge.dev` is intentionally DNS-sinkholed — these
+endpoints work *only* through the proxy, so a misconfigured client
+that drops `HTTP_PROXY` cannot accidentally reach a real host. The
+endpoints are open (no auth); the CA cert is public-by-design.
 
 ## Configuration (schema v3)
 

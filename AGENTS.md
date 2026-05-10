@@ -6,12 +6,19 @@ bugs.
 
 If you are a different kind of agent, you want a different file:
 
-- An agent **setting up trollbridge for a user** (running `init`,
+- An agent **setting up the trollbridge proxy** (running `init`,
   configuring policy, generating the CA): see
-  [`SETUP-AGENT.md`](SETUP-AGENT.md).
+  [`PROXY-SETUP-AGENT.md`](PROXY-SETUP-AGENT.md).
+- An agent **pointing its own egress at a running trollbridge** (env
+  vars, CA install, verification): see
+  [`CLIENT-SETUP-AGENT.md`](CLIENT-SETUP-AGENT.md). Once the proxy
+  is running, the same content is fetchable from
+  `http://config.trollbridge.dev/setup/instructions.md` *through*
+  the proxy.
 - An agent whose own HTTP/HTTPS egress **goes through trollbridge**
-  (you are calling out to the network and the proxy sits in front
-  of you): see [`PROXIED-AGENT.md`](PROXIED-AGENT.md).
+  (the LLM runtime calling out to the network): see
+  [`PROXIED-AGENT.md`](PROXIED-AGENT.md). Also fetchable from
+  `http://config.trollbridge.dev/setup/proxied-agent.md`.
 
 The rest of this file is for producers — coding agents working on
 trollbridge.
@@ -134,7 +141,7 @@ should be a major version. The constants live in
   ensure both server.go and intercept.go pick up the change via
   `statusFromEffect`, and update the contract guard test
   `TestDenyResponse_NoReasonOnTheWire`. Update `DESIGN.md` §5.6
-  AND `SETUP-AGENT.md` AND `PROXIED-AGENT.md` (downstream consumers
+  AND `PROXY-SETUP-AGENT.md` AND `CLIENT-SETUP-AGENT.md` AND `PROXIED-AGENT.md` (downstream consumers
   decode by these constants).
 - **Touch the YAML schema.** Update `internal/config/config.go`
   struct, the `defaultConfigYAML` template in

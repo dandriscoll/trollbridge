@@ -54,4 +54,5 @@ const (
 	PhaseResponse     = "response"
 	PhaseError        = "error"
 	PhaseUpstreamDial = "upstream_dial"
+	PhaseSelfDescribe = "self_describe"
 )

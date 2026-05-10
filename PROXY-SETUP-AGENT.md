@@ -1,8 +1,9 @@
-# Setup agent — instructions for an agent setting up trollbridge
+# Proxy-setup agent — installing trollbridge on a host
 
 You are an LLM-driven coding agent (Claude Code, Cursor, Aider,
 OpenAI Codex, or similar) that has been asked by your user to
-**set up and run trollbridge**, an HTTP/HTTPS policy proxy.
+**set up and run trollbridge**, an HTTP/HTTPS policy proxy. This
+file is the proxy-host side: install, init, validate, run.
 
 This file is fully self-contained and copy-pasteable. If you need
 the spec, the trollbridge repo's `DESIGN.md` is authoritative; if
@@ -10,10 +11,18 @@ you need topology recipes, see `docs/deploy.md`; if you need an
 annotated config, see `config.example.yaml`. None are required to
 follow this file end-to-end.
 
-(If you are instead an agent whose own HTTP egress **goes through**
-trollbridge — i.e., your job is to call out to the network and
-trollbridge sits in front of you — the file you want is
-`PROXIED-AGENT.md`, not this one.)
+If you are instead:
+
+- An agent **pointing your own egress** at a running trollbridge
+  (you set HTTP_PROXY and want to install the CA cert): the file
+  you want is `CLIENT-SETUP-AGENT.md`. Once the proxy is up, the
+  same content is fetchable from
+  `http://config.trollbridge.dev/setup/instructions.md` *through*
+  the proxy.
+- An agent whose runtime egress **goes through** trollbridge (your
+  LLM is calling out and the proxy sits in front of you): see
+  `PROXIED-AGENT.md`, also fetchable from
+  `http://config.trollbridge.dev/setup/proxied-agent.md`.
 
 ## What trollbridge is, in one paragraph
 
