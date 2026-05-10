@@ -30,12 +30,27 @@ const AnthropicDefaultModel = "claude-3-5-sonnet-latest"
 // needs to emit one tool_use block, so we keep this small.
 const anthropicMaxTokens = 1024
 
+// anthropicWebSearchToolType is Anthropic's pinned web-search tool
+// type. Bump deliberately when the API revs the version date.
+const anthropicWebSearchToolType = "web_search_20250305"
+
+// anthropicWebSearchMaxUses caps how many search invocations the
+// model can make per classification. Five is a sane budget — enough
+// for the model to triangulate an unfamiliar host, low enough that a
+// runaway loop cannot exhaust per-request quota.
+const anthropicWebSearchMaxUses = 5
+
 func (anthropicTranslator) Name() string { return "anthropic" }
 
 type anthropicTool struct {
+	// Type is set for built-in server-side tools (web_search). Empty
+	// for caller-defined tools that carry Name/Description/InputSchema
+	// (the trollbridge_decision tool).
+	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	Description string         `json:"description,omitempty"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
+	MaxUses     int            `json:"max_uses,omitempty"`
 }
 
 type anthropicToolChoice struct {
@@ -65,18 +80,26 @@ func (anthropicTranslator) BuildRequest(in Input, model, apiKey string) ([]byte,
 	if err != nil {
 		return nil, nil, fmt.Errorf("anthropic: marshal input: %w", err)
 	}
+	tools := []anthropicTool{{
+		Name:        toolName,
+		Description: toolDescription,
+		InputSchema: decisionSchema(),
+	}}
+	if in.Mode == ModeResearch {
+		tools = append(tools, anthropicTool{
+			Type:    anthropicWebSearchToolType,
+			Name:    "web_search",
+			MaxUses: anthropicWebSearchMaxUses,
+		})
+	}
 	req := anthropicRequest{
 		Model:     model,
 		MaxTokens: anthropicMaxTokens,
-		System:    in.Directives,
+		System:    composeSystemPrompt(in.Mode, in.Directives),
 		Messages: []anthropicMessage{
 			{Role: "user", Content: userPrompt(serialized)},
 		},
-		Tools: []anthropicTool{{
-			Name:        toolName,
-			Description: toolDescription,
-			InputSchema: decisionSchema(),
-		}},
+		Tools:      tools,
 		ToolChoice: &anthropicToolChoice{Type: "tool", Name: toolName},
 	}
 	body, err := json.Marshal(req)

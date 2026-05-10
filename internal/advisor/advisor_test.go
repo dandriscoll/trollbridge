@@ -186,13 +186,22 @@ func TestHTTPClassifier_AOAISendsApiKeyHeader(t *testing.T) {
 	if got := srv.lastHeaders.Get("Authorization"); got != "" {
 		t.Errorf("Authorization header should be empty for aoai; got %q", got)
 	}
-	// Verify the system directive landed in messages[0].
+	// Verify the system message contains both the trollbridge
+	// baseline and the operator's directive (closes #54: composed
+	// system prompt).
 	var seen aoaiRequest
 	if err := json.Unmarshal(srv.lastBody, &seen); err != nil {
 		t.Fatalf("decode request body: %v", err)
 	}
-	if len(seen.Messages) < 1 || seen.Messages[0].Role != "system" || seen.Messages[0].Content != "system msg" {
-		t.Errorf("request messages[0] not system directive: %+v", seen.Messages)
+	if len(seen.Messages) < 1 || seen.Messages[0].Role != "system" {
+		t.Fatalf("request messages[0] not system: %+v", seen.Messages)
+	}
+	sys := seen.Messages[0].Content
+	if !strings.Contains(sys, "system msg") {
+		t.Errorf("system message missing operator directive 'system msg'; got %q", sys)
+	}
+	if !strings.Contains(sys, "Operating mode: review") {
+		t.Errorf("system message missing trollbridge mode baseline; got %q", sys)
 	}
 	if seen.ToolChoice == nil || seen.ToolChoice.Function.Name != toolName {
 		t.Errorf("tool_choice did not force trollbridge_decision: %+v", seen.ToolChoice)
@@ -287,7 +296,11 @@ func TestAnthropicTranslator_BuildRequestOmitsAuthWhenNoKey(t *testing.T) {
 	}
 }
 
-func TestAOAITranslator_BuildRequestOmitsSystemMessageWhenNoDirectives(t *testing.T) {
+// TestAOAITranslator_BuildRequestEmitsBaselineEvenWhenNoDirectives
+// pins #54: the system message is now ALWAYS present (carries the
+// trollbridge mode baseline). Pre-#54 it was suppressed when the
+// operator's directives field was empty.
+func TestAOAITranslator_BuildRequestEmitsBaselineEvenWhenNoDirectives(t *testing.T) {
 	tr := aoaiTranslator{}
 	body, _, err := tr.BuildRequest(Input{Host: "x", Path: "/"}, "chat", "k")
 	if err != nil {
@@ -297,8 +310,14 @@ func TestAOAITranslator_BuildRequestOmitsSystemMessageWhenNoDirectives(t *testin
 	if err := json.Unmarshal(body, &seen); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(seen.Messages) != 1 || seen.Messages[0].Role != "user" {
-		t.Errorf("expected single user message when directives empty; got %+v", seen.Messages)
+	if len(seen.Messages) != 2 {
+		t.Fatalf("expected system + user messages; got %d: %+v", len(seen.Messages), seen.Messages)
+	}
+	if seen.Messages[0].Role != "system" || !strings.Contains(seen.Messages[0].Content, "Operating mode: review") {
+		t.Errorf("system message missing review baseline; got %+v", seen.Messages[0])
+	}
+	if seen.Messages[1].Role != "user" {
+		t.Errorf("expected user message at [1]; got %+v", seen.Messages[1])
 	}
 }
 

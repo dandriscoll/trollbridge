@@ -127,6 +127,63 @@ logging: {audit_path: /tmp/a.jsonl}
 	}
 }
 
+// TestLoad_LLMModeValidation pins the #54 contract: llm.mode must be
+// either "review" or "research" (or empty, defaulting to review).
+// Other values fail at config-load time with a message naming the
+// valid set.
+func TestLoad_LLMModeValidation(t *testing.T) {
+	t.Run("review accepted", func(t *testing.T) {
+		path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+llm: {mode: review}
+logging: {audit_path: /tmp/a.jsonl}
+`)
+		if _, err := Load(path); err != nil {
+			t.Errorf("review mode rejected: %v", err)
+		}
+	})
+	t.Run("research accepted", func(t *testing.T) {
+		path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+llm: {mode: research}
+logging: {audit_path: /tmp/a.jsonl}
+`)
+		if _, err := Load(path); err != nil {
+			t.Errorf("research mode rejected: %v", err)
+		}
+	})
+	t.Run("empty defaults to review", func(t *testing.T) {
+		path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("default-mode load failed: %v", err)
+		}
+		if cfg.LLM.Mode != "review" {
+			t.Errorf("default mode = %q, want review", cfg.LLM.Mode)
+		}
+	})
+	t.Run("invalid value rejected", func(t *testing.T) {
+		path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+llm: {mode: bogus}
+logging: {audit_path: /tmp/a.jsonl}
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for invalid llm.mode")
+		}
+		if !strings.Contains(err.Error(), "llm.mode") {
+			t.Errorf("error should name llm.mode: %v", err)
+		}
+		if !strings.Contains(err.Error(), "review") || !strings.Contains(err.Error(), "research") {
+			t.Errorf("error should name valid set (review/research): %v", err)
+		}
+	})
+}
+
 func TestParseBind_RejectsMissingPort(t *testing.T) {
 	cases := []string{"lo", "all", "127.0.0.1"}
 	for _, raw := range cases {

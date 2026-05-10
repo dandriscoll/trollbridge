@@ -64,11 +64,10 @@ func (aoaiResponsesTranslator) BuildRequest(in Input, model, apiKey string) ([]b
 	if err != nil {
 		return nil, nil, fmt.Errorf("aoai responses: marshal input: %w", err)
 	}
-	items := []aoaiRespInputItem{}
-	if in.Directives != "" {
-		items = append(items, aoaiRespInputItem{Role: "system", Content: in.Directives})
+	items := []aoaiRespInputItem{
+		{Role: "system", Content: composeSystemPrompt(in.Mode, in.Directives)},
+		{Role: "user", Content: userPrompt(serialized)},
 	}
-	items = append(items, aoaiRespInputItem{Role: "user", Content: userPrompt(serialized)})
 	req := aoaiRespRequest{
 		Model:           model,
 		Input:           items,

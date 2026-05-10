@@ -61,11 +61,10 @@ func (aoaiTranslator) BuildRequest(in Input, model, apiKey string) ([]byte, map[
 	if err != nil {
 		return nil, nil, fmt.Errorf("aoai: marshal input: %w", err)
 	}
-	messages := []aoaiMessage{}
-	if in.Directives != "" {
-		messages = append(messages, aoaiMessage{Role: "system", Content: in.Directives})
+	messages := []aoaiMessage{
+		{Role: "system", Content: composeSystemPrompt(in.Mode, in.Directives)},
+		{Role: "user", Content: userPrompt(serialized)},
 	}
-	messages = append(messages, aoaiMessage{Role: "user", Content: userPrompt(serialized)})
 
 	req := aoaiRequest{
 		Model:     model, // empty is fine — deployment in URL path dictates the model

@@ -47,6 +47,11 @@ type Input struct {
 	// edit it. The advisor endpoint composes it with the rest of
 	// the request payload before sending to the LLM.
 	Directives string `json:"directives,omitempty"`
+
+	// Mode is the advisor's operating shape (closes #54). Empty
+	// defaults to ModeReview. Translators inspect this to decide
+	// whether to enable research-mode tools (e.g., web_search).
+	Mode string `json:"mode,omitempty"`
 }
 
 // RecentDecision is a compact record of a prior decision used as
@@ -86,6 +91,11 @@ type Config struct {
 	// Directives is included verbatim in every Input.Directives
 	// field sent to the provider. Pulled from cfg.LLM.Directives.
 	Directives string
+
+	// Mode is the advisor's operating shape (closes #54). Pulled
+	// from cfg.LLM.Mode (with AOAI research-mode fallback applied
+	// at server bootstrap). Defaults to ModeReview when empty.
+	Mode string
 }
 
 // Service is the concrete component the server consults. It owns
@@ -180,6 +190,7 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 		RecentHistory:   recent,
 		RuleSetVersion:  ruleSetVersion,
 		Directives:      s.cfg.Directives,
+		Mode:            s.cfg.Mode,
 	}
 	if lists != nil {
 		in.AllowList = capList(lists.Allow, 200)

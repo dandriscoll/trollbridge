@@ -75,6 +75,15 @@ llm:
   on_unavailable: ask_user
   confidence_floor: medium
 
+  # mode — advisor's operating shape (closes #54).
+  #   review   (default): classify against the operator's allow/deny
+  #                       lists and the directives below.
+  #   research          : same plus the LLM may invoke a web_search
+  #                       tool for unfamiliar URLs. Anthropic only;
+  #                       AOAI deployments warn at startup and run
+  #                       as review.
+  mode: review
+
   # --- Azure OpenAI (AOAI) example -------------------------------
   # To use Azure OpenAI instead of Anthropic, replace the llm block
   # above with the one below. The endpoint is the deployment-scoped

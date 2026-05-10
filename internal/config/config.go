@@ -235,8 +235,19 @@ type LLM struct {
 	OnUnavailable   string `yaml:"on_unavailable"`
 	ConfidenceFloor string `yaml:"confidence_floor"`
 
+	// Mode selects the advisor's operating shape (closes #54):
+	//   review   — classify against the operator's allow/deny lists
+	//              (the lists ride in advisor.Input as context).
+	//   research — same as review, plus the LLM may invoke a web
+	//              search tool for URL context. Anthropic-only;
+	//              AOAI deployments warn at startup and run as
+	//              review.
+	// Empty defaults to "review".
+	Mode string `yaml:"mode"`
+
 	// Directives is an inline multi-line system prompt the advisor
-	// composes onto every classification request.
+	// composes onto every classification request, after trollbridge's
+	// mode-baseline framing (closes #54).
 	Directives string `yaml:"directives"`
 }
 
@@ -396,6 +407,9 @@ func (c *Config) applyDefaults() {
 	if c.LLM.OnUnavailable == "" {
 		c.LLM.OnUnavailable = "ask_user"
 	}
+	if c.LLM.Mode == "" {
+		c.LLM.Mode = "review"
+	}
 }
 
 func (c *Config) validate(path string) error {
@@ -418,6 +432,11 @@ func (c *Config) validate(path string) error {
 	case "rsa-4096", "ecdsa-p256":
 	default:
 		return fmt.Errorf("config error in %s: `interception.leaf_key_type` must be `rsa-4096` or `ecdsa-p256`. Got: %q.", path, c.Interception.LeafKeyType)
+	}
+	switch c.LLM.Mode {
+	case "review", "research":
+	default:
+		return fmt.Errorf("config error in %s: `llm.mode` must be `review` or `research`. Got: %q.", path, c.LLM.Mode)
 	}
 	if c.Proxy.Disabled() {
 		return fmt.Errorf("config error in %s: `proxy` is required (e.g. `proxy: lo:8080`)", path)

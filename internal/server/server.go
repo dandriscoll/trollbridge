@@ -196,6 +196,22 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 	s.originRoots = roots
 
 	// Initialize advisor service. Provider can be nil (disabled).
+	// Mode (closes #54) defaults to "review"; AOAI deployments
+	// asking for "research" fall back to review with a startup
+	// warning because Anthropic's native web_search tool is the only
+	// search affordance trollbridge currently wires up.
+	advisorMode := cfg.LLM.Mode
+	if advisorMode == "" {
+		advisorMode = advisor.ModeReview
+	}
+	if advisorMode == advisor.ModeResearch && strings.EqualFold(cfg.LLM.Provider, "aoai") {
+		opLog.Warn("llm.mode=research not supported on aoai; falling back to review",
+			"event", "advisor_research_unsupported_provider",
+			"provider", cfg.LLM.Provider,
+			"requested_mode", advisorMode,
+			"effective_mode", advisor.ModeReview)
+		advisorMode = advisor.ModeReview
+	}
 	advCfg := advisor.Config{
 		Enabled:         cfg.LLM.Enabled,
 		ConfidenceFloor: cfg.LLM.ConfidenceFloor,
@@ -204,6 +220,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		Timeout:         time.Duration(cfg.LLM.TimeoutSeconds) * time.Second,
 		KnownModifiers:  modifierSetForAdvisor(),
 		Directives:      cfg.LLM.Directives,
+		Mode:            advisorMode,
 	}
 	var prov advisor.Provider
 	if cfg.LLM.Enabled {
