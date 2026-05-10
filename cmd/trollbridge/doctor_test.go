@@ -33,7 +33,6 @@ func minimalDoctorYaml(t *testing.T, llmEnabled bool) string {
 		}, "\n")
 	}
 	body := strings.Join([]string{
-		"trollbridge_version: 3",
 		"proxy: lo:8080",
 		"control: 0",
 		"controller: {auth: mtls}",
@@ -180,7 +179,7 @@ func TestDoctor_LlmDispatchError_ReturnsRuntimeErr(t *testing.T) {
 func TestDoctor_BadYaml_ReturnsConfigErr(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "trollbridge.yaml")
-	mustWrite(t, cfgPath, "trollbridge_version: 2\nadapter: lo\n")
+	mustWrite(t, cfgPath, "proxy: lo:8080\nmode: nonsense\n")
 
 	var stdout bytes.Buffer
 	cmd := newDoctorCmd()
@@ -189,7 +188,7 @@ func TestDoctor_BadYaml_ReturnsConfigErr(t *testing.T) {
 	cmd.SetArgs([]string{"-c", cfgPath})
 	err := cmd.Execute()
 	if err == nil {
-		t.Fatal("Execute: expected error for v2 config")
+		t.Fatal("Execute: expected error for invalid mode")
 	}
 	var ce *configErr
 	if !errors.As(err, &ce) {

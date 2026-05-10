@@ -1,4 +1,4 @@
-# trollbridge example configuration (schema v3).
+# trollbridge example configuration.
 #
 # Organized around the four operator decisions:
 #   1. binds — per-surface listen addresses (proxy / control / metrics)
@@ -7,8 +7,6 @@
 #   4. directives — what the advisor is told (inline multi-line prompt)
 #
 # See DESIGN.md for the full specification.
-
-trollbridge_version: 3
 
 # 1. Per-surface binds. Each value combines host and port:
 #      proxy:   lo:8080         # 127.0.0.1

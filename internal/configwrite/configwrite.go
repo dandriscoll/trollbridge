@@ -1,11 +1,10 @@
 // Package configwrite mutates `lists.allow` and `lists.deny` inside a
 // trollbridge.yaml file in place, preserving comments and structure
-// outside the touched subtree by using gopkg.in/yaml.v3's Node API.
+// outside the touched subtree.
 //
 // Comments outside the lists subtree (head comments on top-level
 // keys, comments around the ports block, etc.) survive. Comments
-// attached to individual list entries are best-effort: yaml.v3 stores
-// them on the entry node, and a re-emit through the Node API
+// attached to individual list entries are best-effort: a re-emit
 // preserves them, but the relative ordering of a comment vs. a
 // sorted-resorted entry may shift.
 package configwrite

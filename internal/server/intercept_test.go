@@ -105,8 +105,7 @@ func bootInterceptProxy(t *testing.T, rules string, redactionYAML string) *inter
 		// the parser. Build a minimal config file.
 		mainCfgPath := filepath.Join(dir, "trollbridge.yaml")
 		_ = ctrlAddr
-		if err := os.WriteFile(mainCfgPath, []byte(`trollbridge_version: 3
-proxy: lo:8080
+		if err := os.WriteFile(mainCfgPath, []byte(`proxy: lo:8080
 control: 0
 mode: default-deny
 interception:

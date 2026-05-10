@@ -67,8 +67,7 @@ func TestSubprocess_TrollbridgeBinaryServesAndAuditsAndExitsCleanly(t *testing.T
 		t.Fatal(err)
 	}
 	_ = ctrlAddr
-	cfgYAML := fmt.Sprintf(`trollbridge_version: 3
-proxy: lo:%s
+	cfgYAML := fmt.Sprintf(`proxy: lo:%s
 control: 0
 mode: default-deny
 logging:

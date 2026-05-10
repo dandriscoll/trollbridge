@@ -23,7 +23,6 @@ func minimalConfig(t *testing.T, listenAddress string, listenPort int) string {
 		host = "all"
 	}
 	body := []byte(strings.Join([]string{
-		"trollbridge_version: 3",
 		fmt.Sprintf("proxy: %s:%d", host, listenPort),
 		"control: 0",
 		"mode: default-deny",

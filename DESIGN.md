@@ -1413,8 +1413,6 @@ silent startup-by-default is a footgun.
 YAML, single file by default. Top-level keys:
 
 ```yaml
-trollbridge_version: 3
-
 # Per-surface bind (host:port). Host aliases: lo = 127.0.0.1,
 # all = 0.0.0.0. Bracket IPv6 literals: [fd00::1]:8081.
 proxy:   lo:8080
@@ -1584,8 +1582,8 @@ Layout:
 
 The operator UI runs in raw mode in the terminal alt-screen so the
 host shell's scrollback is preserved on exit. The list files are
-written via in-place yaml.v3 Node-API edits (comments outside the
-`lists:` subtree survive); the running daemon re-parses the file
+written via in-place YAML edits that preserve comments outside the
+`lists:` subtree; the running daemon re-parses the file
 after each mutation.
 
 The operator UI MUST NOT be reachable from the network. The

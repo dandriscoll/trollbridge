@@ -1,4 +1,4 @@
-// Package config loads and validates trollbridge.yaml. v3 schema is
+// Package config loads and validates trollbridge.yaml. The schema is
 // organised around per-surface bind values: each of `proxy`,
 // `control`, `metrics` is a single `<host>:<port>` string. The host
 // supports two aliases: `all` (= 0.0.0.0) and `lo` (= 127.0.0.1).
@@ -16,13 +16,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// SchemaVersion is the current trollbridge.yaml schema version.
-const SchemaVersion = 3
-
-// Config is the top-level shape of trollbridge.yaml (v3).
+// Config is the top-level shape of trollbridge.yaml.
 type Config struct {
-	TrollbridgeVersion int `yaml:"trollbridge_version"`
-
 	// Per-surface binds. Each value combines host and port:
 	//   proxy:   lo:8080         # 127.0.0.1
 	//   control: 127.0.0.1:8081
@@ -321,37 +316,6 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, fmt.Errorf("read config: %w", err)
 	}
-	var probe struct {
-		Version int `yaml:"trollbridge_version"`
-	}
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return nil, fmt.Errorf("parse config %s: %w", path, err)
-	}
-	if probe.Version == 1 {
-		return nil, fmt.Errorf(`config error in %s: trollbridge_version 1 is no longer supported.
-v2 reorganised the schema around four decisions; v3 then split the
-single `+"`adapter`"+` knob into per-surface binds. Migrate directly to
-v3:
-  - proxy:   <host>:<port>     (e.g. lo:8080)
-  - control: <host>:<port>     (e.g. lo:8081, 0 to disable)
-  - metrics: <host>:<port> | 0 (0 to disable)
-  - lists:   inline allow/deny
-  - llm:     provider/model/key + inline llm.directives
-  - controller.auth: mtls
-Set trollbridge_version: 3 and see config.example.yaml for the
-canonical shape.`, path)
-	}
-	if probe.Version == 2 {
-		return nil, fmt.Errorf(`config error in %s: trollbridge_version 2 is no longer supported.
-v3 combines the bind host and port per surface (replacing the single
-`+"`adapter`"+` knob and the `+"`ports`"+` block):
-  - proxy:   <host>:<port>     (replaces adapter + ports.proxy)
-  - control: <host>:<port>     (replaces adapter + ports.control; 0 disables)
-  - metrics: <host>:<port> | 0 (replaces adapter + ports.metrics)
-"all" is a new alias for 0.0.0.0; "lo" continues to mean 127.0.0.1.
-Set trollbridge_version: 3 and migrate the fields above.`, path)
-	}
-
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
@@ -364,9 +328,6 @@ Set trollbridge_version: 3 and migrate the fields above.`, path)
 }
 
 func (c *Config) applyDefaults() {
-	if c.TrollbridgeVersion == 0 {
-		c.TrollbridgeVersion = SchemaVersion
-	}
 	// Distinguish "field absent" (Raw == "") from "explicit disable"
 	// (Raw == "0"). Absent → apply default; explicit-0 → keep
 	// disabled and let validate() reject if the surface is required.
@@ -430,9 +391,6 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate(path string) error {
-	if c.TrollbridgeVersion != SchemaVersion {
-		return fmt.Errorf("config error in %s: trollbridge_version must be %d; got %d", path, SchemaVersion, c.TrollbridgeVersion)
-	}
 	switch c.Mode {
 	case "default-deny", "default-allow", "default-ask":
 	default:

@@ -8,7 +8,6 @@ import (
 )
 
 const fixture = `# trollbridge example
-trollbridge_version: 3
 
 # Per-surface bind — top-level head comment.
 proxy: lo:8080

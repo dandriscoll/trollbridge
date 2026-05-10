@@ -38,7 +38,6 @@ func minimalTestYaml(t *testing.T, proxyHost string, proxyPort int) (cfgPath, au
 	}
 	cfgPath = filepath.Join(dir, "trollbridge.yaml")
 	body := strings.Join([]string{
-		"trollbridge_version: 3",
 		fmt.Sprintf("proxy: %s:%d", host, proxyPort),
 		"control: 0",
 		"controller: {auth: mtls}",

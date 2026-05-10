@@ -50,7 +50,7 @@ internal/identity/      # identity resolver (mTLS / bearer / source IP)
 internal/sessions/      # per-client session tracker
 internal/types/         # shared types (Effect, Decision, RequestEvent)
 internal/tui/           # unified two-pane operator UI (approvals + console); raw alt-screen, hand-rolled ANSI
-internal/configwrite/   # in-place yaml.v3 Node-API edits (console-pane writes)
+internal/configwrite/   # in-place YAML edits that preserve comments outside the touched subtree (console-pane writes)
 internal/envprint/      # render shell exports for HTTP(S)_PROXY
 packaging/              # systemd unit, Dockerfile, Incus cloud-init, firewall
 scripts/release.sh      # end-to-end release flow (bump → tag → build → publish)

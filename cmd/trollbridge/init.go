@@ -9,9 +9,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const defaultConfigYAML = `trollbridge_version: 3
-
-# 1. Per-surface bind. Each value is "<host>:<port>". Use:
+const defaultConfigYAML = `# 1. Per-surface bind. Each value is "<host>:<port>". Use:
 #      lo   = 127.0.0.1
 #      all  = 0.0.0.0
 #      a literal IP or hostname (e.g. 10.1.2.3, trollbridge.internal)

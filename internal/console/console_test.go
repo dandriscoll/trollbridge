@@ -16,7 +16,6 @@ func minimalV2Yaml(t *testing.T, allowSeed, denySeed []string) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "trollbridge.yaml")
 	var b strings.Builder
-	b.WriteString("trollbridge_version: 3\n")
 	b.WriteString("proxy: lo:8080\n")
 	b.WriteString("control: lo:8081\n")
 	b.WriteString("controller: {auth: mtls}\n")

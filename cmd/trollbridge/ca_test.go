@@ -36,7 +36,6 @@ func caConfigYAML(t *testing.T, dir, certPath, keyPath string) string {
 	t.Helper()
 	cfgPath := filepath.Join(dir, "trollbridge.yaml")
 	body := strings.Join([]string{
-		"trollbridge_version: 3",
 		"proxy: lo:8080",
 		"control: 0",
 		"mode: default-deny",
@@ -119,7 +118,6 @@ func TestCAInit_QuietWhenInterceptionAlreadyEnabled(t *testing.T) {
 
 	cfgPath := filepath.Join(dir, "trollbridge.yaml")
 	body := strings.Join([]string{
-		"trollbridge_version: 3",
 		"proxy: lo:8080",
 		"control: 0",
 		"mode: default-deny",
@@ -420,7 +418,6 @@ func TestCAClientCert_HonorsConfigLeafKeyType(t *testing.T) {
 	// Author a yaml with leaf_key_type explicitly ECDSA.
 	cfgPath := filepath.Join(dir, "trollbridge.yaml")
 	body := strings.Join([]string{
-		"trollbridge_version: 3",
 		"proxy: lo:8080",
 		"control: 0",
 		"mode: default-deny",

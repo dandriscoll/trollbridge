@@ -104,8 +104,7 @@ func writeE2EYaml(t *testing.T, dir string, port int, allowHosts []string) strin
 	for _, h := range allowHosts {
 		allowBlock += "    - " + h + "\n"
 	}
-	body := fmt.Sprintf(`trollbridge_version: 3
-proxy:   lo:%d
+	body := fmt.Sprintf(`proxy:   lo:%d
 control: 0
 metrics: 0
 controller:
@@ -262,8 +261,7 @@ func TestE2E_CAInit_ProducesValidCert(t *testing.T) {
 	// Write a minimal yaml that ca init can resolve. It does not
 	// need to be runnable; ca init just reads the cert_path /
 	// key_path fields.
-	yamlBody := fmt.Sprintf(`trollbridge_version: 3
-proxy:   lo:9999
+	yamlBody := fmt.Sprintf(`proxy:   lo:9999
 control: 0
 controller: {auth: mtls}
 mode: default-deny

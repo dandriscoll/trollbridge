@@ -67,7 +67,6 @@ func bootHTTPProxyWithOpLog(t *testing.T, level slog.Level) (proxyAddr, originUR
 		Identities: []config.Identity{{ID: "test-client", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
 		Policy:     config.Policy{Include: []string{rulesPath}},
 	}
-	cfg.TrollbridgeVersion = config.SchemaVersion
 
 	engine, err := policy.NewEngine(cfg.Mode, cfg.ResolveIncludePaths(rulesPath), policy.KnownModifiers())
 	if err != nil {
@@ -415,7 +414,6 @@ func TestOpLog_InfoCarriesAskCaseLifecycle(t *testing.T) {
 		Identities: []config.Identity{{ID: "test-client", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
 		Policy:     config.Policy{Include: []string{rulesPath}},
 	}
-	cfg.TrollbridgeVersion = config.SchemaVersion
 
 	engine, err := policy.NewEngine(cfg.Mode, cfg.ResolveIncludePaths(rulesPath), policy.KnownModifiers())
 	if err != nil {
@@ -520,7 +518,6 @@ func TestServer_HoldQueueFull_WarnsAndRefuses(t *testing.T) {
 		Identities: []config.Identity{{ID: "test-client", Match: config.IdentityMatch{SourceIP: "127.0.0.1"}}},
 		Policy:     config.Policy{Include: []string{rulesPath}},
 	}
-	cfg.TrollbridgeVersion = config.SchemaVersion
 
 	engine, err := policy.NewEngine(cfg.Mode, cfg.ResolveIncludePaths(rulesPath), policy.KnownModifiers())
 	if err != nil {
