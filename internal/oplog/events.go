@@ -31,6 +31,7 @@ const (
 	EventHoldDenied     = "hold_denied"      // INFO; Queue.Deny
 	EventHoldTimedOut   = "hold_timed_out"   // INFO; Queue.Wait timeout branch
 	EventHoldQueueFull  = "hold_queue_full"  // WARN; holdAndWait on ErrFull
+	EventHoldSignaled   = "hold_signaled"    // INFO; #43 — hold elapsed signal_after_seconds; consumer got 471 + hold-id; queue continues to track resolution
 
 	// Advisor lifecycle events. The *_fail constants formalize the
 	// string literals introduced by issue #25.

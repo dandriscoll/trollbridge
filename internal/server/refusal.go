@@ -24,6 +24,13 @@ const HeaderReason = "Trollbridge-Reason"
 // HeaderProxyStatus is the standardized RFC 9209 response header.
 const HeaderProxyStatus = "Proxy-Status"
 
+// HeaderHoldID surfaces the approvals-queue hold id on the 471
+// pending response that fires when approvals.signal_after_seconds
+// elapses. Consumer-aware tooling can use it to display the held
+// state to a human or correlate with the operator's audit log
+// (closes #43).
+const HeaderHoldID = "Trollbridge-Hold-Id"
+
 // StatusTrollbridgeDeclined is the wire status code for a request the
 // proxy has actively declined (deny effect). 470 is unassigned in the
 // IANA HTTP Status Code registry; per RFC 9110 §15 a client that does
@@ -69,6 +76,9 @@ func denyResponse(d types.Decision, requestID, accept string) (headers map[strin
 		HeaderReason:      category,
 		HeaderProxyStatus: formatProxyStatus(token, requestID),
 	}
+	if d.HoldID != "" {
+		headers[HeaderHoldID] = d.HoldID
+	}
 
 	if acceptsJSON(accept) {
 		b, err := json.Marshal(refusalBody{
@@ -89,7 +99,7 @@ func denyResponse(d types.Decision, requestID, accept string) (headers map[strin
 // is intentionally omitted — agents see only what category fired.
 func categoricalEffect(e types.Effect) string {
 	switch e {
-	case types.EffectAskUser, types.EffectAskLLM:
+	case types.EffectAskUser, types.EffectAskLLM, types.EffectAskUserSignaled:
 		return "pending"
 	default:
 		return "declined"
@@ -107,7 +117,7 @@ func plainTextBody(category, requestID string) string {
 // never have reached the refusal path).
 func proxyStatusToken(e types.Effect) string {
 	switch e {
-	case types.EffectAskUserTimedOut, types.EffectAskUser, types.EffectAskLLM:
+	case types.EffectAskUserTimedOut, types.EffectAskUser, types.EffectAskLLM, types.EffectAskUserSignaled:
 		return "proxy_internal_response"
 	default:
 		return "http_request_denied"

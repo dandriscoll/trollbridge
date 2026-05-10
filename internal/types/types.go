@@ -39,6 +39,14 @@ const (
 	EffectAskUserResolvedAllow   Effect = "ask_user_resolved_allow"
 	EffectAskUserResolvedDeny    Effect = "ask_user_resolved_deny"
 	EffectAskUserTimedOut        Effect = "ask_user_timed_out"
+	// EffectAskUserSignaled fires when approvals.signal_after_seconds
+	// elapses with the hold still pending. The proxy emits a 471
+	// pending response to the consumer (with the hold id) and closes
+	// the connection — the hold itself remains in the queue for
+	// operator resolution and audit. Consumers see a fast in-band
+	// signal instead of hanging until approvals.timeout_seconds.
+	// Closes #43 (round 6 of the ask-case-silent-hang class).
+	EffectAskUserSignaled Effect = "ask_user_signaled"
 )
 
 // DecisionSource records which subsystem produced a decision.
@@ -64,4 +72,8 @@ type Decision struct {
 	Scope     string   // "once" | "session" | "rule"
 	Modifiers []string // names of transformations to apply
 	Expires   time.Time
+	// HoldID is set on EffectAskUserSignaled decisions so the
+	// response-writer path can surface it as an X-Trollbridge-Hold-Id
+	// header. Empty for non-signaled decisions.
+	HoldID string
 }

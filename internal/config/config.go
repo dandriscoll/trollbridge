@@ -266,6 +266,14 @@ type Approvals struct {
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
 	OnTimeout      string `yaml:"on_timeout"`
 	MaxPending     int    `yaml:"max_pending"`
+	// SignalAfterSeconds, when > 0, controls how long the proxy
+	// blocks a held request before sending a 471 pending response
+	// (with the hold id) to the consumer and closing. The hold
+	// itself remains in the queue for operator resolution; the
+	// resolution is logged at INFO but not delivered to the now-
+	// disconnected consumer. 0 (the default) preserves the
+	// pre-#43 behavior of blocking until timeout_seconds.
+	SignalAfterSeconds int `yaml:"signal_after_seconds"`
 }
 
 type Forwarder struct {

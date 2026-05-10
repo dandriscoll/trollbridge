@@ -580,7 +580,39 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return s.queue.Wait(ctx, id, ch)
+
+	// signal_after_seconds: when set, race a timer against the
+	// queue.Wait. If the timer fires first the consumer gets a 471
+	// pending response (carrying the hold id) and disconnects; the
+	// queue.Wait keeps running in a goroutine so the eventual
+	// resolution is still logged + cleaned up. (#43)
+	signalAfter := time.Duration(s.cfg.Approvals.SignalAfterSeconds) * time.Second
+	if signalAfter <= 0 {
+		return s.queue.Wait(ctx, id, ch)
+	}
+	resolved := make(chan types.Decision, 1)
+	go func() { resolved <- s.queue.Wait(ctx, id, ch) }()
+	select {
+	case d := <-resolved:
+		return d
+	case <-time.After(signalAfter):
+		s.opLog.Info("hold signaled to consumer",
+			"event", oplog.EventHoldSignaled,
+			"request_id", req.ID,
+			"hold_id", id,
+			"host", req.Host,
+			"port", req.Port,
+			"signal_after_seconds", s.cfg.Approvals.SignalAfterSeconds,
+		)
+		return types.Decision{
+			Effect: types.EffectAskUserSignaled,
+			Source: types.SourceApprovalQueue,
+			RuleID: base.RuleID,
+			HoldID: id,
+		}
+	case <-ctx.Done():
+		return <-resolved
+	}
 }
 
 // bodyMethodNeedsSample decides whether to capture a body sample
@@ -942,7 +974,7 @@ func statusFromEffect(e types.Effect) int {
 	switch e {
 	case types.EffectDeny, types.EffectAskUserResolvedDeny, types.EffectAskUserTimedOut:
 		return StatusTrollbridgeDeclined
-	case types.EffectAskUser, types.EffectAskLLM:
+	case types.EffectAskUser, types.EffectAskLLM, types.EffectAskUserSignaled:
 		return StatusTrollbridgePending
 	}
 	return http.StatusOK
