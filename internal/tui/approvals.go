@@ -429,11 +429,15 @@ func render(out io.Writer, m Model) error {
 }
 
 func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
+	// "▶ " prefix on the focused pane header, "  " on the unfocused
+	// one keeps the title columns aligned and gives a focus
+	// indicator that survives terminals with weak bold rendering
+	// (closes #41).
 	header := fmt.Sprintf("trollbridge approvals — %d pending", len(m.Holds))
 	if m.Focused == PaneApprovals {
-		b.WriteString(boldLine(header, m.Cols))
+		b.WriteString(boldLine("▶ "+header, m.Cols))
 	} else {
-		b.WriteString(dimLine(header, m.Cols))
+		b.WriteString(dimLine("  "+header, m.Cols))
 	}
 	b.WriteString("\r\n")
 
@@ -506,9 +510,9 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 func renderConsolePane(b *strings.Builder, m Model, rows int) {
 	header := "console — type help"
 	if m.Focused == PaneConsole {
-		b.WriteString(boldLine(header, m.Cols))
+		b.WriteString(boldLine("▶ "+header, m.Cols))
 	} else {
-		b.WriteString(dimLine(header, m.Cols))
+		b.WriteString(dimLine("  "+header, m.Cols))
 	}
 	b.WriteString("\r\n")
 
@@ -551,7 +555,13 @@ func renderConsolePane(b *strings.Builder, m Model, rows int) {
 }
 
 func renderGlobalHint(b *strings.Builder, m Model) {
-	hint := "[Tab] switch panes  •  [Ctrl-C] quit"
+	// Name the pane Tab will move focus TO so the operator does not
+	// have to guess what "switch panes" means (closes #41).
+	target := "console"
+	if m.Focused == PaneConsole {
+		target = "approvals"
+	}
+	hint := fmt.Sprintf("[Tab] focus %s  •  [Ctrl-C] quit", target)
 	b.WriteString("\x1b[2m")
 	b.WriteString(padRight(runeTrunc(hint, m.Cols), m.Cols))
 	b.WriteString("\x1b[0m")

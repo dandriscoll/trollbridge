@@ -290,11 +290,64 @@ func TestRunLoop_TabFlipsConsoleHeaderToBold(t *testing.T) {
 
 	out := stdout.String()
 	// After Tab, the console header is rendered with the bold ANSI
-	// escape `\x1b[1m`; the approvals header is dim `\x1b[2m`. We
-	// look for the bold escape immediately preceding "console".
-	if !strings.Contains(out, "\x1b[1m"+"console") {
-		t.Errorf("console header not bold after Tab; first 400: %q", first(out, 400))
+	// escape `\x1b[1m` and the focus-indicator prefix "▶ "; the
+	// approvals header is dim `\x1b[2m` with a non-indicator "  "
+	// space prefix. We look for the bold escape immediately
+	// preceding the focused console title.
+	if !strings.Contains(out, "\x1b[1m▶ console") {
+		t.Errorf("console header not bold-with-indicator after Tab; first 400: %q", first(out, 400))
 	}
+}
+
+// TestRender_GlobalHintNamesNextPane pins the #41 fix: the global
+// hint must name the pane Tab will focus TO, not just say "switch
+// panes." When approvals is focused the hint reads "focus console";
+// when console is focused it reads "focus approvals."
+func TestRender_GlobalHintNamesNextPane(t *testing.T) {
+	t.Run("approvals focused → hint says focus console", func(t *testing.T) {
+		client := &stubClient{listFn: func() ([]approvals.Snapshot, error) { return nil, nil }}
+		pr, pw := io.Pipe()
+		var stdout strings.Builder
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+		}()
+		time.Sleep(80 * time.Millisecond)
+		_, _ = pw.Write([]byte{0x03})
+		select {
+		case <-done:
+		case <-ctx.Done():
+			t.Fatalf("runLoop did not exit")
+		}
+		if !strings.Contains(stdout.String(), "[Tab] focus console") {
+			t.Errorf("hint missing 'focus console'; first 600: %q", first(stdout.String(), 600))
+		}
+	})
+	t.Run("console focused → hint says focus approvals", func(t *testing.T) {
+		client := &stubClient{listFn: func() ([]approvals.Snapshot, error) { return nil, nil }}
+		pr, pw := io.Pipe()
+		var stdout strings.Builder
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "")
+		}()
+		time.Sleep(60 * time.Millisecond)
+		_, _ = pw.Write([]byte{'\t'}) // focus console
+		time.Sleep(80 * time.Millisecond)
+		_, _ = pw.Write([]byte{0x03})
+		select {
+		case <-done:
+		case <-ctx.Done():
+			t.Fatalf("runLoop did not exit")
+		}
+		if !strings.Contains(stdout.String(), "[Tab] focus approvals") {
+			t.Errorf("hint missing 'focus approvals' after Tab; first 600: %q", first(stdout.String(), 600))
+		}
+	})
 }
 
 // TestInProcessClient_RoundtripsAgainstRealQueue closes the gap that
