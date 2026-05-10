@@ -1,0 +1,175 @@
+// Package opstream is the in-memory rolling record of recent
+// operations (proxy requests) the operator UI displays. It is not
+// telemetry — the audit log and the slog event stream remain the
+// authoritative records — but a bounded, structured view the TUI can
+// read at every refresh tick to show "what is the proxy doing right
+// now" with stable per-row identity (closes #52).
+//
+// The ring is keyed by request_id so that an operation transitioning
+// evaluating → pending → resolved updates the same row in the TUI
+// instead of producing a new line at each transition.
+package opstream
+
+import (
+	"sync"
+	"time"
+)
+
+// DefaultCap is the default ring capacity. Picked to comfortably
+// exceed Approvals.MaxPending's default (100) only in worst-case
+// burst; the operator UI does not need a long history — the audit
+// log carries that.
+const DefaultCap = 50
+
+// Op-status string constants. Stringified HTTP status codes
+// ("200", "404", "502") also appear in Op.Status when the upstream
+// response completed.
+const (
+	StatusEvaluating = "evaluating"
+	StatusPending    = "pending"
+	StatusAllowed    = "allowed"
+	StatusDenied     = "denied"
+	StatusError      = "error"
+)
+
+// Op is one operation's view-state. JSON tags exist because /v1/ops
+// emits this directly.
+type Op struct {
+	RequestID string    `json:"request_id"`
+	Method    string    `json:"method"`
+	URL       string    `json:"url"`
+	Status    string    `json:"status"`
+	HoldID    string    `json:"hold_id,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Ring is a bounded, request-id-keyed buffer of recent operations.
+// Safe for concurrent use.
+type Ring struct {
+	mu    sync.Mutex
+	cap   int
+	items map[string]*Op
+	order []string // request_id, oldest at front; eviction pops from front
+	now   func() time.Time
+}
+
+// New returns a Ring with the given capacity. cap <= 0 falls back to
+// DefaultCap.
+func New(cap int) *Ring {
+	if cap <= 0 {
+		cap = DefaultCap
+	}
+	return &Ring{
+		cap:   cap,
+		items: make(map[string]*Op, cap),
+		order: make([]string, 0, cap),
+		now:   time.Now,
+	}
+}
+
+// Begin records a new operation in the evaluating state. If an entry
+// for requestID already exists (re-entry — should not happen in
+// practice since request_ids are UUIDs) the existing entry is
+// preserved and only the timestamp is bumped.
+func (r *Ring) Begin(requestID, method, url string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.now()
+	if op, ok := r.items[requestID]; ok {
+		op.UpdatedAt = now
+		return
+	}
+	if len(r.order) >= r.cap {
+		// Evict oldest.
+		oldest := r.order[0]
+		r.order = r.order[1:]
+		delete(r.items, oldest)
+	}
+	op := &Op{
+		RequestID: requestID,
+		Method:    method,
+		URL:       url,
+		Status:    StatusEvaluating,
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	r.items[requestID] = op
+	r.order = append(r.order, requestID)
+}
+
+// HoldPending marks an in-flight operation as awaiting human
+// approval. holdID is the approvals.Queue id the operator will act
+// on. Silent no-op if the operation is unknown — the operation may
+// have been evicted under burst pressure.
+func (r *Ring) HoldPending(requestID, holdID string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op, ok := r.items[requestID]
+	if !ok {
+		return
+	}
+	op.Status = StatusPending
+	op.HoldID = holdID
+	op.UpdatedAt = r.now()
+}
+
+// Resolve moves an operation to a terminal status. status is a free-
+// form string — typically one of the Status constants or a
+// stringified HTTP status code. Silent no-op if the operation is
+// unknown.
+func (r *Ring) Resolve(requestID, status string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op, ok := r.items[requestID]
+	if !ok {
+		return
+	}
+	op.Status = status
+	op.HoldID = ""
+	op.UpdatedAt = r.now()
+}
+
+// Snapshot returns a copy of the current operations, newest-updated
+// first. Safe to mutate; the returned slice does not alias ring
+// state.
+func (r *Ring) Snapshot() []Op {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Op, 0, len(r.order))
+	for _, id := range r.order {
+		if op, ok := r.items[id]; ok {
+			out = append(out, *op)
+		}
+	}
+	// Sort newest-first by UpdatedAt; insertion order is the
+	// tiebreaker through the loop above (older items first), so
+	// reverse-iteration combined with a stable secondary key would
+	// produce the same result. A single explicit sort keeps the
+	// invariant audit-able.
+	sortByUpdatedDesc(out)
+	return out
+}
+
+func sortByUpdatedDesc(ops []Op) {
+	// Simple insertion sort — n is bounded by ring cap (default 50).
+	for i := 1; i < len(ops); i++ {
+		j := i
+		for j > 0 && ops[j].UpdatedAt.After(ops[j-1].UpdatedAt) {
+			ops[j], ops[j-1] = ops[j-1], ops[j]
+			j--
+		}
+	}
+}

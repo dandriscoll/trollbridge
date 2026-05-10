@@ -28,6 +28,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/hostlist"
 	"github.com/dandriscoll/trollbridge/internal/identity"
 	"github.com/dandriscoll/trollbridge/internal/oplog"
+	"github.com/dandriscoll/trollbridge/internal/opstream"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/redact"
 	"github.com/dandriscoll/trollbridge/internal/selfdescribe"
@@ -51,6 +52,7 @@ type Server struct {
 	queue    *approvals.Queue
 	sessions *sessions.Tracker
 	control  *control.Server
+	ops      *opstream.Ring
 
 	ca           *ca.CA
 	originRoots  *x509.CertPool
@@ -122,6 +124,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 	)
 	q.SetLogger(opLog)
 	t := sessions.New()
+	ops := opstream.New(opstream.DefaultCap)
 	s := &Server{
 		cfg:      cfg,
 		engine:   engine,
@@ -131,10 +134,12 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		conns:    map[net.Conn]struct{}{},
 		queue:    q,
 		sessions: t,
+		ops:      ops,
 		control: func() *control.Server {
 			addr := cfg.Control.Addr() // "" when disabled
 			c := control.New(addr, q, t, engine)
 			c.SetOpLog(opLog)
+			c.SetOps(ops)
 			return c
 		}(),
 		MaxBodySampleBytes: 1 << 20, // 1 MiB
@@ -276,6 +281,10 @@ func caRequiredReason(intercept, controller bool) string {
 // Queue returns the approvals queue (for tests / introspection).
 func (s *Server) Queue() *approvals.Queue { return s.queue }
 
+// Ops returns the operations ring (for tests / introspection / the
+// embedded TUI).
+func (s *Server) Ops() *opstream.Ring { return s.ops }
+
 // SessionsTracker returns the per-client session tracker.
 func (s *Server) SessionsTracker() *sessions.Tracker { return s.sessions }
 
@@ -396,6 +405,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		Headers:    r.Header.Clone(),
 		ClientAddr: r.RemoteAddr,
 	}
+	s.ops.Begin(req.ID, req.Method, opURLForRequest(req))
 
 	// Capture a bounded body sample for body_pattern matching.
 	// Plain HTTP only; HTTPS body inspection arrives Phase 3.
@@ -564,6 +574,7 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 			Reason: "approval queue full: " + err.Error(),
 		}
 	}
+	s.ops.HoldPending(req.ID, id)
 	s.opLog.Info("request held pending approval",
 		"event", oplog.EventRequestHeld,
 		"request_id", req.ID,
@@ -715,6 +726,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Headers:    r.Header.Clone(),
 		ClientAddr: r.RemoteAddr,
 	}
+	s.ops.Begin(req.ID, req.Method, opURLForRequest(req))
 	rlog := s.opLog.With(
 		"request_id", requestID,
 		"identity", identityID,
@@ -902,6 +914,7 @@ func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, b
 			"event", oplog.EventAuditWriteFailure,
 			"request_id", req.ID, "error", err.Error())
 	}
+	s.ops.Resolve(req.ID, opStatusFromAudit(entry))
 }
 
 func inspectionStatus(hasBody, truncated bool) string {
@@ -951,6 +964,36 @@ func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryReda
 			"event", oplog.EventAuditWriteFailure,
 			"request_id", req.ID, "error", err.Error())
 	}
+	s.ops.Resolve(req.ID, opStatusFromAudit(entry))
+}
+
+// opURLForRequest renders the operator-facing URL for a request:
+// scheme://host:port/path for plain HTTP / HTTPS, host:port for
+// CONNECT (no scheme available pre-tunnel). Composed identically for
+// the audit log and the operator ops view so the two records line up.
+func opURLForRequest(req *types.RequestEvent) string {
+	if req.Method == "CONNECT" || req.Scheme == "" {
+		return fmt.Sprintf("%s:%d", req.Host, req.Port)
+	}
+	return fmt.Sprintf("%s://%s:%d%s", req.Scheme, req.Host, req.Port, req.Path)
+}
+
+// opStatusFromAudit maps an audit Entry to a single human-readable
+// status string for the operator UI: "denied" for any deny variant,
+// "error" for a request that errored before clean termination, an
+// HTTP status code when one was sent, "allowed" otherwise.
+func opStatusFromAudit(e audit.Entry) string {
+	if e.Error != "" {
+		return opstream.StatusError
+	}
+	switch e.Decision {
+	case "deny", "ask_user_resolved_deny", "ask_user_timed_out":
+		return opstream.StatusDenied
+	}
+	if e.ResponseStatus > 0 {
+		return strconv.Itoa(e.ResponseStatus)
+	}
+	return opstream.StatusAllowed
 }
 
 func splitHostPort(hostport, defaultPort string) (string, int) {

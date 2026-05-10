@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/dandriscoll/trollbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/opstream"
 )
 
 // Pane names a top-level focusable surface.
@@ -34,10 +35,20 @@ const maxScrollback = 200
 
 // Model is the immutable state the renderer reads.
 type Model struct {
+	// Ops drives the upper-pane render: a unified rolling list of
+	// recent operations, with pending-approval entries distinguished
+	// by Status == opstream.StatusPending. Selection indexes into
+	// this slice (closes #52).
+	Ops []opstream.Op
+	// Holds is the authoritative list of currently-pending approvals.
+	// Kept alongside Ops because (a) the CLI surfaces still need a
+	// holds view and (b) holds that have been evicted from the ops
+	// ring under burst pressure are merged back into the displayed
+	// list so the operator never silently loses an actionable hold.
 	Holds    []approvals.Snapshot
-	Selected int    // index into Holds, or -1 if empty.
-	LastInfo string // last successful-action message shown in the approvals footer.
-	LastErr  string // last error message shown in the approvals footer.
+	Selected int    // index into displayed-ops list, or -1 if empty.
+	LastInfo string // last successful-action message shown in the upper-pane footer.
+	LastErr  string // last error message shown in the upper-pane footer.
 	Cols     int
 	Rows     int
 	Quit     bool
@@ -53,6 +64,12 @@ type Event interface{ event() }
 type TickResult struct {
 	Holds []approvals.Snapshot
 	Err   error
+}
+
+// OpsTickResult arrives after a poll of /v1/ops completes.
+type OpsTickResult struct {
+	Ops []opstream.Op
+	Err error
 }
 
 // KeyEvent arrives when the operator presses a key.
@@ -98,6 +115,7 @@ type ResizeEvent struct {
 }
 
 func (TickResult) event()        {}
+func (OpsTickResult) event()     {}
 func (KeyEvent) event()          {}
 func (ActionResult) event()      {}
 func (ResizeEvent) event()       {}
@@ -126,6 +144,8 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 	switch e := ev.(type) {
 	case TickResult:
 		return applyTick(m, e)
+	case OpsTickResult:
+		return applyOpsTick(m, e)
 	case KeyEvent:
 		return applyKey(m, e)
 	case ActionResult:
@@ -145,27 +165,54 @@ func applyTick(m Model, e TickResult) (Model, Cmd) {
 		m.LastErr = "control API: " + truncate(e.Err.Error(), 200)
 		return m, CmdNone{}
 	}
-	// Preserve the operator's selection across reorders by tracking
-	// the previously-selected hold's ID into the new list (closes #39).
-	// If the prior hold has resolved, fall through to clampSelection
-	// which picks a sane index.
-	prevID := ""
-	if m.Selected >= 0 && m.Selected < len(m.Holds) {
-		prevID = m.Holds[m.Selected].ID
-	}
 	m.Holds = e.Holds
 	m.LastErr = ""
-	if prevID != "" {
-		m.Selected = -1
-		for i, h := range m.Holds {
-			if h.ID == prevID {
-				m.Selected = i
-				break
-			}
-		}
-	}
+	preserveSelectionByRequestID(&m)
 	clampSelection(&m)
 	return m, CmdNone{}
+}
+
+func applyOpsTick(m Model, e OpsTickResult) (Model, Cmd) {
+	if e.Err != nil {
+		m.LastErr = "control API (ops): " + truncate(e.Err.Error(), 200)
+		return m, CmdNone{}
+	}
+	m.Ops = e.Ops
+	m.LastErr = ""
+	preserveSelectionByRequestID(&m)
+	clampSelection(&m)
+	return m, CmdNone{}
+}
+
+// preserveSelectionByRequestID keeps the operator's selection on the
+// same logical operation across refresh ticks (closes #39 and the
+// per-tick rebinding of #52). When the displayed list rebuilds, the
+// previously-selected row's request_id (or hold_id, for holds-only
+// rows) is re-located in the new list.
+func preserveSelectionByRequestID(m *Model) {
+	displayed := DisplayedOps(*m)
+	prevKey := ""
+	if m.Selected >= 0 && m.Selected < len(displayed) {
+		prevKey = displayed[m.Selected].RequestID
+		if prevKey == "" {
+			prevKey = "hold:" + displayed[m.Selected].HoldID
+		}
+	}
+	if prevKey == "" {
+		return
+	}
+	rebuilt := DisplayedOps(*m)
+	m.Selected = -1
+	for i, o := range rebuilt {
+		key := o.RequestID
+		if key == "" {
+			key = "hold:" + o.HoldID
+		}
+		if key == prevKey {
+			m.Selected = i
+			return
+		}
+	}
 }
 
 func applyKey(m Model, e KeyEvent) (Model, Cmd) {
@@ -194,6 +241,7 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		m.Quit = true
 		return m, CmdQuit{}
 	}
+	displayed := DisplayedOps(m)
 	if e.Key == KeyUp || e.Rune == 'k' {
 		if m.Selected > 0 {
 			m.Selected--
@@ -201,7 +249,7 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		return m, CmdNone{}
 	}
 	if e.Key == KeyDown || e.Rune == 'j' {
-		if m.Selected < len(m.Holds)-1 {
+		if m.Selected < len(displayed)-1 {
 			m.Selected++
 		}
 		return m, CmdNone{}
@@ -210,17 +258,21 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		return m, CmdRefresh{}
 	}
 	if e.Rune == 'a' || e.Rune == 'd' {
-		if m.Selected < 0 || m.Selected >= len(m.Holds) {
-			m.LastErr = "no hold selected"
+		if m.Selected < 0 || m.Selected >= len(displayed) {
+			m.LastErr = "no operation selected"
 			return m, CmdNone{}
 		}
-		id := m.Holds[m.Selected].ID
-		if e.Rune == 'a' {
-			m.LastInfo = "approving " + id + "…"
-			return m, CmdApprove{ID: id}
+		op := displayed[m.Selected]
+		if op.HoldID == "" || op.Status != opstream.StatusPending {
+			m.LastErr = "selected operation is not pending approval"
+			return m, CmdNone{}
 		}
-		m.LastInfo = "denying " + id + "…"
-		return m, CmdDeny{ID: id}
+		if e.Rune == 'a' {
+			m.LastInfo = "approving " + op.HoldID + "…"
+			return m, CmdApprove{ID: op.HoldID}
+		}
+		m.LastInfo = "denying " + op.HoldID + "…"
+		return m, CmdDeny{ID: op.HoldID}
 	}
 	return m, CmdNone{}
 }
@@ -270,7 +322,9 @@ func applyActionResult(m Model, e ActionResult) (Model, Cmd) {
 		return m, CmdNone{}
 	}
 	// Optimistically remove the resolved hold; the next tick re-
-	// fetches the authoritative list anyway.
+	// fetches the authoritative list anyway. The corresponding ops
+	// entry will transition to its terminal status on the next ops
+	// tick when writeAudit fires.
 	m.Holds = removeHold(m.Holds, e.ID)
 	m.LastInfo = e.Action + "d " + e.ID
 	m.LastErr = ""
@@ -316,16 +370,70 @@ func removeHold(holds []approvals.Snapshot, id string) []approvals.Snapshot {
 }
 
 func clampSelection(m *Model) {
-	if len(m.Holds) == 0 {
+	displayed := DisplayedOps(*m)
+	if len(displayed) == 0 {
 		m.Selected = -1
 		return
 	}
 	if m.Selected < 0 {
 		m.Selected = 0
 	}
-	if m.Selected >= len(m.Holds) {
-		m.Selected = len(m.Holds) - 1
+	if m.Selected >= len(displayed) {
+		m.Selected = len(displayed) - 1
 	}
+}
+
+// DisplayedOps returns the unified list rendered in the upper pane:
+// the ops ring (newest first) merged with any pending holds that the
+// ring no longer carries (evicted under burst pressure). Holds that
+// are NOT in the ring become synthetic ops with status "pending" so
+// the operator never silently loses an actionable hold.
+func DisplayedOps(m Model) []opstream.Op {
+	out := append([]opstream.Op(nil), m.Ops...)
+	seenHoldIDs := map[string]struct{}{}
+	for _, o := range out {
+		if o.HoldID != "" {
+			seenHoldIDs[o.HoldID] = struct{}{}
+		}
+	}
+	for _, h := range m.Holds {
+		if _, ok := seenHoldIDs[h.ID]; ok {
+			continue
+		}
+		// Synthetic op for an unknown-to-ring hold. RequestID is empty
+		// (ring eviction lost it) so selection-preservation falls back
+		// to the hold:<id> key path.
+		url := h.Host
+		if h.Port > 0 {
+			url = h.Host + ":" + itoaPort(h.Port)
+		}
+		if h.Path != "" && h.Scheme != "" {
+			url = h.Scheme + "://" + url + h.Path
+		}
+		out = append(out, opstream.Op{
+			Method:    h.Method,
+			URL:       url,
+			Status:    opstream.StatusPending,
+			HoldID:    h.ID,
+			StartedAt: h.CreatedAt,
+			UpdatedAt: h.CreatedAt,
+		})
+	}
+	return out
+}
+
+func itoaPort(p int) string {
+	if p == 0 {
+		return "0"
+	}
+	var buf [6]byte
+	i := len(buf)
+	for p > 0 {
+		i--
+		buf[i] = byte('0' + p%10)
+		p /= 10
+	}
+	return string(buf[i:])
 }
 
 func truncate(s string, n int) string {

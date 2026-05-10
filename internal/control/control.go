@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/opstream"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/sessions"
 )
@@ -44,6 +45,7 @@ type Server struct {
 	queue    *approvals.Queue
 	sessions *sessions.Tracker
 	engine   *policy.Engine
+	ops      *opstream.Ring
 	ca       CAOps
 	tlsProv  TLSProvider
 	srv      *http.Server
@@ -70,6 +72,10 @@ func New(addr string, q *approvals.Queue, t *sessions.Tracker, e *policy.Engine)
 // that interception-disabled deployments can still expose the
 // other endpoints).
 func (s *Server) SetCA(c CAOps) { s.ca = c }
+
+// SetOps wires the operations ring exposed by /v1/ops. Safe to call
+// before or after ListenAndServe.
+func (s *Server) SetOps(r *opstream.Ring) { s.ops = r }
 
 // SetTLS wires the TLS-issuing provider used to bring up the mTLS
 // listener.
@@ -128,6 +134,7 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	}
 	mux.HandleFunc("/v1/holds", authd(s.listHolds))
 	mux.HandleFunc("/v1/holds/", authd(s.holdAction)) // /v1/holds/<id>/approve|deny
+	mux.HandleFunc("/v1/ops", authd(s.listOps))
 	mux.HandleFunc("/v1/sessions", authd(s.listSessions))
 	mux.HandleFunc("/v1/rules", authd(s.rulesInfo))
 	mux.HandleFunc("/v1/rules/reload", authd(s.rulesReload))
@@ -179,6 +186,17 @@ func verified(r *http.Request) bool {
 
 func (s *Server) listHolds(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.queue.Pending())
+}
+
+// listOps returns the in-memory operations ring snapshot. The TUI
+// polls this on every refresh tick to render the upper pane (closes
+// #52). Returns an empty array when no ring is configured.
+func (s *Server) listOps(w http.ResponseWriter, r *http.Request) {
+	if s.ops == nil {
+		writeJSON(w, []opstream.Op{})
+		return
+	}
+	writeJSON(w, s.ops.Snapshot())
 }
 
 // /v1/holds/<id>/approve  POST {"scope": "once"}

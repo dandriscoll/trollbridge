@@ -12,12 +12,14 @@ import (
 
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/console"
+	"github.com/dandriscoll/trollbridge/internal/opstream"
 	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
 type stubClient struct {
 	mu         sync.Mutex
 	listFn     func() ([]approvals.Snapshot, error)
+	opsFn      func() ([]opstream.Op, error)
 	approveErr error
 	denyErr    error
 	approveIDs []string
@@ -28,6 +30,16 @@ func (s *stubClient) ListHolds() ([]approvals.Snapshot, error) {
 	s.mu.Lock()
 	fn := s.listFn
 	s.mu.Unlock()
+	return fn()
+}
+
+func (s *stubClient) RecentOps() ([]opstream.Op, error) {
+	s.mu.Lock()
+	fn := s.opsFn
+	s.mu.Unlock()
+	if fn == nil {
+		return nil, nil
+	}
 	return fn()
 }
 
@@ -105,8 +117,8 @@ func TestRunLoop_ApproveFlowEndToEnd(t *testing.T) {
 	if len(client.denyIDs) != 0 {
 		t.Errorf("denyIDs = %v, want none", client.denyIDs)
 	}
-	if !strings.Contains(stdout.String(), "trollbridge approvals") {
-		t.Errorf("stdout missing approvals header; first 200: %q", first(stdout.String(), 200))
+	if !strings.Contains(stdout.String(), "trollbridge operations") {
+		t.Errorf("stdout missing operations header; first 200: %q", first(stdout.String(), 200))
 	}
 	if !strings.Contains(stdout.String(), "console") {
 		t.Errorf("stdout missing console pane header; first 200: %q", first(stdout.String(), 200))
@@ -336,7 +348,7 @@ func TestRender_TabHintAppearsInFocusedPaneTopBorder(t *testing.T) {
 		if !strings.Contains(out, "[Tab] focus console") {
 			t.Errorf("cue missing 'focus console'; first 600: %q", first(out, 600))
 		}
-		// The cue must live on the same row as the approvals pane top
+		// The cue must live on the same row as the upper pane top
 		// border (corners ╭ and ╮) — i.e. in the top border itself, not
 		// on a separate global row.
 		rows := strings.Split(out, "\r\n")
@@ -344,7 +356,7 @@ func TestRender_TabHintAppearsInFocusedPaneTopBorder(t *testing.T) {
 		for _, row := range rows {
 			if strings.Contains(row, "[Tab] focus console") &&
 				strings.Contains(row, "╭") && strings.Contains(row, "╮") &&
-				strings.Contains(row, "approvals") {
+				strings.Contains(row, "operations") {
 				found = true
 				break
 			}
@@ -554,7 +566,7 @@ func TestInProcessClient_RoundtripsAgainstRealQueue(t *testing.T) {
 	q := approvals.New(8, 5*time.Second, "deny")
 	defer q.Shutdown()
 
-	client := NewInProcessClient(q)
+	client := NewInProcessClient(q, nil)
 
 	// Empty queue ⇒ empty list, no error.
 	if got, err := client.ListHolds(); err != nil || len(got) != 0 {
@@ -637,7 +649,7 @@ func TestInProcessClient_RoundtripsAgainstRealQueue(t *testing.T) {
 // uninitialized client (caller bug) returns errors instead of
 // nil-deref panics.
 func TestInProcessClient_NilQueue(t *testing.T) {
-	client := NewInProcessClient(nil)
+	client := NewInProcessClient(nil, nil)
 	if _, err := client.ListHolds(); err == nil {
 		t.Errorf("ListHolds() with nil queue: want error, got nil")
 	}

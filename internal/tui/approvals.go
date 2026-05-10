@@ -17,16 +17,23 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/dandriscoll/trollbridge/internal/console"
 	"github.com/dandriscoll/trollbridge/internal/controlclient"
+	"github.com/dandriscoll/trollbridge/internal/opstream"
 	"golang.org/x/term"
 )
 
-// ControlClient is the small surface the TUI needs from the daemon's
-// approvals queue. Two implementations ship: NewInProcessClient for
-// `trollbridge run` (TUI and daemon share a process; calls the queue
-// directly) and NewHTTPClient for `trollbridge attach` (separate
-// process; talks to the mTLS control plane).
+// ControlClient is the small surface the TUI needs from the daemon.
+// Two implementations ship: NewInProcessClient for `trollbridge run`
+// (TUI and daemon share a process; calls underlying state directly)
+// and NewHTTPClient for `trollbridge attach` (separate process; talks
+// to the mTLS control plane).
+//
+// RecentOps drives the upper-pane rendering (closes #52); ListHolds
+// is still here because CLI subcommands (`trollbridge approve`,
+// `trollbridge attach`) plus the upper-pane backstop for ops evicted
+// under burst pressure both need it.
 type ControlClient interface {
 	ListHolds() ([]approvals.Snapshot, error)
+	RecentOps() ([]opstream.Op, error)
 	Approve(id string) error
 	Deny(id, reason string) error
 }
@@ -41,6 +48,18 @@ func (c *httpClient) ListHolds() ([]approvals.Snapshot, error) {
 	var out []approvals.Snapshot
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("decode holds: %w", err)
+	}
+	return out, nil
+}
+
+func (c *httpClient) RecentOps() ([]opstream.Op, error) {
+	body, err := controlclient.Get(c.cfg, "/v1/ops")
+	if err != nil {
+		return nil, err
+	}
+	var out []opstream.Op
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode ops: %w", err)
 	}
 	return out, nil
 }
@@ -61,13 +80,23 @@ func NewHTTPClient(cfg *config.Config) ControlClient {
 	return &httpClient{cfg: cfg}
 }
 
-type inProcessClient struct{ q *approvals.Queue }
+type inProcessClient struct {
+	q   *approvals.Queue
+	ops *opstream.Ring
+}
 
 func (c *inProcessClient) ListHolds() ([]approvals.Snapshot, error) {
 	if c.q == nil {
 		return nil, errors.New("approvals queue not initialized")
 	}
 	return c.q.Pending(), nil
+}
+
+func (c *inProcessClient) RecentOps() ([]opstream.Op, error) {
+	if c.ops == nil {
+		return nil, nil
+	}
+	return c.ops.Snapshot(), nil
 }
 
 func (c *inProcessClient) Approve(id string) error {
@@ -91,12 +120,14 @@ func (c *inProcessClient) Deny(id, reason string) error {
 }
 
 // NewInProcessClient returns a ControlClient that calls the daemon's
-// approvals queue directly. Use this when the operator UI is embedded
-// in the daemon (e.g. `trollbridge run`): it removes the mTLS hop and
-// the controller-client.{crt,key} requirement that otherwise wedges
-// the approvals pane silently when the cert is absent.
-func NewInProcessClient(q *approvals.Queue) ControlClient {
-	return &inProcessClient{q: q}
+// approvals queue and ops ring directly. Use this when the operator
+// UI is embedded in the daemon (e.g. `trollbridge run`): it removes
+// the mTLS hop and the controller-client.{crt,key} requirement that
+// otherwise wedges the approvals pane silently when the cert is
+// absent. ops may be nil; the upper pane then degrades to a holds-
+// only view.
+func NewInProcessClient(q *approvals.Queue, ops *opstream.Ring) ControlClient {
+	return &inProcessClient{q: q, ops: ops}
 }
 
 // RunOperator drives the unified two-pane operator UI. The caller
@@ -225,6 +256,13 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				select {
 				case <-loopCtx.Done():
 				case events <- TickResult{Holds: holds, Err: err}:
+				}
+			}()
+			go func() {
+				ops, err := client.RecentOps()
+				select {
+				case <-loopCtx.Done():
+				case events <- OpsTickResult{Ops: ops, Err: err}:
 				}
 			}()
 		case CmdApprove:
@@ -365,15 +403,27 @@ func sendKey(ctx context.Context, events chan<- Event, ev KeyEvent) {
 }
 
 // tickRefresh schedules a refresh on first run and every 1.5s after.
+// Two control-plane fetches per tick: holds (for the action source-
+// of-truth) and ops (for the upper-pane render). They run as
+// goroutines so a slow control plane on one endpoint does not stall
+// the other.
 func tickRefresh(ctx context.Context, client ControlClient, events chan<- Event) {
-	emit := func() {
+	emitHolds := func() {
 		holds, err := client.ListHolds()
 		select {
 		case <-ctx.Done():
 		case events <- TickResult{Holds: holds, Err: err}:
 		}
 	}
-	emit()
+	emitOps := func() {
+		ops, err := client.RecentOps()
+		select {
+		case <-ctx.Done():
+		case events <- OpsTickResult{Ops: ops, Err: err}:
+		}
+	}
+	emitHolds()
+	emitOps()
 	t := time.NewTicker(1500 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -381,7 +431,8 @@ func tickRefresh(ctx context.Context, client ControlClient, events chan<- Event)
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			emit()
+			go emitHolds()
+			go emitOps()
 		}
 	}
 }
@@ -469,7 +520,14 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		renderApprovalsPaneNoBorder(b, m, rows)
 		return
 	}
-	label := formatPaneLabel(fmt.Sprintf("trollbridge approvals — %d pending", len(m.Holds)), focused)
+	displayed := DisplayedOps(m)
+	pending := 0
+	for _, o := range displayed {
+		if o.Status == opstream.StatusPending {
+			pending++
+		}
+	}
+	label := formatPaneLabel(fmt.Sprintf("trollbridge operations — %d total · %d pending", len(displayed), pending), focused)
 	rightHint := ""
 	if focused {
 		rightHint = formatTabHint(m.Focused)
@@ -486,26 +544,29 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		inner = 1
 	}
 	used := 0
-	if len(m.Holds) == 0 {
-		b.WriteString(bodyLine(padRight(runeTrunc("  (no pending holds — waiting for new requests)", inner), inner), m.Cols, focused))
+	if len(displayed) == 0 {
+		b.WriteString(bodyLine(padRight(runeTrunc("  (no recent operations — waiting for traffic)", inner), inner), m.Cols, focused))
 		used++
 	} else {
-		const idW, idtyW, hostW = 12, 14, 36
-		colHeader := fmt.Sprintf(" %-*s  %-*s  %-*s  %s",
-			idW, "ID", idtyW, "IDENTITY", hostW, "HOST:PORT", "PATH")
+		const methodW, statusW = 7, 11
+		urlW := inner - methodW - statusW - 4 // 1 leading space + 2 column gaps + 1 trailing
+		if urlW < 8 {
+			urlW = 8
+		}
+		colHeader := fmt.Sprintf(" %-*s %-*s %s",
+			methodW, "METHOD", urlW, "URL", "STATUS")
 		b.WriteString(bodyLine(padRight(runeTrunc(colHeader, inner), inner), m.Cols, focused))
 		used++
-		for i, h := range m.Holds {
+		for i, o := range displayed {
 			if used >= bodyLines {
 				break
 			}
-			row := fmt.Sprintf(" %-*s  %-*s  %-*s  %s",
-				idW, runeTrunc(h.ID, idW),
-				idtyW, runeTrunc(h.IdentityID, idtyW),
-				hostW, runeTrunc(fmt.Sprintf("%s:%d", h.Host, h.Port), hostW),
-				h.Path,
+			row := fmt.Sprintf(" %-*s %-*s %s",
+				methodW, runeTrunc(o.Method, methodW),
+				urlW, runeTrunc(o.URL, urlW),
+				runeTrunc(colorizeStatus(o.Status), statusW+8), // +8 lets the escape bytes pass without truncation eating display chars
 			)
-			row = padRight(runeTrunc(row, inner), inner)
+			row = padRightVisible(row, inner)
 			if i == m.Selected {
 				row = "\x1b[7m" + row + "\x1b[0m"
 			}
@@ -534,12 +595,84 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	b.WriteString(bottomBorder("", keys, m.Cols, focused))
 }
 
+// colorizeStatus wraps the status in a class color: green for
+// allowed/2xx, yellow for pending/evaluating, red for denied/error
+// and 4xx/5xx HTTP codes. Unknown statuses pass through uncolored.
+func colorizeStatus(status string) string {
+	color := ""
+	switch status {
+	case opstream.StatusAllowed:
+		color = "\x1b[32m"
+	case opstream.StatusPending, opstream.StatusEvaluating:
+		color = "\x1b[33m"
+	case opstream.StatusDenied, opstream.StatusError:
+		color = "\x1b[31m"
+	default:
+		// HTTP status codes: 2xx green, 3xx cyan, 4xx/5xx red.
+		switch {
+		case len(status) == 3 && status[0] == '2':
+			color = "\x1b[32m"
+		case len(status) == 3 && status[0] == '3':
+			color = "\x1b[36m"
+		case len(status) == 3 && (status[0] == '4' || status[0] == '5'):
+			color = "\x1b[31m"
+		}
+	}
+	if color == "" {
+		return status
+	}
+	return color + status + "\x1b[0m"
+}
+
+// padRightVisible pads s to width visible cells, ignoring ANSI escape
+// sequences when computing length. The fast path (no escapes) defers
+// to padRight.
+func padRightVisible(s string, width int) string {
+	if !strings.ContainsRune(s, '\x1b') {
+		return padRight(s, width)
+	}
+	visible := visibleLen(s)
+	if visible >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-visible)
+}
+
+// visibleLen returns the rune count of s with CSI escape sequences
+// (ESC[ ... letter) excluded.
+func visibleLen(s string) int {
+	n := 0
+	in := false
+	for _, r := range s {
+		if r == 0x1b {
+			in = true
+			continue
+		}
+		if in {
+			if r == 'm' || r == 'K' || r == 'J' || r == 'H' {
+				in = false
+			}
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // renderApprovalsPaneNoBorder is the cols < borderMinThreshold
 // fallback. Same shape as the pre-borders renderer (header row, body,
 // status row, footer row) so very narrow terminals still produce a
-// coherent display.
+// coherent display. Uses the same ops-driven content as the
+// border-on path (closes #52).
 func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
-	header := fmt.Sprintf("trollbridge approvals — %d pending", len(m.Holds))
+	displayed := DisplayedOps(m)
+	pending := 0
+	for _, o := range displayed {
+		if o.Status == opstream.StatusPending {
+			pending++
+		}
+	}
+	header := fmt.Sprintf("trollbridge operations — %d total · %d pending", len(displayed), pending)
 	if m.Focused == PaneApprovals {
 		b.WriteString(boldLine("▶ "+header, m.Cols))
 	} else {
@@ -552,34 +685,36 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 		bodyLines = 1
 	}
 	used := 0
-	if len(m.Holds) == 0 {
-		b.WriteString(padRight("  (no pending holds — waiting for new requests)", m.Cols))
+	if len(displayed) == 0 {
+		b.WriteString(padRight("  (no recent operations — waiting for traffic)", m.Cols))
 		b.WriteString("\r\n")
 		used++
 	} else {
-		const idW, idtyW, hostW = 12, 14, 36
-		colHeader := fmt.Sprintf(" %-*s  %-*s  %-*s  %s",
-			idW, "ID", idtyW, "IDENTITY", hostW, "HOST:PORT", "PATH")
+		const methodW, statusW = 7, 11
+		urlW := m.Cols - methodW - statusW - 4
+		if urlW < 8 {
+			urlW = 8
+		}
+		colHeader := fmt.Sprintf(" %-*s %-*s %s",
+			methodW, "METHOD", urlW, "URL", "STATUS")
 		b.WriteString(padRight(colHeader, m.Cols))
 		b.WriteString("\r\n")
 		used++
-		for i, h := range m.Holds {
+		for i, o := range displayed {
 			if used >= bodyLines {
 				break
 			}
-			row := fmt.Sprintf(" %-*s  %-*s  %-*s  %s",
-				idW, runeTrunc(h.ID, idW),
-				idtyW, runeTrunc(h.IdentityID, idtyW),
-				hostW, runeTrunc(fmt.Sprintf("%s:%d", h.Host, h.Port), hostW),
-				h.Path,
+			row := fmt.Sprintf(" %-*s %-*s %s",
+				methodW, runeTrunc(o.Method, methodW),
+				urlW, runeTrunc(o.URL, urlW),
+				colorizeStatus(o.Status),
 			)
-			row = runeTrunc(row, m.Cols)
 			if i == m.Selected {
 				b.WriteString("\x1b[7m")
-				b.WriteString(padRight(row, m.Cols))
+				b.WriteString(padRightVisible(row, m.Cols))
 				b.WriteString("\x1b[0m")
 			} else {
-				b.WriteString(padRight(row, m.Cols))
+				b.WriteString(padRightVisible(row, m.Cols))
 			}
 			b.WriteString("\r\n")
 			used++
