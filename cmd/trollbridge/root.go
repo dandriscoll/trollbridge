@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/dandriscoll/trollbridge/internal/oplog"
+	"github.com/dandriscoll/trollbridge/internal/server"
 	"github.com/spf13/cobra"
 )
 
@@ -111,6 +112,11 @@ func newRootCmd() *cobra.Command {
 		Long: `trollbridge is an HTTP/HTTPS forward proxy that gives agents
 network access under deterministic, auditable, policy-governed
 conditions. See DESIGN.md for the full specification.`,
+		// Version + template wire `trollbridge --version` (and `-v`)
+		// as aliases for the existing `trollbridge version` subcommand.
+		// Template matches version.go's "trollbridge <ver>\n" so
+		// scripts that parse either form see identical output (#44).
+		Version:       server.Version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(c *cobra.Command, _ []string) error {
@@ -139,6 +145,7 @@ conditions. See DESIGN.md for the full specification.`,
 	}
 	cmd.PersistentFlags().StringVar(&logLevelFlag, "log-level", "",
 		"operational log level (debug|info|warn|error); also TROLLBRIDGE_LOG_LEVEL env (default info)")
+	cmd.SetVersionTemplate("trollbridge {{.Version}}\n")
 
 	// Phase 5: command groupings per DESIGN.md §13.5.
 	const (
