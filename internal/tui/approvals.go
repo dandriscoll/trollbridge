@@ -21,8 +21,10 @@ import (
 )
 
 // ControlClient is the small surface the TUI needs from the daemon's
-// control API. The default implementation hits the daemon over HTTP;
-// tests can stub it.
+// approvals queue. Two implementations ship: NewInProcessClient for
+// `trollbridge run` (TUI and daemon share a process; calls the queue
+// directly) and NewHTTPClient for `trollbridge attach` (separate
+// process; talks to the mTLS control plane).
 type ControlClient interface {
 	ListHolds() ([]approvals.Snapshot, error)
 	Approve(id string) error
@@ -53,21 +55,59 @@ func (c *httpClient) Deny(id, reason string) error {
 	return err
 }
 
-// RunOperator is the unified entry point used by `trollbridge run`
-// (LocalOnly backend) and `trollbridge attach` (remote backend with
-// a ControlClient pointing at the daemon's HTTP control plane).
-func RunOperator(ctx context.Context, cfg *config.Config, in, out *os.File, backend *console.Backend, welcome string) (err error) {
-	return runWithClient(ctx, cfg, in, out, &httpClient{cfg: cfg}, backend, welcome)
+// NewHTTPClient returns a ControlClient that talks to the daemon's
+// mTLS control plane. Used by `trollbridge attach` (separate process).
+func NewHTTPClient(cfg *config.Config) ControlClient {
+	return &httpClient{cfg: cfg}
 }
 
-// RunApprovals is preserved for callers that want only the approvals
-// pane (legacy behavior). It now delegates to runWithClient with a
-// minimal attach-mode backend so the layout is the same shape.
-func RunApprovals(ctx context.Context, cfg *config.Config, in, out *os.File) (err error) {
-	return runWithClient(ctx, cfg, in, out, &httpClient{cfg: cfg}, &console.Backend{LocalOnly: false}, "")
+type inProcessClient struct{ q *approvals.Queue }
+
+func (c *inProcessClient) ListHolds() ([]approvals.Snapshot, error) {
+	if c.q == nil {
+		return nil, errors.New("approvals queue not initialized")
+	}
+	return c.q.Pending(), nil
 }
 
-func runWithClient(ctx context.Context, cfg *config.Config, in, out *os.File, client ControlClient, backend *console.Backend, welcome string) (err error) {
+func (c *inProcessClient) Approve(id string) error {
+	if c.q == nil {
+		return errors.New("approvals queue not initialized")
+	}
+	if !c.q.Approve(id, "once") {
+		return fmt.Errorf("hold not found: %s", id)
+	}
+	return nil
+}
+
+func (c *inProcessClient) Deny(id, reason string) error {
+	if c.q == nil {
+		return errors.New("approvals queue not initialized")
+	}
+	if !c.q.Deny(id, reason) {
+		return fmt.Errorf("hold not found: %s", id)
+	}
+	return nil
+}
+
+// NewInProcessClient returns a ControlClient that calls the daemon's
+// approvals queue directly. Use this when the operator UI is embedded
+// in the daemon (e.g. `trollbridge run`): it removes the mTLS hop and
+// the controller-client.{crt,key} requirement that otherwise wedges
+// the approvals pane silently when the cert is absent.
+func NewInProcessClient(q *approvals.Queue) ControlClient {
+	return &inProcessClient{q: q}
+}
+
+// RunOperator drives the unified two-pane operator UI. The caller
+// chooses the ControlClient: NewInProcessClient(queue) for the
+// embedded path (`trollbridge run`), NewHTTPClient(cfg) for the
+// remote path (`trollbridge attach`).
+func RunOperator(ctx context.Context, client ControlClient, in, out *os.File, backend *console.Backend, welcome string) (err error) {
+	return runWithClient(ctx, in, out, client, backend, welcome)
+}
+
+func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, backend *console.Backend, welcome string) (err error) {
 	if !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(out.Fd())) {
 		return errors.New("trollbridge ui: stdin/stdout is not a terminal")
 	}

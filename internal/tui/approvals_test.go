@@ -12,6 +12,7 @@ import (
 
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/console"
+	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
 type stubClient struct {
@@ -293,6 +294,112 @@ func TestRunLoop_TabFlipsConsoleHeaderToBold(t *testing.T) {
 	// look for the bold escape immediately preceding "console".
 	if !strings.Contains(out, "\x1b[1m"+"console") {
 		t.Errorf("console header not bold after Tab; first 400: %q", first(out, 400))
+	}
+}
+
+// TestInProcessClient_RoundtripsAgainstRealQueue closes the gap that
+// ships the proxy-host wedge described in job 091: the embedded TUI
+// in `trollbridge run` shares a process with the daemon and must be
+// able to fetch / resolve holds without the mTLS controller-client
+// cert. NewInProcessClient skips the cert hop; this test pins the
+// contract by enqueueing a real hold and exercising every method on
+// the ControlClient surface.
+func TestInProcessClient_RoundtripsAgainstRealQueue(t *testing.T) {
+	q := approvals.New(8, 5*time.Second, "deny")
+	defer q.Shutdown()
+
+	client := NewInProcessClient(q)
+
+	// Empty queue ⇒ empty list, no error.
+	if got, err := client.ListHolds(); err != nil || len(got) != 0 {
+		t.Fatalf("ListHolds() empty: got=%v err=%v, want []/nil", got, err)
+	}
+
+	// Enqueue one. The TUI fetches via Pending() under the hood.
+	req := &types.RequestEvent{
+		ID:         "req-1",
+		IdentityID: "agent-x",
+		Method:     "CONNECT",
+		Scheme:     "https-tunneled",
+		Host:       "api.example.com",
+		Port:       443,
+	}
+	id, ch, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser, Source: types.SourceDefault})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	holds, err := client.ListHolds()
+	if err != nil {
+		t.Fatalf("ListHolds: %v", err)
+	}
+	if len(holds) != 1 || holds[0].ID != id || holds[0].Host != "api.example.com" {
+		t.Fatalf("ListHolds = %+v, want one hold with id=%s host=api.example.com", holds, id)
+	}
+
+	// Approve via the in-process client. The hold's resolve channel
+	// must carry an allow decision afterwards.
+	if err := client.Approve(id); err != nil {
+		t.Fatalf("Approve(%s): %v", id, err)
+	}
+	select {
+	case d := <-ch:
+		if d.Effect != types.EffectAskUserResolvedAllow {
+			t.Fatalf("decision after Approve = %v, want resolved_allow", d.Effect)
+		}
+		if d.Source != types.SourceApprovalQueue {
+			t.Fatalf("decision source = %v, want approval_queue", d.Source)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("no decision delivered after Approve")
+	}
+
+	// Approving a non-existent hold returns an error rather than
+	// silently no-op'ing — the TUI footer surfaces the error.
+	if err := client.Approve("hold-does-not-exist"); err == nil {
+		t.Errorf("Approve(missing) returned nil, want error")
+	}
+
+	// Enqueue a second hold, deny it via the client, verify the
+	// decision channel sees the deny + the operator's reason.
+	req2 := &types.RequestEvent{ID: "req-2", IdentityID: "agent-y", Method: "GET", Host: "api.example.com", Port: 443}
+	id2, ch2, err := q.Enqueue(req2, types.Decision{Effect: types.EffectAskUser, Source: types.SourceDefault})
+	if err != nil {
+		t.Fatalf("Enqueue(2): %v", err)
+	}
+	if err := client.Deny(id2, "blocked by policy"); err != nil {
+		t.Fatalf("Deny(%s): %v", id2, err)
+	}
+	select {
+	case d := <-ch2:
+		if d.Effect != types.EffectAskUserResolvedDeny {
+			t.Fatalf("decision after Deny = %v, want resolved_deny", d.Effect)
+		}
+		if d.Reason != "blocked by policy" {
+			t.Fatalf("deny reason = %q, want %q", d.Reason, "blocked by policy")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("no decision delivered after Deny")
+	}
+
+	if err := client.Deny("hold-does-not-exist", "reason"); err == nil {
+		t.Errorf("Deny(missing) returned nil, want error")
+	}
+}
+
+// TestInProcessClient_NilQueue covers the defensive path: an
+// uninitialized client (caller bug) returns errors instead of
+// nil-deref panics.
+func TestInProcessClient_NilQueue(t *testing.T) {
+	client := NewInProcessClient(nil)
+	if _, err := client.ListHolds(); err == nil {
+		t.Errorf("ListHolds() with nil queue: want error, got nil")
+	}
+	if err := client.Approve("any"); err == nil {
+		t.Errorf("Approve() with nil queue: want error, got nil")
+	}
+	if err := client.Deny("any", "any"); err == nil {
+		t.Errorf("Deny() with nil queue: want error, got nil")
 	}
 }
 

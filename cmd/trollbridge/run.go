@@ -138,7 +138,7 @@ func newRunCmd() *cobra.Command {
 								"error", fmt.Sprintf("%v", r))
 						}
 					}()
-					if err := tui.RunOperator(ctx, cfg, os.Stdin, os.Stdout, backend, welcome); err != nil {
+					if err := tui.RunOperator(ctx, tui.NewInProcessClient(srv.Queue()), os.Stdin, os.Stdout, backend, welcome); err != nil {
 						opLog.Warn("operator UI exited",
 							"event", oplog.EventOperatorUIError,
 							"error", err.Error())
