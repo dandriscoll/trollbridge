@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/advisor"
-	"github.com/dandriscoll/trollbridge/internal/opstream"
 )
 
 // TestApplyKey_NumberedKeysSwitchBottomPanelInApprovalsFocus pins #66:
@@ -37,12 +36,15 @@ func TestApplyKey_NumberedKeysSwitchBottomPanelInApprovalsFocus(t *testing.T) {
 // as panel-switch keystrokes). This keeps the operator's typing
 // in-tact when the console is the active pane.
 func TestApplyKey_NumberedKeysPassThroughInConsoleFocus(t *testing.T) {
-	// Start with a panel open so console focus is reachable (#66
-	// reactivation: Tab is a no-op when the bottom pane is closed).
+	// Start with the console panel open and focused so console-input
+	// behavior is what we exercise. (Previously this test used the
+	// URLs panel as a generic "some panel open" state; after #79
+	// the URLs panel routes keys to applyKeyURLs, not applyKeyConsole,
+	// so the test now uses the console panel explicitly.)
 	m := Model{
 		Cols: 100, Rows: 30,
 		Focused:         PaneConsole,
-		BottomPanel:     BottomPanelURLs,
+		BottomPanel:     BottomPanelConsole,
 		BottomPanelOpen: true,
 		Console:         ConsoleModel{Prompt: "> "},
 	}
@@ -287,12 +289,16 @@ func TestApplyKey_OneSwitchesAndFocusesConsole(t *testing.T) {
 }
 
 // TestApplyKey_NonConsoleHotkeysKeepApprovalsFocus pins the
-// narrowed reading of #77: '2'/'3'/'4' open their panels but do
-// NOT auto-focus PaneConsole, because those panels have no
-// interactive input today and focus-on-bottom would break single-
+// narrowed reading of #77: '2'/'3' open their panels but do NOT
+// auto-focus PaneConsole, because those panels have no
+// interactive input and focus-on-bottom would break single-
 // keystroke '0' and 'q' from the operator's hands.
+//
+// '4' (URLs) is excluded from this rule: #79 makes the URLs pane
+// editable, so it gets auto-focus like the console panel does.
+// See TestApplyKey_FourOpensAndFocusesURLs.
 func TestApplyKey_NonConsoleHotkeysKeepApprovalsFocus(t *testing.T) {
-	for _, key := range []rune{'2', '3', '4'} {
+	for _, key := range []rune{'2', '3'} {
 		t.Run(string(key), func(t *testing.T) {
 			m := Model{Cols: 100, Rows: 30, Focused: PaneApprovals}
 			got, _ := Apply(m, KeyEvent{Rune: key})
@@ -354,26 +360,199 @@ func TestRender_PanelHeaderCarriesHideHotkey(t *testing.T) {
 	}
 }
 
-// TestRenderURLsPane_SmokeRendersOps pins the URL list panel.
-func TestRenderURLsPane_SmokeRendersOps(t *testing.T) {
+// TestRenderURLsPane_RendersAllowDenyLists pins #79: the URLs
+// panel shows the allow/deny lists from trollbridge.yaml with
+// labeled sections, not the ops-ring roll-up.
+func TestRenderURLsPane_RendersAllowDenyLists(t *testing.T) {
 	m := Model{
 		Cols: 100, Rows: 30, Focused: PaneApprovals,
 		BottomPanel:     BottomPanelURLs,
 		BottomPanelOpen: true,
-		Ops: []opstream.Op{
-			{RequestID: "r1", Method: "GET", URL: "https://api.example.com/v1", Status: "200"},
-			{RequestID: "r2", Method: "GET", URL: "https://api.example.com/v1", Status: "200"},
-		},
+		URLsLocal:       true,
+		AllowList:       []string{"api.example.com", "*.trusted.org"},
+		DenyList:        []string{"evil.example", "tracking.adnetwork.example"},
+		URLsSelected:    -1,
 	}
 	var b strings.Builder
 	if err := render(&b, m); err != nil {
 		t.Fatalf("render error: %v", err)
 	}
 	out := b.String()
-	if !strings.Contains(out, "urls") {
-		t.Errorf("URLs panel missing 'urls' header in output")
+	for _, want := range []string{"urls", "ALLOW (2)", "DENY (2)", "api.example.com", "*.trusted.org", "evil.example", "tracking.adnetwork.example"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("URLs panel missing %q in output", want)
+		}
 	}
-	if !strings.Contains(out, "api.example.com") {
-		t.Errorf("URLs panel missing URL in output")
+}
+
+// TestRenderURLsPane_AttachModeShowsHint pins that when
+// URLsLocal=false (attach mode) the pane shows the proxy-host
+// hint instead of empty list contents.
+func TestRenderURLsPane_AttachModeShowsHint(t *testing.T) {
+	m := Model{
+		Cols: 100, Rows: 30, Focused: PaneApprovals,
+		BottomPanel:     BottomPanelURLs,
+		BottomPanelOpen: true,
+		URLsLocal:       false,
+	}
+	var b strings.Builder
+	if err := render(&b, m); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	out := b.String()
+	if !strings.Contains(out, "runs on the proxy host") {
+		t.Errorf("attach-mode hint missing in URLs pane; first 600: %q", first(out, 600))
+	}
+}
+
+// TestApplyKey_FourOpensAndFocusesURLs pins that '4' both opens
+// the URLs pane AND auto-focuses it (#79 makes the pane editable,
+// so auto-focus is part of the contract; see Job 129's research
+// for why '2'/'3' do not auto-focus).
+func TestApplyKey_FourOpensAndFocusesURLs(t *testing.T) {
+	m := Model{Cols: 100, Rows: 30, Focused: PaneApprovals}
+	got, cmd := Apply(m, KeyEvent{Rune: '4'})
+	if got.BottomPanel != BottomPanelURLs {
+		t.Errorf("BottomPanel = %d, want BottomPanelURLs", got.BottomPanel)
+	}
+	if !got.BottomPanelOpen {
+		t.Errorf("BottomPanelOpen = false; want true")
+	}
+	if got.Focused != PaneConsole {
+		t.Errorf("Focused = %v after '4'; want PaneConsole (auto-focus for editable pane)", got.Focused)
+	}
+	if _, ok := cmd.(CmdURLsRefresh); !ok {
+		t.Errorf("Cmd = %T; want CmdURLsRefresh on '4' open", cmd)
+	}
+}
+
+// TestApplyKeyURLs_NavigatesAcrossAllowDeny pins j/k movement
+// across the allow→deny boundary. Selection is an index into the
+// combined list (allow first, then deny).
+func TestApplyKeyURLs_NavigatesAcrossAllowDeny(t *testing.T) {
+	m := Model{
+		Cols: 100, Rows: 30,
+		Focused:         PaneConsole,
+		BottomPanel:     BottomPanelURLs,
+		BottomPanelOpen: true,
+		URLsLocal:       true,
+		AllowList:       []string{"a.example", "b.example"},
+		DenyList:        []string{"d.example"},
+		URLsSelected:    0,
+	}
+	// 'j' four times — past the end of the combined list.
+	got := m
+	for i := 0; i < 4; i++ {
+		got, _ = Apply(got, KeyEvent{Rune: 'j'})
+	}
+	if got.URLsSelected != 2 {
+		t.Errorf("URLsSelected after 4×j = %d, want 2 (clamped to last entry)", got.URLsSelected)
+	}
+	// 'k' three times — back across allow→deny boundary.
+	for i := 0; i < 3; i++ {
+		got, _ = Apply(got, KeyEvent{Rune: 'k'})
+	}
+	if got.URLsSelected != 0 {
+		t.Errorf("URLsSelected after 4×j+3×k = %d, want 0", got.URLsSelected)
+	}
+}
+
+// TestApplyKeyURLs_XRemovesSelected pins that 'x' on the selected
+// entry emits a CmdConsoleExec{Line: "remove <pattern>"} so the
+// existing configwrite path runs. The pattern picked from the
+// combined index — allow entries first, then deny.
+func TestApplyKeyURLs_XRemovesSelected(t *testing.T) {
+	m := Model{
+		Cols: 100, Rows: 30,
+		Focused:         PaneConsole,
+		BottomPanel:     BottomPanelURLs,
+		BottomPanelOpen: true,
+		URLsLocal:       true,
+		AllowList:       []string{"a.example", "b.example"},
+		DenyList:        []string{"d.example"},
+		URLsSelected:    2, // index 2 = first deny entry
+	}
+	got, cmd := Apply(m, KeyEvent{Rune: 'x'})
+	exec, ok := cmd.(CmdConsoleExec)
+	if !ok {
+		t.Fatalf("Cmd = %T; want CmdConsoleExec", cmd)
+	}
+	if exec.Line != "remove d.example" {
+		t.Errorf("Cmd.Line = %q, want %q", exec.Line, "remove d.example")
+	}
+	_ = got
+}
+
+// TestApplyKeyURLs_XInAttachModeIsRefused pins that 'x' produces
+// a clear error rather than silently no-opping when the URLs pane
+// is read-only (attach mode).
+func TestApplyKeyURLs_XInAttachModeIsRefused(t *testing.T) {
+	m := Model{
+		Cols: 100, Rows: 30,
+		Focused:         PaneConsole,
+		BottomPanel:     BottomPanelURLs,
+		BottomPanelOpen: true,
+		URLsLocal:       false,
+	}
+	got, cmd := Apply(m, KeyEvent{Rune: 'x'})
+	if _, ok := cmd.(CmdNone); !ok {
+		t.Errorf("Cmd = %T; want CmdNone in attach mode", cmd)
+	}
+	if got.LastErr == "" {
+		t.Errorf("LastErr empty in attach mode; want a refusal hint")
+	}
+}
+
+// TestApplyKeyURLs_EscDefocuses pins that Esc inside the URLs pane
+// returns focus to approvals (same convention as console pane Esc).
+func TestApplyKeyURLs_EscDefocuses(t *testing.T) {
+	m := Model{
+		Cols: 100, Rows: 30,
+		Focused:         PaneConsole,
+		BottomPanel:     BottomPanelURLs,
+		BottomPanelOpen: true,
+		URLsLocal:       true,
+	}
+	got, _ := Apply(m, KeyEvent{Key: KeyEsc})
+	if got.Focused != PaneApprovals {
+		t.Errorf("Focused after Esc = %v; want PaneApprovals", got.Focused)
+	}
+}
+
+// TestApplyURLsTickResult_UpdatesModel pins the event handler:
+// the tick populates AllowList/DenyList/URLsLocal and clamps
+// URLsSelected to the new combined length.
+func TestApplyURLsTickResult_UpdatesModel(t *testing.T) {
+	m := Model{URLsSelected: 5}
+	got, _ := Apply(m, URLsTickResult{
+		Allow: []string{"a.example"},
+		Deny:  []string{"d.example"},
+		Local: true,
+	})
+	if !got.URLsLocal {
+		t.Errorf("URLsLocal = false; want true")
+	}
+	if len(got.AllowList) != 1 || got.AllowList[0] != "a.example" {
+		t.Errorf("AllowList = %v, want [a.example]", got.AllowList)
+	}
+	if len(got.DenyList) != 1 || got.DenyList[0] != "d.example" {
+		t.Errorf("DenyList = %v, want [d.example]", got.DenyList)
+	}
+	if got.URLsSelected != 1 {
+		t.Errorf("URLsSelected = %d after clamp to 2-entry list; want 1", got.URLsSelected)
+	}
+}
+
+// TestApplyConsoleExec_RefreshesURLsWhenURLsPaneOpen pins that
+// after any console exec while the URLs pane is open, a refresh
+// fires so the operator sees the post-mutation list state.
+func TestApplyConsoleExec_RefreshesURLsWhenURLsPaneOpen(t *testing.T) {
+	m := Model{
+		BottomPanel:     BottomPanelURLs,
+		BottomPanelOpen: true,
+	}
+	_, cmd := Apply(m, ConsoleExecResult{Line: "remove x.example", Output: "removed x.example from allow\n"})
+	if _, ok := cmd.(CmdURLsRefresh); !ok {
+		t.Errorf("Cmd = %T; want CmdURLsRefresh after console exec with URLs pane open", cmd)
 	}
 }

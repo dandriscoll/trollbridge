@@ -91,6 +91,18 @@ type Model struct {
 	// chime can be muted at runtime with `b` or pre-muted in config
 	// via `tui.alerts.chime: false`. Closes #72.
 	Alerts AlertsState
+
+	// AllowList / DenyList back the URLs bottom panel — which, per
+	// #79, is the operator's view of `lists.allow` / `lists.deny`
+	// from trollbridge.yaml, not a roll-up of ops-ring URLs.
+	// Refreshed by URLsTickResult after a CmdURLsRefresh. URLsLocal
+	// is true when the runtime has a config path (LocalOnly run
+	// mode); false in attach mode where list state is not
+	// accessible from the operator's host.
+	AllowList    []string
+	DenyList     []string
+	URLsLocal    bool
+	URLsSelected int // index into AllowList++DenyList; -1 if empty
 }
 
 // AlertsState carries the chime toggle plus the last pending count
@@ -121,6 +133,17 @@ type OpsTickResult struct {
 type DigestTickResult struct {
 	Digests []advisor.Digest
 	Err     error
+}
+
+// URLsTickResult arrives after the runtime reloads the allow/deny
+// lists from trollbridge.yaml in response to a CmdURLsRefresh.
+// Local=false signals attach mode (no config path available); the
+// renderer shows the attach-mode hint in that case. (#79)
+type URLsTickResult struct {
+	Allow []string
+	Deny  []string
+	Local bool
+	Err   error
 }
 
 // KeyEvent arrives when the operator presses a key.
@@ -168,6 +191,7 @@ type ResizeEvent struct {
 func (TickResult) event()        {}
 func (OpsTickResult) event()     {}
 func (DigestTickResult) event()  {}
+func (URLsTickResult) event()    {}
 func (KeyEvent) event()          {}
 func (ActionResult) event()      {}
 func (ResizeEvent) event()       {}
@@ -190,6 +214,12 @@ type CmdQuit struct{}
 type CmdConsoleExec struct{ Line string }
 type CmdDigestRefresh struct{}
 
+// CmdURLsRefresh asks the runtime to re-read the allow/deny lists
+// from trollbridge.yaml and emit a URLsTickResult. Emitted on '4'
+// open and after any console exec while the URLs pane is open
+// (closes #79).
+type CmdURLsRefresh struct{}
+
 func (CmdNone) cmd()          {}
 func (CmdRefresh) cmd()       {}
 func (CmdApprove) cmd()       {}
@@ -197,6 +227,7 @@ func (CmdDeny) cmd()          {}
 func (CmdQuit) cmd()          {}
 func (CmdConsoleExec) cmd()   {}
 func (CmdDigestRefresh) cmd() {}
+func (CmdURLsRefresh) cmd()   {}
 func (CmdRingBell) cmd()      {}
 
 // Apply is the pure reducer. It does no I/O. Callers replace their
@@ -210,6 +241,24 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 	case DigestTickResult:
 		if e.Err == nil {
 			m.Digests = e.Digests
+		}
+		return m, CmdNone{}
+	case URLsTickResult:
+		if e.Err == nil {
+			m.AllowList = e.Allow
+			m.DenyList = e.Deny
+			m.URLsLocal = e.Local
+			total := len(m.AllowList) + len(m.DenyList)
+			if total == 0 {
+				m.URLsSelected = -1
+			} else {
+				if m.URLsSelected < 0 {
+					m.URLsSelected = 0
+				}
+				if m.URLsSelected >= total {
+					m.URLsSelected = total - 1
+				}
+			}
 		}
 		return m, CmdNone{}
 	case KeyEvent:
@@ -330,9 +379,61 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 	}
 	// Pane-specific dispatch.
 	if m.Focused == PaneConsole {
+		if m.BottomPanel == BottomPanelURLs {
+			return applyKeyURLs(m, e)
+		}
 		return applyKeyConsole(m, e)
 	}
 	return applyKeyApprovals(m, e)
+}
+
+// applyKeyURLs handles keystrokes when the URLs pane is open and
+// focused. The pane is the allow/deny list editor (closes #79):
+// j/k or Up/Down navigate across allow→deny, x removes the
+// selected entry through the existing console.Backend remove
+// path, Esc defocuses back to approvals.
+func applyKeyURLs(m Model, e KeyEvent) (Model, Cmd) {
+	if e.Key == KeyEsc {
+		m.Focused = PaneApprovals
+		return m, CmdNone{}
+	}
+	combinedLen := len(m.AllowList) + len(m.DenyList)
+	if e.Key == KeyUp || e.Rune == 'k' {
+		if m.URLsSelected > 0 {
+			m.URLsSelected--
+		}
+		return m, CmdNone{}
+	}
+	if e.Key == KeyDown || e.Rune == 'j' {
+		if m.URLsSelected < combinedLen-1 {
+			m.URLsSelected++
+		}
+		return m, CmdNone{}
+	}
+	if e.Rune == 'x' {
+		if !m.URLsLocal {
+			m.LastErr = "allow/deny editing runs on the proxy host"
+			return m, CmdNone{}
+		}
+		if m.URLsSelected < 0 || m.URLsSelected >= combinedLen {
+			m.LastErr = "no entry selected"
+			return m, CmdNone{}
+		}
+		var pattern string
+		if m.URLsSelected < len(m.AllowList) {
+			pattern = m.AllowList[m.URLsSelected]
+		} else {
+			pattern = m.DenyList[m.URLsSelected-len(m.AllowList)]
+		}
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" || strings.HasPrefix(pattern, "#") {
+			m.LastErr = "selected row is not an entry"
+			return m, CmdNone{}
+		}
+		m.LastInfo = "removing " + pattern + "…"
+		return m, CmdConsoleExec{Line: "remove " + pattern}
+	}
+	return m, CmdNone{}
 }
 
 func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
@@ -412,7 +513,12 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		}
 		m.BottomPanel = BottomPanelURLs
 		m.BottomPanelOpen = true
-		return m, CmdNone{}
+		// Auto-focus the URLs pane so j/k/x reach applyKeyURLs
+		// without an explicit Tab — the pane is editable (closes
+		// #79). Lifts the narrowed reading from #77 (which had
+		// kept '4' on approvals focus).
+		m.Focused = PaneConsole
+		return m, CmdURLsRefresh{}
 	}
 	if e.Rune == 'b' {
 		m.Alerts.ChimeEnabled = !m.Alerts.ChimeEnabled
@@ -516,6 +622,13 @@ func applyConsoleExec(m Model, e ConsoleExecResult) (Model, Cmd) {
 	if e.Quit {
 		m.Quit = true
 		return m, CmdQuit{}
+	}
+	// After any console exec, refresh the URLs pane if it's open —
+	// allow/deny/remove and #79's x-removes-selected all touch the
+	// lists, and the operator should see the post-mutation state
+	// without an extra refresh keystroke.
+	if m.BottomPanelOpen && m.BottomPanel == BottomPanelURLs {
+		return m, CmdURLsRefresh{}
 	}
 	return m, CmdNone{}
 }

@@ -342,6 +342,43 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				case events <- DigestTickResult{Digests: ds, Err: err}:
 				}
 			}()
+		case CmdURLsRefresh:
+			// Allow/deny lists live in trollbridge.yaml on the proxy
+			// host. In LocalOnly (run) mode the operator is on that
+			// host and backend.ConfigPath points at the live file;
+			// in attach mode it's empty and we emit Local=false so
+			// the renderer shows the attach-mode hint (#79).
+			cfgPath := ""
+			if backend != nil {
+				cfgPath = backend.ConfigPath
+			}
+			if cfgPath == "" {
+				go func() {
+					select {
+					case <-loopCtx.Done():
+					case events <- URLsTickResult{Local: false}:
+					}
+				}()
+				break
+			}
+			go func() {
+				cfg, err := config.Load(cfgPath)
+				if err != nil {
+					select {
+					case <-loopCtx.Done():
+					case events <- URLsTickResult{Local: true, Err: err}:
+					}
+					return
+				}
+				select {
+				case <-loopCtx.Done():
+				case events <- URLsTickResult{
+					Allow: filterListEntries(cfg.Lists.Allow),
+					Deny:  filterListEntries(cfg.Lists.Deny),
+					Local: true,
+				}:
+				}
+			}()
 		case CmdConsoleExec:
 			select {
 			case consoleQueue <- c.Line:
@@ -1132,30 +1169,86 @@ func renderLLMPane(b *strings.Builder, m Model, rows int) {
 	}
 }
 
-// renderURLsPane shows the distinct URLs seen in the ops ring with
-// the underlying repetition count.
+// renderURLsPane shows the allow/deny lists from trollbridge.yaml
+// with a navigable selection bar (closes #79). The pane is the
+// operator's list editor: j/k navigate, x removes the selected
+// entry (routed through Backend.Execute so configwrite + reload
+// run unchanged); inline add is via the console pane.
+//
+// In attach mode (no proxy-host file access) the pane shows a
+// one-line hint pointing the operator at the proxy host.
 func renderURLsPane(b *strings.Builder, m Model, rows int) {
-	panelHeaderLine(b, m, "── urls ── ")
+	panelHeaderLine(b, m, "── urls ── [j/k] nav  [x] remove  [1] console to add ")
 	used := 1
-	displayed := DisplayedOps(m)
-	if len(displayed) == 0 {
-		b.WriteString(padRight("  (no URLs yet)", m.Cols))
+	if !m.URLsLocal {
+		b.WriteString(padRight("  (allow/deny editing runs on the proxy host — open `trollbridge run` there)", m.Cols))
 		b.WriteString("\r\n")
 		used++
-	} else {
-		for _, o := range displayed {
-			if used >= rows {
-				break
-			}
-			line := fmt.Sprintf("  %4d  %-7s %s", o.Count, o.Method, o.URL)
-			b.WriteString(padRight(runeTrunc(line, m.Cols), m.Cols))
+		for used < rows {
+			b.WriteString(padRight("", m.Cols))
 			b.WriteString("\r\n")
 			used++
 		}
+		return
+	}
+	rowsLeft := func() int { return rows - used }
+	writeRow := func(text string, selected bool) {
+		if selected {
+			// Inverse-video selection bar — same visual signal the
+			// approvals pane uses for its highlighted row.
+			b.WriteString("\x1b[7m")
+			b.WriteString(padRight(runeTrunc(text, m.Cols), m.Cols))
+			b.WriteString("\x1b[0m")
+		} else {
+			b.WriteString(padRight(runeTrunc(text, m.Cols), m.Cols))
+		}
+		b.WriteString("\r\n")
+		used++
+	}
+	if rowsLeft() > 0 {
+		writeRow(fmt.Sprintf("  ALLOW (%d)", len(m.AllowList)), false)
+	}
+	for i, p := range m.AllowList {
+		if rowsLeft() <= 0 {
+			break
+		}
+		writeRow("    "+p, m.URLsSelected == i)
+	}
+	if len(m.AllowList) == 0 && rowsLeft() > 0 {
+		writeRow("    (empty)", false)
+	}
+	if rowsLeft() > 0 {
+		writeRow(fmt.Sprintf("  DENY (%d)", len(m.DenyList)), false)
+	}
+	allowLen := len(m.AllowList)
+	for i, p := range m.DenyList {
+		if rowsLeft() <= 0 {
+			break
+		}
+		writeRow("    "+p, m.URLsSelected == allowLen+i)
+	}
+	if len(m.DenyList) == 0 && rowsLeft() > 0 {
+		writeRow("    (empty)", false)
 	}
 	for used < rows {
 		b.WriteString(padRight("", m.Cols))
 		b.WriteString("\r\n")
 		used++
 	}
+}
+
+// filterListEntries strips blank/comment rows from a list as
+// loaded from trollbridge.yaml. The URLs pane only navigates over
+// real entries so removal semantics line up with what the
+// configwrite remove path actually matches.
+func filterListEntries(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, e := range in {
+		t := strings.TrimSpace(e)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
 }
