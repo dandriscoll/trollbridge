@@ -160,8 +160,8 @@ is passed, init writes the static default config without prompting.
 				if ans.installMode == "daemon" {
 					ans.caCertPath = DefaultCACertPath
 					ans.caKeyPath = DefaultCAKeyPath
-					ans.auditPath = "/var/log/trollbridge/audit.jsonl"
-					ans.llmKeyPath = "/etc/trollbridge/llm.key"
+					ans.auditPath = DefaultDaemonAuditPath
+					ans.llmKeyPath = DefaultDaemonLLMKeyPath
 				} else {
 					ans.caCertPath = filepath.Join(absDir, "trollbridge-ca.crt")
 					ans.caKeyPath = filepath.Join(absDir, "trollbridge-ca.key")
