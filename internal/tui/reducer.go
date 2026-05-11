@@ -383,15 +383,28 @@ func clampSelection(m *Model) {
 	}
 }
 
+// DisplayedOp wraps an opstream.Op with a Count of how many
+// individual requests collapsed into this row at display time
+// (closes #63). The underlying Op is embedded, so callers continue
+// to read .RequestID / .HoldID / .Status / .URL etc. directly.
+type DisplayedOp struct {
+	opstream.Op
+	Count int
+}
+
 // DisplayedOps returns the unified list rendered in the upper pane:
 // the ops ring (newest first) merged with any pending holds that the
 // ring no longer carries (evicted under burst pressure). Holds that
 // are NOT in the ring become synthetic ops with status "pending" so
 // the operator never silently loses an actionable hold.
-func DisplayedOps(m Model) []opstream.Op {
-	out := append([]opstream.Op(nil), m.Ops...)
+//
+// Ops are then grouped by (Method, URL); each group's representative
+// is the newest op (first in the newest-first ordering) and Count
+// records the underlying repetition (closes #63).
+func DisplayedOps(m Model) []DisplayedOp {
+	flat := append([]opstream.Op(nil), m.Ops...)
 	seenHoldIDs := map[string]struct{}{}
-	for _, o := range out {
+	for _, o := range flat {
 		if o.HoldID != "" {
 			seenHoldIDs[o.HoldID] = struct{}{}
 		}
@@ -400,9 +413,6 @@ func DisplayedOps(m Model) []opstream.Op {
 		if _, ok := seenHoldIDs[h.ID]; ok {
 			continue
 		}
-		// Synthetic op for an unknown-to-ring hold. RequestID is empty
-		// (ring eviction lost it) so selection-preservation falls back
-		// to the hold:<id> key path.
 		url := h.Host
 		if h.Port > 0 {
 			url = h.Host + ":" + itoaPort(h.Port)
@@ -410,7 +420,7 @@ func DisplayedOps(m Model) []opstream.Op {
 		if h.Path != "" && h.Scheme != "" {
 			url = h.Scheme + "://" + url + h.Path
 		}
-		out = append(out, opstream.Op{
+		flat = append(flat, opstream.Op{
 			Method:    h.Method,
 			URL:       url,
 			Status:    opstream.StatusPending,
@@ -418,6 +428,25 @@ func DisplayedOps(m Model) []opstream.Op {
 			StartedAt: h.CreatedAt,
 			UpdatedAt: h.CreatedAt,
 		})
+	}
+
+	type key struct{ method, url string }
+	indexOf := map[key]int{}
+	out := make([]DisplayedOp, 0, len(flat))
+	for _, o := range flat {
+		k := key{o.Method, o.URL}
+		if i, ok := indexOf[k]; ok {
+			out[i].Count++
+			// Most-recent representative wins.
+			if o.UpdatedAt.After(out[i].UpdatedAt) {
+				cnt := out[i].Count
+				out[i].Op = o
+				out[i].Count = cnt
+			}
+			continue
+		}
+		indexOf[k] = len(out)
+		out = append(out, DisplayedOp{Op: o, Count: 1})
 	}
 	return out
 }

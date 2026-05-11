@@ -537,13 +537,13 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString(bodyLine(padRight(runeTrunc("  (no recent operations — waiting for traffic)", inner), inner), m.Cols, focused))
 		used++
 	} else {
-		const methodW, statusW, timeW = 7, 11, 14
-		urlW := inner - methodW - statusW - timeW - 5 // 1 leading space + 3 column gaps + 1 trailing
+		const methodW, countW, statusW, timeW = 7, 1, 11, 14
+		urlW := inner - methodW - countW - statusW - timeW - 6 // 1 leading space + 4 column gaps + 1 trailing
 		if urlW < 8 {
 			urlW = 8
 		}
-		colHeader := fmt.Sprintf(" %-*s %-*s %-*s %s",
-			methodW, "METHOD", urlW, "URL", statusW, "STATUS", "TIME")
+		colHeader := fmt.Sprintf(" %-*s %-*s %s %-*s %s",
+			methodW, "METHOD", urlW, "URL", " ", statusW, "STATUS", "TIME")
 		b.WriteString(bodyLine(padRight(runeTrunc(colHeader, inner), inner), m.Cols, focused))
 		used++
 		now := time.Now()
@@ -553,9 +553,10 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			}
 			urlCell := runeTrunc(o.URL, urlW)
 			urlCellPadded := padRight(urlCell, urlW)
-			row := fmt.Sprintf(" %-*s %s %-*s %s",
+			row := fmt.Sprintf(" %-*s %s %s %-*s %s",
 				methodW, runeTrunc(o.Method, methodW),
 				colorizeURLForRow(urlCellPadded, o.URL),
+				brailleCounter(o.Count),
 				statusW+8, runeTrunc(colorizeStatus(o.Status), statusW+8),
 				formatOpTime(o.UpdatedAt, now),
 			)
@@ -586,6 +587,42 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	// Bottom border carries the keybindings on the right.
 	keys := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [q] quit"
 	b.WriteString(bottomBorder("", keys, m.Cols, focused))
+}
+
+// brailleCounter returns a single-rune Braille glyph whose dot count
+// scales logarithmically with n: floor(log2(n)) bounded to [0, 8].
+// n==1 returns " " — a single request needs no count indicator
+// (closes #63).
+func brailleCounter(n int) string {
+	if n < 2 {
+		return " "
+	}
+	dots := 0
+	for v := n; v > 1; v >>= 1 {
+		dots++
+	}
+	if dots > 8 {
+		dots = 8
+	}
+	switch dots {
+	case 1:
+		return "⠁" // ⠁
+	case 2:
+		return "⠃" // ⠃
+	case 3:
+		return "⠇" // ⠇
+	case 4:
+		return "⠏" // ⠏
+	case 5:
+		return "⠟" // ⠟
+	case 6:
+		return "⠿" // ⠿
+	case 7:
+		return "⡿" // ⡿
+	case 8:
+		return "⣿" // ⣿
+	}
+	return " "
 }
 
 // formatOpTime renders an op's UpdatedAt in the compact form #67
@@ -708,13 +745,13 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 		b.WriteString("\r\n")
 		used++
 	} else {
-		const methodW, statusW, timeW = 7, 11, 14
-		urlW := m.Cols - methodW - statusW - timeW - 5
+		const methodW, countW, statusW, timeW = 7, 1, 11, 14
+		urlW := m.Cols - methodW - countW - statusW - timeW - 6
 		if urlW < 8 {
 			urlW = 8
 		}
-		colHeader := fmt.Sprintf(" %-*s %-*s %-*s %s",
-			methodW, "METHOD", urlW, "URL", statusW, "STATUS", "TIME")
+		colHeader := fmt.Sprintf(" %-*s %-*s %s %-*s %s",
+			methodW, "METHOD", urlW, "URL", " ", statusW, "STATUS", "TIME")
 		b.WriteString(padRight(colHeader, m.Cols))
 		b.WriteString("\r\n")
 		used++
@@ -725,9 +762,10 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			}
 			urlCell := runeTrunc(o.URL, urlW)
 			urlCellPadded := padRight(urlCell, urlW)
-			row := fmt.Sprintf(" %-*s %s %-*s %s",
+			row := fmt.Sprintf(" %-*s %s %s %-*s %s",
 				methodW, runeTrunc(o.Method, methodW),
 				colorizeURLForRow(urlCellPadded, o.URL),
+				brailleCounter(o.Count),
 				statusW, colorizeStatus(o.Status),
 				formatOpTime(o.UpdatedAt, now),
 			)
