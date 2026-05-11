@@ -235,7 +235,8 @@ func TestApply_Resize(t *testing.T) {
 // Tab switches focus between panes.
 
 func TestApply_TabTogglesFocus(t *testing.T) {
-	m := Model{Focused: PaneApprovals}
+	// Tab only toggles when there is a bottom pane to focus on (#66).
+	m := Model{Focused: PaneApprovals, BottomPanelOpen: true}
 	got, cmd := Apply(m, KeyEvent{Key: KeyTab})
 	if got.Focused != PaneConsole {
 		t.Errorf("after first Tab, Focused = %v, want PaneConsole", got.Focused)

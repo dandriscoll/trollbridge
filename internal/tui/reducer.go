@@ -23,10 +23,12 @@ const (
 	PaneConsole
 )
 
-// BottomPanel names which content the lower half of the screen shows.
-// The default — BottomPanelConsole — preserves the existing console
-// behavior. Numbered keys 1/2/3/4 (when the approvals pane is
-// focused) cycle through the four panels (closes #66).
+// BottomPanel names which content the lower half of the screen shows
+// when the bottom pane is open. The default Model has Open=false so
+// only the approvals pane is rendered; the operator opens a panel via
+// 1/2/3/4 and closes any open panel with 0. Selection is independent
+// of visibility so re-pressing the same number is idempotent and the
+// last-used selection survives a hide/show cycle (closes #66).
 type BottomPanel int
 
 const (
@@ -70,10 +72,16 @@ type Model struct {
 	Focused Pane
 	Console ConsoleModel
 
-	// BottomPanel selects which content the lower half shows. The
-	// default zero value is BottomPanelConsole, preserving the prior
-	// always-on console-pane behavior (closes #66).
+	// BottomPanel selects which content the lower half shows when
+	// BottomPanelOpen is true. BottomPanel always holds a valid
+	// selection so re-opening the same panel is idempotent (closes
+	// #66).
 	BottomPanel BottomPanel
+	// BottomPanelOpen decides whether the bottom pane is visible at
+	// all. Zero value (false) is the default: the approvals pane fills
+	// the screen and the operator opts in to a bottom panel via the
+	// 1/2/3/4 hotkeys (closes #66, reactivation).
+	BottomPanelOpen bool
 	// Digests is the rolling advisor-classify log shown by the LLM
 	// bottom panel. Filled by DigestTickResult events.
 	Digests []advisor.Digest
@@ -306,6 +314,13 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 		return m, CmdQuit{}
 	}
 	if e.Key == KeyTab {
+		// Tab cycles focus to the bottom pane only when something is
+		// down there to focus on. Pre-#66-reactivation, Tab toggled
+		// unconditionally; the new default has no bottom pane to focus
+		// when BottomPanelOpen is false, so Tab is a no-op then.
+		if !m.BottomPanelOpen {
+			return m, CmdNone{}
+		}
 		if m.Focused == PaneApprovals {
 			m.Focused = PaneConsole
 		} else {
@@ -341,21 +356,34 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	if e.Rune == 'r' {
 		return m, CmdRefresh{}
 	}
-	// Bottom-panel switcher (closes #66). Numbered keys 1/2/3/4 here
-	// because the approvals key set already consumes a/d/j/k/r/q/Tab
-	// and the numbered keys are free.
+	// Bottom-panel switcher (closes #66). Numbered keys 1/2/3/4 open a
+	// panel; 0 closes any open panel back to approvals-only. The
+	// approvals key set already consumes a/d/j/k/r/q/Tab so the
+	// numeric row was free; '0' is the natural "nothing selected"
+	// member of that row.
 	switch e.Rune {
+	case '0':
+		m.BottomPanelOpen = false
+		// If the operator had Tabbed into the bottom pane before
+		// hiding it, snap focus back to approvals — there is no
+		// visible pane to keep focus on.
+		m.Focused = PaneApprovals
+		return m, CmdNone{}
 	case '1':
 		m.BottomPanel = BottomPanelConsole
+		m.BottomPanelOpen = true
 		return m, CmdNone{}
 	case '2':
 		m.BottomPanel = BottomPanelInfo
+		m.BottomPanelOpen = true
 		return m, CmdNone{}
 	case '3':
 		m.BottomPanel = BottomPanelLLM
+		m.BottomPanelOpen = true
 		return m, CmdDigestRefresh{}
 	case '4':
 		m.BottomPanel = BottomPanelURLs
+		m.BottomPanelOpen = true
 		return m, CmdNone{}
 	}
 	if e.Rune == 'b' {

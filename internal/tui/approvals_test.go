@@ -177,6 +177,11 @@ func TestRunLoop_TabSwitchesFocusAndConsoleExecutes(t *testing.T) {
 	}()
 
 	time.Sleep(60 * time.Millisecond)
+	// '1' opens the console panel (default is approvals-only since #66 reactivation).
+	if _, err := pw.Write([]byte("1")); err != nil {
+		t.Fatalf("write 1: %v", err)
+	}
+	time.Sleep(40 * time.Millisecond)
 	// Tab → focus console.
 	if _, err := pw.Write([]byte{'\t'}); err != nil {
 		t.Fatalf("write tab: %v", err)
@@ -227,7 +232,10 @@ func TestRunLoop_WelcomeAppearsInScrollback(t *testing.T) {
 	go func() {
 		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, welcome, nil, DefaultOptions())
 	}()
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	// '1' opens the console panel where the welcome lives.
+	_, _ = pw.Write([]byte("1"))
+	time.Sleep(60 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03}) // Ctrl-C
 
 	select {
@@ -259,7 +267,10 @@ func TestRunLoop_DefaultStartHintWhenNoWelcome(t *testing.T) {
 	go func() {
 		done <- runLoop(ctx, client, &console.Backend{LocalOnly: false}, pr, &stdout, nil, 100, 30, "", nil, DefaultOptions())
 	}()
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	// '1' opens the console panel where the start hint lives.
+	_, _ = pw.Write([]byte("1"))
+	time.Sleep(60 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03})
 
 	select {
@@ -292,6 +303,9 @@ func TestRunLoop_TabFlipsConsoleBorderToCyan(t *testing.T) {
 	go func() {
 		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil, DefaultOptions())
 	}()
+	time.Sleep(60 * time.Millisecond)
+	// '1' opens the console panel so Tab has a pane to focus on.
+	_, _ = pw.Write([]byte("1"))
 	time.Sleep(60 * time.Millisecond)
 	_, _ = pw.Write([]byte{'\t'})
 	time.Sleep(80 * time.Millisecond)
@@ -342,7 +356,11 @@ func TestRender_TabHintAppearsInFocusedPaneTopBorder(t *testing.T) {
 		go func() {
 			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil, DefaultOptions())
 		}()
-		time.Sleep(80 * time.Millisecond)
+		time.Sleep(60 * time.Millisecond)
+		// Open the console panel — the Tab cue only fires when there's
+		// a second pane to focus on (#66 reactivation).
+		_, _ = pw.Write([]byte("1"))
+		time.Sleep(60 * time.Millisecond)
 		_, _ = pw.Write([]byte{0x03})
 		select {
 		case <-done:
@@ -380,6 +398,8 @@ func TestRender_TabHintAppearsInFocusedPaneTopBorder(t *testing.T) {
 		go func() {
 			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil, DefaultOptions())
 		}()
+		time.Sleep(60 * time.Millisecond)
+		_, _ = pw.Write([]byte("1")) // open console panel
 		time.Sleep(60 * time.Millisecond)
 		_, _ = pw.Write([]byte{'\t'}) // focus console
 		time.Sleep(80 * time.Millisecond)
@@ -422,7 +442,9 @@ func TestRender_BottomBorderCarriesKeybindings(t *testing.T) {
 	go func() {
 		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil, DefaultOptions())
 	}()
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	_, _ = pw.Write([]byte("1")) // open console panel so its bottom border renders (#66)
+	time.Sleep(60 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03})
 	select {
 	case <-done:
@@ -492,7 +514,9 @@ func TestRender_BothPanesHaveBorders(t *testing.T) {
 	go func() {
 		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil, DefaultOptions())
 	}()
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	_, _ = pw.Write([]byte("1")) // open console panel to get two-pane layout (#66)
+	time.Sleep(60 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03})
 	select {
 	case <-done:

@@ -543,17 +543,23 @@ func render(out io.Writer, m Model) error {
 	if bodyRows < 4 {
 		bodyRows = 4
 	}
-	topRows := bodyRows / 2
-	if topRows < 3 {
-		topRows = 3
+	// When the bottom panel is closed (the default), the approvals
+	// pane fills the entire body — operator sees only approvals until
+	// they press 1/2/3/4 to open something below (closes #66).
+	if !m.BottomPanelOpen {
+		renderApprovalsPane(&b, m, bodyRows)
+	} else {
+		topRows := bodyRows / 2
+		if topRows < 3 {
+			topRows = 3
+		}
+		bottomRows := bodyRows - topRows
+		if bottomRows < 3 {
+			bottomRows = 3
+		}
+		renderApprovalsPane(&b, m, topRows)
+		renderBottomPane(&b, m, bottomRows)
 	}
-	bottomRows := bodyRows - topRows
-	if bottomRows < 3 {
-		bottomRows = 3
-	}
-
-	renderApprovalsPane(&b, m, topRows)
-	renderBottomPane(&b, m, bottomRows)
 
 	// Strip the very last line terminator so the cursor settles on
 	// the bottom row instead of one past it. With the trailing \n the
@@ -589,7 +595,14 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	label := formatPaneLabel(formatOpsPaneLabelText(len(displayed), pending), focused)
 	rightHint := ""
 	if focused {
-		rightHint = formatTabHint(m.Focused)
+		// Panel-discovery hint when the bottom is hidden; Tab/hide cue
+		// when a panel is showing. Both states keep the operator one
+		// glance away from the next move (closes #66).
+		if !m.BottomPanelOpen {
+			rightHint = "[1]console [2]info [3]llm [4]urls"
+		} else {
+			rightHint = "[0]hide  " + formatTabHint(m.Focused)
+		}
 	}
 	b.WriteString(topBorder(label, rightHint, m.Cols, focused))
 
@@ -1035,9 +1048,10 @@ func renderBottomPane(b *strings.Builder, m Model, rows int) {
 }
 
 // panelHeaderLine renders the panel title row + the keystroke hint
-// reminding the operator how to switch panels.
+// reminding the operator how to switch panels and how to hide them
+// back to approvals-only.
 func panelHeaderLine(b *strings.Builder, m Model, title string) {
-	hint := "[1]console  [2]info  [3]llm  [4]urls"
+	hint := "[0]hide  [1]console  [2]info  [3]llm  [4]urls"
 	left := title
 	right := hint
 	gap := m.Cols - len([]rune(left)) - len([]rune(right))
