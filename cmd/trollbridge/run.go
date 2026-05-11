@@ -220,6 +220,24 @@ func newRunCmd() *cobra.Command {
 					OnDoctor: replDoctorFn(configPath),
 				}
 				welcome := buildRunWelcome(srv.Addr(), string(cfg.Mode))
+				// While the TUI holds the alt-screen, route operational
+				// logs away from stderr so per-request INFO / WARN
+				// lines do not corrupt the rendered frames (closes #56).
+				// Only redirect when the operator did not explicitly
+				// pick a path — an explicit file path is honored as-is.
+				if cfg.Logging.OperationalPath == "" || cfg.Logging.OperationalPath == oplog.StderrSink {
+					tuiLogPath := filepath.Join(os.TempDir(),
+						fmt.Sprintf("trollbridge-%d.log", os.Getpid()))
+					if f, openErr := os.OpenFile(tuiLogPath,
+						os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640); openErr == nil {
+						if oplog.SwapWriter(opLog, f) {
+							welcome += "\noperational log: " + tuiLogPath
+							defer f.Close()
+						} else {
+							f.Close()
+						}
+					}
+				}
 				go func() {
 					defer func() {
 						if r := recover(); r != nil {

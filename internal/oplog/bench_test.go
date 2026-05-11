@@ -15,7 +15,7 @@ import (
 func BenchmarkHandler_Handle(b *testing.B) {
 	lv := new(slog.LevelVar)
 	lv.Set(slog.LevelInfo)
-	h := &textHandler{w: io.Discard, level: lv}
+	h := &textHandler{dest: &sharedWriter{w: io.Discard}, level: lv}
 	lg := slog.New(h).With(
 		"request_id", "8a74ad88-d151-4b83-bcfa-4890e255b436",
 		"identity", "alice",
@@ -40,7 +40,7 @@ func BenchmarkHandler_Handle(b *testing.B) {
 func BenchmarkHandler_HandleSimple(b *testing.B) {
 	lv := new(slog.LevelVar)
 	lv.Set(slog.LevelInfo)
-	h := &textHandler{w: io.Discard, level: lv}
+	h := &textHandler{dest: &sharedWriter{w: io.Discard}, level: lv}
 	lg := slog.New(h)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

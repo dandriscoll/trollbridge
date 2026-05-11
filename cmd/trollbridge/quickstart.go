@@ -265,6 +265,22 @@ func runProxyLoop(cmd *cobra.Command, configPath string, verbose bool) error {
 			OnDoctor: replDoctorFn(configPath),
 		}
 		welcome := buildRunWelcome(srv.Addr(), string(cfg.Mode))
+		// Redirect operational logs to a temp file while the TUI
+		// owns the terminal (closes #56). See run.go for the long
+		// form of this comment.
+		if cfg.Logging.OperationalPath == "" || cfg.Logging.OperationalPath == oplog.StderrSink {
+			tuiLogPath := filepath.Join(os.TempDir(),
+				fmt.Sprintf("trollbridge-%d.log", os.Getpid()))
+			if f, openErr := os.OpenFile(tuiLogPath,
+				os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640); openErr == nil {
+				if oplog.SwapWriter(opLog, f) {
+					welcome += "\noperational log: " + tuiLogPath
+					defer f.Close()
+				} else {
+					f.Close()
+				}
+			}
+		}
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {

@@ -108,7 +108,7 @@ func TestHandler_FormatGoldenLine(t *testing.T) {
 	var buf bytes.Buffer
 	lv := new(slog.LevelVar)
 	lv.Set(slog.LevelInfo)
-	h := &textHandler{w: &buf, level: lv}
+	h := &textHandler{dest: &sharedWriter{w: &buf}, level: lv}
 	lg := slog.New(h)
 	lg.Info("rules reloaded", "version", "abc123", "count", 5)
 
@@ -138,7 +138,7 @@ func TestHandler_LevelFilter(t *testing.T) {
 	var buf bytes.Buffer
 	lv := new(slog.LevelVar)
 	lv.Set(slog.LevelWarn)
-	h := &textHandler{w: &buf, level: lv}
+	h := &textHandler{dest: &sharedWriter{w: &buf}, level: lv}
 	lg := slog.New(h)
 	lg.Debug("d")
 	lg.Info("i")
@@ -164,7 +164,7 @@ func TestHandler_WithAttrs(t *testing.T) {
 	var buf bytes.Buffer
 	lv := new(slog.LevelVar)
 	lv.Set(slog.LevelInfo)
-	h := &textHandler{w: &buf, level: lv}
+	h := &textHandler{dest: &sharedWriter{w: &buf}, level: lv}
 	lg := slog.New(h).With("request_id", "rid-123", "identity", "alice")
 	lg.Info("forwarded", "host", "example.com")
 	out := buf.String()
@@ -175,10 +175,39 @@ func TestHandler_WithAttrs(t *testing.T) {
 	}
 }
 
+// TestSwapWriter_AppliesToDerivedHandlers pins #56's contract: when
+// the TUI redirects oplog away from stderr, derived per-request
+// loggers (built via With) must follow. The textHandler shares a
+// *sharedWriter across all WithAttrs copies so a single Swap
+// retargets every derived handler.
+func TestSwapWriter_AppliesToDerivedHandlers(t *testing.T) {
+	first, err := New(StderrSink, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	sub := first.With("request_id", "rid-XYZ")
+
+	var buf bytes.Buffer
+	if !SwapWriter(first, &buf) {
+		t.Fatalf("SwapWriter returned false")
+	}
+
+	first.Info("root-event", "k", "v")
+	sub.Info("sub-event", "k2", "v2")
+
+	out := buf.String()
+	if !strings.Contains(out, "root-event") {
+		t.Errorf("root logger write did not land in new sink: %q", out)
+	}
+	if !strings.Contains(out, "sub-event") || !strings.Contains(out, "request_id=rid-XYZ") {
+		t.Errorf("derived logger did not follow swap: %q", out)
+	}
+}
+
 func TestHandler_EnabledRespectsContextSignature(t *testing.T) {
 	lv := new(slog.LevelVar)
 	lv.Set(slog.LevelInfo)
-	h := &textHandler{w: nil, level: lv}
+	h := &textHandler{dest: nil, level: lv}
 	if h.Enabled(context.Background(), slog.LevelDebug) {
 		t.Errorf("debug should be disabled at info level")
 	}

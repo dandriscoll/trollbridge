@@ -77,8 +77,45 @@ func New(path string, level *slog.LevelVar) (*slog.Logger, error) {
 		}
 		sink = f
 	}
-	h := &textHandler{w: sink, level: level}
+	h := &textHandler{dest: &sharedWriter{w: sink}, level: level}
 	return slog.New(h), nil
+}
+
+// sharedWriter is the indirection layer that lets SwapWriter retarget
+// every handler derived from a Logger (via With / WithAttrs) at once.
+// Without it, swapping the writer on the root handler leaves the
+// derived handlers writing to the old destination, since WithAttrs
+// copies the writer interface value.
+type sharedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *sharedWriter) Write(b []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(b)
+}
+
+// Swap atomically replaces the destination writer.
+func (s *sharedWriter) Swap(w io.Writer) {
+	s.mu.Lock()
+	s.w = w
+	s.mu.Unlock()
+}
+
+// SwapWriter retargets the operational logger's textHandler at a new
+// destination. Used by the TUI runtime to route stderr-bound logs
+// into a file while the alt-screen holds the terminal (closes #56).
+// Returns false if the logger is not a trollbridge oplog (unknown
+// handler shape).
+func SwapWriter(l *slog.Logger, w io.Writer) bool {
+	h, ok := l.Handler().(*textHandler)
+	if !ok || h.dest == nil {
+		return false
+	}
+	h.dest.Swap(w)
+	return true
 }
 
 // textHandler emits "<ts> <LEVEL> trollbridge: <msg> [k=v ...]" lines.
@@ -87,7 +124,10 @@ func New(path string, level *slog.LevelVar) (*slog.Logger, error) {
 // (no nested groups, no source positions) — operators who want the
 // full slog feature surface can swap in slog.NewTextHandler upstream.
 type textHandler struct {
-	w     io.Writer
+	// dest is the indirection that lets SwapWriter retarget every
+	// derived handler (via WithAttrs) at once. Never nil for handlers
+	// built by New.
+	dest  *sharedWriter
 	level *slog.LevelVar
 	mu    sync.Mutex
 	attrs []slog.Attr
@@ -101,7 +141,7 @@ func (h *textHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	merged := make([]slog.Attr, 0, len(h.attrs)+len(attrs))
 	merged = append(merged, h.attrs...)
 	merged = append(merged, attrs...)
-	return &textHandler{w: h.w, level: h.level, attrs: merged}
+	return &textHandler{dest: h.dest, level: h.level, attrs: merged}
 }
 
 // WithGroup is required by the interface but trollbridge doesn't
@@ -127,7 +167,7 @@ func (h *textHandler) Handle(_ context.Context, r slog.Record) error {
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, err := h.w.Write(b)
+	_, err := h.dest.Write(b)
 	return err
 }
 
