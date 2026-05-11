@@ -15,6 +15,7 @@ import (
 
 	"github.com/dandriscoll/trollbridge/internal/audit"
 	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/configwatch"
 	"github.com/dandriscoll/trollbridge/internal/configwrite"
 	"github.com/dandriscoll/trollbridge/internal/console"
 	"github.com/dandriscoll/trollbridge/internal/oplog"
@@ -112,6 +113,14 @@ func newRunCmd() *cobra.Command {
 				return &configErr{err}
 			}
 
+			// External-edit watcher: declared here (before the
+			// DecisionPersist + console OnReload closures) so both
+			// configwrite paths can call yamlWatcher.MarkReloaded
+			// to suppress the redundant external-reload fire on
+			// internal writes (closes #80). Started further down,
+			// after engine and other dependencies are ready.
+			yamlWatcher := configwatch.New(configPath)
+
 			// Persist manual approve/deny decisions back to
 			// lists.allow / lists.deny in trollbridge.yaml (closes
 			// #49). Wired at the queue layer so that both in-process
@@ -176,6 +185,10 @@ func newRunCmd() *cobra.Command {
 					return
 				}
 				_ = srv.ReloadListsFromConfig(freshCfg)
+				// Tell the external-edit watcher we already
+				// reloaded so its next poll skips the redundant
+				// fire (#80).
+				yamlWatcher.MarkReloaded()
 			})
 
 			// SIGHUP triggers YAML rule reload.
@@ -189,6 +202,38 @@ func newRunCmd() *cobra.Command {
 						opLog.Info("rules reloaded", "event", oplog.EventRuleReload, "version", engine.RuleSetVersion())
 					}
 				}
+			}()
+
+			// External edits to trollbridge.yaml trigger an in-process
+			// reload of lists and rules (closes #80). The watcher
+			// itself was declared earlier so configwrite closures
+			// could capture it; here we start the poll loop.
+			go func() {
+				_ = yamlWatcher.Start(ctx, func() {
+					opLog.Info("config file change detected — reloading",
+						"event", "config_change_detected",
+						"config_path", configPath)
+					freshCfg, err := config.Load(configPath)
+					if err != nil {
+						opLog.Error("list-reload re-parse failed",
+							"event", oplog.EventAllowlistReloadFailure,
+							"error", err.Error())
+						return
+					}
+					if rerr := srv.ReloadListsFromConfig(freshCfg); rerr != nil {
+						opLog.Error("list reload failed",
+							"event", oplog.EventAllowlistReloadFailure,
+							"error", rerr.Error())
+					}
+					if rerr := engine.Reload(); rerr != nil {
+						opLog.Error("rule reload failed",
+							"event", oplog.EventRuleReloadFailure, "error", rerr.Error())
+					} else {
+						opLog.Info("rules reloaded",
+							"event", oplog.EventRuleReload,
+							"version", engine.RuleSetVersion())
+					}
+				})
 			}()
 
 			// Operator UI: the unified two-pane TUI when stdin is a
@@ -215,6 +260,7 @@ func newRunCmd() *cobra.Command {
 							return
 						}
 						_ = srv.ReloadListsFromConfig(freshCfg)
+						yamlWatcher.MarkReloaded()
 					},
 					OnTest:   replTestFn(configPath),
 					OnDoctor: replDoctorFn(configPath),
