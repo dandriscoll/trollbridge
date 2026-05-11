@@ -22,14 +22,23 @@ import (
 const DefaultCap = 50
 
 // Op-status string constants. Stringified HTTP status codes
-// ("200", "404", "502") also appear in Op.Status when the upstream
-// response completed.
+// ("200", "403", "470", "502") appear in Op.Status when a response
+// status was sent. The five non-numeric states cover the lifecycle
+// before / outside of a normal HTTP response (closes #57).
 const (
-	StatusEvaluating = "evaluating"
-	StatusPending    = "pending"
-	StatusAllowed    = "allowed"
-	StatusDenied     = "denied"
-	StatusError      = "error"
+	// StatusChecking — the LLM advisor is evaluating, or the policy
+	// engine has not yet decided. Pre-decision and brief.
+	StatusChecking = "checking"
+	// StatusPending — held for human approval (TUI / attach operator).
+	StatusPending = "pending"
+	// StatusRunning — decision is allow, response not yet complete.
+	// writeAudit overwrites with the upstream HTTP code on response.
+	// Deny variants briefly pass through Running before the proxy's
+	// 470 lands and overwrites.
+	StatusRunning = "running"
+	// StatusError — pre-HTTP error (no status sent), e.g., upstream
+	// dial failure, body-read failure, hijack failure.
+	StatusError = "error"
 )
 
 // Op is one operation's view-state. JSON tags exist because /v1/ops
@@ -68,7 +77,7 @@ func New(cap int) *Ring {
 	}
 }
 
-// Begin records a new operation in the evaluating state. If an entry
+// Begin records a new operation in the checking state. If an entry
 // for requestID already exists (re-entry — should not happen in
 // practice since request_ids are UUIDs) the existing entry is
 // preserved and only the timestamp is bumped.
@@ -93,7 +102,7 @@ func (r *Ring) Begin(requestID, method, url string) {
 		RequestID: requestID,
 		Method:    method,
 		URL:       url,
-		Status:    StatusEvaluating,
+		Status:    StatusChecking,
 		StartedAt: now,
 		UpdatedAt: now,
 	}

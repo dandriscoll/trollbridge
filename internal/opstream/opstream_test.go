@@ -16,7 +16,7 @@ func fixedClock(start time.Time, step time.Duration) func() time.Time {
 	}
 }
 
-func TestRing_BeginRecordsEvaluatingStatus(t *testing.T) {
+func TestRing_BeginRecordsCheckingStatus(t *testing.T) {
 	r := New(10)
 	r.Begin("req-1", "GET", "https://example.com:443/")
 
@@ -24,7 +24,7 @@ func TestRing_BeginRecordsEvaluatingStatus(t *testing.T) {
 	if len(snap) != 1 {
 		t.Fatalf("snapshot len = %d, want 1", len(snap))
 	}
-	if got, want := snap[0].Status, StatusEvaluating; got != want {
+	if got, want := snap[0].Status, StatusChecking; got != want {
 		t.Errorf("Status = %q, want %q", got, want)
 	}
 	if got, want := snap[0].URL, "https://example.com:443/"; got != want {
@@ -124,7 +124,7 @@ func TestRing_SnapshotOrderedNewestFirst(t *testing.T) {
 
 func TestRing_StatusUpdate_SamePositionAfterResolve(t *testing.T) {
 	// Pins the in-place-update contract: an operation that transitions
-	// evaluating → pending → resolved keeps its identity (the same
+	// checking → pending → resolved keeps its identity (the same
 	// request_id remains in the snapshot at the same index relative
 	// to other ops that have not changed since).
 	r := New(10)

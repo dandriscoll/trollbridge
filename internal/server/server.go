@@ -1022,38 +1022,38 @@ func opURLForRequest(req *types.RequestEvent) string {
 	return fmt.Sprintf("%s://%s:%d%s", req.Scheme, req.Host, req.Port, req.Path)
 }
 
-// transitionOpFromEvaluating moves the op row out of "evaluating"
-// the moment a non-ask decision lands, so the operator UI does not
-// linger in evaluating during a slow upstream (closes #58). The
-// final HTTP status is set by writeAudit when the request finishes;
-// this call is a transient intermediate state for allow, and the
-// terminal state for deny. Ask effects are no-ops (HoldPending owns
-// that transition).
+// transitionOpFromEvaluating moves the op row out of "checking" the
+// moment a non-ask decision lands, so the operator UI does not
+// linger in checking during a slow upstream (closes #58). The final
+// HTTP status is set by writeAudit when the request finishes; this
+// call is a transient intermediate state. Ask effects are no-ops
+// (HoldPending owns that transition).
 func (s *Server) transitionOpFromEvaluating(reqID string, e types.Effect) {
 	switch e {
-	case types.EffectAllow, types.EffectAskUserResolvedAllow:
-		s.ops.Resolve(reqID, opstream.StatusAllowed)
-	case types.EffectDeny, types.EffectAskUserResolvedDeny, types.EffectAskUserTimedOut:
-		s.ops.Resolve(reqID, opstream.StatusDenied)
+	case types.EffectAllow,
+		types.EffectAskUserResolvedAllow,
+		types.EffectDeny,
+		types.EffectAskUserResolvedDeny,
+		types.EffectAskUserTimedOut:
+		s.ops.Resolve(reqID, opstream.StatusRunning)
 	}
 }
 
-// opStatusFromAudit maps an audit Entry to a single human-readable
-// status string for the operator UI: "denied" for any deny variant,
-// "error" for a request that errored before clean termination, an
-// HTTP status code when one was sent, "allowed" otherwise.
+// opStatusFromAudit maps an audit Entry to the op-stream status
+// string per #57's vocabulary: raw HTTP code when one was sent
+// (e.g., "200" for proxied OK, "470" for declined, "502" for
+// upstream error); "error" for a request that ended before a
+// status was sent; "running" as a defensive fallback (should not
+// happen in practice — every audit entry carries either a status
+// or an error).
 func opStatusFromAudit(e audit.Entry) string {
-	if e.Error != "" {
-		return opstream.StatusError
-	}
-	switch e.Decision {
-	case "deny", "ask_user_resolved_deny", "ask_user_timed_out":
-		return opstream.StatusDenied
-	}
 	if e.ResponseStatus > 0 {
 		return strconv.Itoa(e.ResponseStatus)
 	}
-	return opstream.StatusAllowed
+	if e.Error != "" {
+		return opstream.StatusError
+	}
+	return opstream.StatusRunning
 }
 
 func splitHostPort(hostport, defaultPort string) (string, int) {

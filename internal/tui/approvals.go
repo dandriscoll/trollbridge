@@ -584,17 +584,18 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	b.WriteString(bottomBorder("", keys, m.Cols, focused))
 }
 
-// colorizeStatus wraps the status in a class color: green for
-// allowed/2xx, yellow for pending/evaluating, red for denied/error
-// and 4xx/5xx HTTP codes. Unknown statuses pass through uncolored.
+// colorizeStatus wraps the status in a class color per #57's
+// vocabulary: green for running/2xx, yellow for checking/pending,
+// red for error/4xx/5xx, cyan for 3xx. Unknown statuses pass
+// through uncolored.
 func colorizeStatus(status string) string {
 	color := ""
 	switch status {
-	case opstream.StatusAllowed:
+	case opstream.StatusRunning:
 		color = "\x1b[32m"
-	case opstream.StatusPending, opstream.StatusEvaluating:
+	case opstream.StatusChecking, opstream.StatusPending:
 		color = "\x1b[33m"
-	case opstream.StatusDenied, opstream.StatusError:
+	case opstream.StatusError:
 		color = "\x1b[31m"
 	default:
 		// HTTP status codes: 2xx green, 3xx cyan, 4xx/5xx red.

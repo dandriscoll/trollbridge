@@ -55,7 +55,7 @@ func TestRender_UpperPaneShowsMethodURLStatus(t *testing.T) {
 }
 
 // TestRender_StatusUpdateIsInPlace pins the in-place rewrite contract.
-// The same request_id transitioning evaluating → 200 must occupy the
+// The same request_id transitioning checking → 200 must occupy the
 // same row index across the two render frames; the only change is the
 // STATUS column.
 func TestRender_StatusUpdateIsInPlace(t *testing.T) {
@@ -63,7 +63,7 @@ func TestRender_StatusUpdateIsInPlace(t *testing.T) {
 	first := opstream.Op{
 		RequestID: "req-1", Method: "GET",
 		URL:       "https://example.com:443/path",
-		Status:    opstream.StatusEvaluating,
+		Status:    opstream.StatusChecking,
 		StartedAt: when, UpdatedAt: when,
 	}
 	second := first
@@ -87,8 +87,8 @@ func TestRender_StatusUpdateIsInPlace(t *testing.T) {
 	if r1 == "" || r2 == "" {
 		t.Fatalf("URL row missing in one of the frames")
 	}
-	if !strings.Contains(r1, "evaluating") {
-		t.Errorf("frame 1 row missing 'evaluating': %q", r1)
+	if !strings.Contains(r1, "checking") {
+		t.Errorf("frame 1 row missing 'checking': %q", r1)
 	}
 	if !strings.Contains(r2, "200") {
 		t.Errorf("frame 2 row missing '200': %q", r2)
@@ -181,9 +181,9 @@ func TestApplyKey_ApprovesNonPendingShowsError(t *testing.T) {
 // the holds-side TestApply_TickPreservesSelectionByID for ops.
 func TestApply_OpsTickPreservesSelectionByRequestID(t *testing.T) {
 	when := time.Unix(1_700_000_000, 0).UTC()
-	a := opAt("req-A", "GET", "https://a/", opstream.StatusEvaluating, "", when)
-	b := opAt("req-B", "GET", "https://b/", opstream.StatusEvaluating, "", when)
-	c := opAt("req-C", "GET", "https://c/", opstream.StatusEvaluating, "", when)
+	a := opAt("req-A", "GET", "https://a/", opstream.StatusChecking, "", when)
+	b := opAt("req-B", "GET", "https://b/", opstream.StatusChecking, "", when)
+	c := opAt("req-C", "GET", "https://c/", opstream.StatusChecking, "", when)
 	m := Model{Ops: []opstream.Op{a, b, c}, Selected: 1, Cols: 100, Rows: 30}
 	got, _ := Apply(m, OpsTickResult{Ops: []opstream.Op{c, b, a}})
 	if got.Selected != 1 {

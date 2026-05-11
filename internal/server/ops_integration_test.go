@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -92,11 +93,15 @@ func TestOps_RecordsDeniedRequest(t *testing.T) {
 		resp.Body.Close()
 	}
 
+	// Per #57: a denied request shows the proxy's wire status code
+	// (470 = StatusTrollbridgeDeclined), not a synthetic "denied"
+	// string. The audit log still records the policy effect token.
+	deniedCode := strconv.Itoa(StatusTrollbridgeDeclined)
 	deadline := time.Now().Add(250 * time.Millisecond)
 	var snap []opstream.Op
 	for time.Now().Before(deadline) {
 		snap = ring.Snapshot()
-		if len(snap) > 0 && snap[0].Status == opstream.StatusDenied {
+		if len(snap) > 0 && snap[0].Status == deniedCode {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -104,17 +109,17 @@ func TestOps_RecordsDeniedRequest(t *testing.T) {
 	if len(snap) == 0 {
 		t.Fatalf("ops ring empty after denied request")
 	}
-	if snap[0].Status != opstream.StatusDenied {
-		t.Errorf("op.Status = %q, want %q", snap[0].Status, opstream.StatusDenied)
+	if snap[0].Status != deniedCode {
+		t.Errorf("op.Status = %q, want %q", snap[0].Status, deniedCode)
 	}
 }
 
 // TestOps_AllowDecisionLeavesEvaluatingBeforeUpstreamReturns pins #58:
 // a request the proxy has already decided (here, via allow-list /
-// rule match) must not linger in "evaluating" while waiting on a
+// rule match) must not linger in "checking" while waiting on a
 // slow upstream. The slow handler blocks on a channel; the test
 // snapshots the ring mid-upstream and asserts the row is no longer
-// "evaluating".
+// "checking".
 func TestOps_AllowDecisionLeavesEvaluatingBeforeUpstreamReturns(t *testing.T) {
 	release := make(chan struct{})
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -164,11 +169,11 @@ func TestOps_AllowDecisionLeavesEvaluatingBeforeUpstreamReturns(t *testing.T) {
 	}
 
 	// Now poll a few times — the row must transition out of
-	// evaluating without the upstream having replied.
+	// checking without the upstream having replied.
 	transitioned := false
 	for i := 0; i < 50; i++ {
 		snap = ring.Snapshot()
-		if len(snap) > 0 && snap[0].Status != opstream.StatusEvaluating {
+		if len(snap) > 0 && snap[0].Status != opstream.StatusChecking {
 			transitioned = true
 			break
 		}
@@ -178,7 +183,7 @@ func TestOps_AllowDecisionLeavesEvaluatingBeforeUpstreamReturns(t *testing.T) {
 	close(release)
 	<-done
 	if !transitioned {
-		t.Errorf("op.Status stuck at %q while upstream blocked; should leave 'evaluating' once the decision lands",
+		t.Errorf("op.Status stuck at %q while upstream blocked; should leave 'checking' once the decision lands",
 			snap[0].Status)
 	}
 }
