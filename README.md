@@ -36,6 +36,16 @@ deps.
 
 ## Install
 
+```sh
+curl -fsSL https://trollbridge.dev/install.sh | sh
+```
+
+The script picks the right tarball for your OS and arch, verifies the
+release's SHA256SUMS, and installs `trollbridge` to `/usr/local/bin`.
+Run `trollbridge version` to confirm.
+
+### Verify and install manually
+
 Pre-built binaries for Linux and macOS (amd64 and arm64) are
 attached to each tagged release on the
 [releases page](https://github.com/dandriscoll/trollbridge/releases).
