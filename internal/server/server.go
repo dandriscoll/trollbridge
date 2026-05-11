@@ -1011,15 +1011,29 @@ func (s *Server) consultAdvisorForHold(req *types.RequestEvent, holdID string, h
 	}
 }
 
-// opURLForRequest renders the operator-facing URL for a request:
-// scheme://host:port/path for plain HTTP / HTTPS, host:port for
-// CONNECT (no scheme available pre-tunnel). Composed identically for
-// the audit log and the operator ops view so the two records line up.
+// opURLForRequest renders the operator-facing URL for a request.
+// Default ports are suppressed (:443 on HTTPS / CONNECT, :80 on
+// HTTP) — see #64. Internal scheme tokens "https-tunneled" and
+// "https-intercepted" collapse to plain "https" for readability.
+// The audit log uses structured Host/Port/Path/Scheme fields and is
+// not affected by this rendering.
 func opURLForRequest(req *types.RequestEvent) string {
 	if req.Method == "CONNECT" || req.Scheme == "" {
+		// CONNECT targets are typically HTTPS tunnels with port 443.
+		if req.Port == 443 {
+			return req.Host
+		}
 		return fmt.Sprintf("%s:%d", req.Host, req.Port)
 	}
-	return fmt.Sprintf("%s://%s:%d%s", req.Scheme, req.Host, req.Port, req.Path)
+	scheme := req.Scheme
+	switch scheme {
+	case "https-tunneled", "https-intercepted":
+		scheme = "https"
+	}
+	if (scheme == "http" && req.Port == 80) || (scheme == "https" && req.Port == 443) {
+		return fmt.Sprintf("%s://%s%s", scheme, req.Host, req.Path)
+	}
+	return fmt.Sprintf("%s://%s:%d%s", scheme, req.Host, req.Port, req.Path)
 }
 
 // transitionOpFromEvaluating moves the op row out of "checking" the

@@ -550,10 +550,15 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			if used >= bodyLines {
 				break
 			}
-			row := fmt.Sprintf(" %-*s %-*s %s",
+			urlCell := runeTrunc(o.URL, urlW)
+			// Pad first (display columns), color second (escapes carry
+			// no width). +16 lets the brown wrapper escape bytes pass
+			// through the surrounding format without disturbing layout.
+			urlCellPadded := padRight(urlCell, urlW)
+			row := fmt.Sprintf(" %-*s %s %s",
 				methodW, runeTrunc(o.Method, methodW),
-				urlW, runeTrunc(o.URL, urlW),
-				runeTrunc(colorizeStatus(o.Status), statusW+8), // +8 lets the escape bytes pass without truncation eating display chars
+				colorizeURLForRow(urlCellPadded, o.URL),
+				runeTrunc(colorizeStatus(o.Status), statusW+8),
 			)
 			row = padRightVisible(row, inner)
 			if i == m.Selected {
@@ -582,6 +587,18 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	// Bottom border carries the keybindings on the right.
 	keys := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [q] quit"
 	b.WriteString(bottomBorder("", keys, m.Cols, focused))
+}
+
+// colorizeURLForRow wraps cell in a brown 256-color escape when url
+// is a plain-HTTP request (scheme http://), leaving other schemes
+// uncolored. cell is the already-padded display string; passing it
+// pre-padded keeps width accounting outside of this helper (closes
+// #64).
+func colorizeURLForRow(cell, url string) string {
+	if strings.HasPrefix(url, "http://") {
+		return "\x1b[38;5;94m" + cell + "\x1b[0m"
+	}
+	return cell
 }
 
 // colorizeStatus wraps the status in a class color per #57's
@@ -694,9 +711,11 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			if used >= bodyLines {
 				break
 			}
-			row := fmt.Sprintf(" %-*s %-*s %s",
+			urlCell := runeTrunc(o.URL, urlW)
+			urlCellPadded := padRight(urlCell, urlW)
+			row := fmt.Sprintf(" %-*s %s %s",
 				methodW, runeTrunc(o.Method, methodW),
-				urlW, runeTrunc(o.URL, urlW),
+				colorizeURLForRow(urlCellPadded, o.URL),
 				colorizeStatus(o.Status),
 			)
 			if i == m.Selected {
