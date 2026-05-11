@@ -251,6 +251,61 @@ func TestApplyKey_NumberedKeysToggleSamePanelClosed(t *testing.T) {
 	}
 }
 
+// TestApplyKey_OneOpensAndFocusesConsole pins #77: opening the
+// console panel via '1' from a closed state auto-focuses the new
+// panel so the operator can immediately type.
+func TestApplyKey_OneOpensAndFocusesConsole(t *testing.T) {
+	m := Model{Cols: 100, Rows: 30, Focused: PaneApprovals}
+	got, _ := Apply(m, KeyEvent{Rune: '1'})
+	if !got.BottomPanelOpen {
+		t.Errorf("BottomPanelOpen = false after '1'; want true")
+	}
+	if got.BottomPanel != BottomPanelConsole {
+		t.Errorf("BottomPanel = %d, want BottomPanelConsole", got.BottomPanel)
+	}
+	if got.Focused != PaneConsole {
+		t.Errorf("Focused = %v after '1' (auto-focus on console panel); want PaneConsole", got.Focused)
+	}
+}
+
+// TestApplyKey_OneSwitchesAndFocusesConsole pins that switching to
+// the console panel from another panel also auto-focuses it.
+func TestApplyKey_OneSwitchesAndFocusesConsole(t *testing.T) {
+	m := Model{
+		Cols: 100, Rows: 30,
+		Focused:         PaneApprovals,
+		BottomPanel:     BottomPanelURLs,
+		BottomPanelOpen: true,
+	}
+	got, _ := Apply(m, KeyEvent{Rune: '1'})
+	if got.BottomPanel != BottomPanelConsole {
+		t.Errorf("BottomPanel = %d, want BottomPanelConsole after switching from URLs", got.BottomPanel)
+	}
+	if got.Focused != PaneConsole {
+		t.Errorf("Focused = %v after switching to console; want PaneConsole", got.Focused)
+	}
+}
+
+// TestApplyKey_NonConsoleHotkeysKeepApprovalsFocus pins the
+// narrowed reading of #77: '2'/'3'/'4' open their panels but do
+// NOT auto-focus PaneConsole, because those panels have no
+// interactive input today and focus-on-bottom would break single-
+// keystroke '0' and 'q' from the operator's hands.
+func TestApplyKey_NonConsoleHotkeysKeepApprovalsFocus(t *testing.T) {
+	for _, key := range []rune{'2', '3', '4'} {
+		t.Run(string(key), func(t *testing.T) {
+			m := Model{Cols: 100, Rows: 30, Focused: PaneApprovals}
+			got, _ := Apply(m, KeyEvent{Rune: key})
+			if !got.BottomPanelOpen {
+				t.Errorf("BottomPanelOpen = false after %q; want true", key)
+			}
+			if got.Focused != PaneApprovals {
+				t.Errorf("Focused = %v after %q; want PaneApprovals (read-only panel)", got.Focused, key)
+			}
+		})
+	}
+}
+
 // TestApplyKey_NumberedKeysSwitchAcrossPanels pins that pressing
 // a numeric hotkey while a DIFFERENT panel is open switches to that
 // panel; it does not close. Distinct case from #76 toggle.

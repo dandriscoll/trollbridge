@@ -177,14 +177,9 @@ func TestRunLoop_TabSwitchesFocusAndConsoleExecutes(t *testing.T) {
 	}()
 
 	time.Sleep(60 * time.Millisecond)
-	// '1' opens the console panel (default is approvals-only since #66 reactivation).
+	// '1' opens the console panel AND auto-focuses it (#77).
 	if _, err := pw.Write([]byte("1")); err != nil {
 		t.Fatalf("write 1: %v", err)
-	}
-	time.Sleep(40 * time.Millisecond)
-	// Tab → focus console.
-	if _, err := pw.Write([]byte{'\t'}); err != nil {
-		t.Fatalf("write tab: %v", err)
 	}
 	time.Sleep(40 * time.Millisecond)
 	// Type "help\n".
@@ -287,11 +282,12 @@ func TestRunLoop_DefaultStartHintWhenNoWelcome(t *testing.T) {
 	}
 }
 
-// TestRunLoop_TabFlipsConsoleBorderToCyan verifies the rendered
-// console-pane top border is cyan when focused (after Tab). The
-// focus signal is the bright-cyan border color (\x1b[36m) on the
-// border row that contains the pane label.
-func TestRunLoop_TabFlipsConsoleBorderToCyan(t *testing.T) {
+// TestRunLoop_ConsoleHotkeyAutoFocusesBorderCyan verifies that the
+// rendered console-pane top border is cyan as soon as '1' opens
+// the panel — pressing '1' now both opens AND focuses the console
+// (closes #77). The focus signal is the bright-cyan border color
+// (\x1b[36m) on the border row that contains the pane label.
+func TestRunLoop_ConsoleHotkeyAutoFocusesBorderCyan(t *testing.T) {
 	client := &stubClient{listFn: func() ([]approvals.Snapshot, error) { return nil, nil }}
 	pr, pw := io.Pipe()
 	var stdout strings.Builder
@@ -304,10 +300,8 @@ func TestRunLoop_TabFlipsConsoleBorderToCyan(t *testing.T) {
 		done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil, DefaultOptions())
 	}()
 	time.Sleep(60 * time.Millisecond)
-	// '1' opens the console panel so Tab has a pane to focus on.
+	// '1' opens the console panel AND auto-focuses it.
 	_, _ = pw.Write([]byte("1"))
-	time.Sleep(60 * time.Millisecond)
-	_, _ = pw.Write([]byte{'\t'})
 	time.Sleep(80 * time.Millisecond)
 	_, _ = pw.Write([]byte{0x03})
 
@@ -321,21 +315,18 @@ func TestRunLoop_TabFlipsConsoleBorderToCyan(t *testing.T) {
 	}
 
 	out := stdout.String()
-	// Find the LAST render frame's console top border — after Tab the
-	// console pane is focused and its top border carries the cyan
-	// escape. The approvals pane is unfocused → dim grey.
 	rows := strings.Split(out, "\r\n")
 	var consoleRow string
 	for _, row := range rows {
 		if strings.Contains(row, "console") && strings.Contains(row, "╭") {
-			consoleRow = row // keep last match — the post-Tab frame
+			consoleRow = row // keep last match — the post-'1' frame
 		}
 	}
 	if consoleRow == "" {
 		t.Fatalf("no console top-border row found in output; first 400: %q", first(out, 400))
 	}
 	if !strings.Contains(consoleRow, "\x1b[36m") {
-		t.Errorf("console top border not cyan-focused after Tab; row: %q", consoleRow)
+		t.Errorf("console top border not cyan-focused after '1' (auto-focus); row: %q", consoleRow)
 	}
 }
 
@@ -357,9 +348,11 @@ func TestRender_TabHintAppearsInFocusedPaneTopBorder(t *testing.T) {
 			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil, DefaultOptions())
 		}()
 		time.Sleep(60 * time.Millisecond)
-		// Open the console panel — the Tab cue only fires when there's
-		// a second pane to focus on (#66 reactivation).
+		// '1' opens the console panel AND auto-focuses it (#77), so
+		// to assert the approvals-focused cue we Tab back to approvals.
 		_, _ = pw.Write([]byte("1"))
+		time.Sleep(60 * time.Millisecond)
+		_, _ = pw.Write([]byte{'\t'}) // flip focus back to approvals
 		time.Sleep(60 * time.Millisecond)
 		_, _ = pw.Write([]byte{0x03})
 		select {
@@ -399,9 +392,7 @@ func TestRender_TabHintAppearsInFocusedPaneTopBorder(t *testing.T) {
 			done <- runLoop(ctx, client, &console.Backend{LocalOnly: true}, pr, &stdout, nil, 100, 30, "", nil, DefaultOptions())
 		}()
 		time.Sleep(60 * time.Millisecond)
-		_, _ = pw.Write([]byte("1")) // open console panel
-		time.Sleep(60 * time.Millisecond)
-		_, _ = pw.Write([]byte{'\t'}) // focus console
+		_, _ = pw.Write([]byte("1")) // open console panel; auto-focus puts focus on console (#77)
 		time.Sleep(80 * time.Millisecond)
 		_, _ = pw.Write([]byte{0x03})
 		select {

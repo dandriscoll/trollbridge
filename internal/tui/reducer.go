@@ -379,6 +379,12 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		}
 		m.BottomPanel = BottomPanelConsole
 		m.BottomPanelOpen = true
+		// Auto-focus the console panel so the operator can begin
+		// typing without an explicit Tab press (closes #77). Info /
+		// LLM panels are read-only displays and keep approvals focus
+		// so single-keystroke actions (q, 0) still work; URLs panel
+		// will join this auto-focus set when #79 makes it editable.
+		m.Focused = PaneConsole
 		return m, CmdNone{}
 	case '2':
 		if m.BottomPanelOpen && m.BottomPanel == BottomPanelInfo {
