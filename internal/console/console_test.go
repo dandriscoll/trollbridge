@@ -96,6 +96,14 @@ func TestBackend_AllowAddsToFile(t *testing.T) {
 	if !strings.Contains(out, "added new.example") {
 		t.Errorf("expected confirmation; got: %s", out)
 	}
+	// Locks the user-facing word "entries" (closes #73). "patterns"
+	// read ambiguously to operators — see job 123.
+	if !strings.Contains(out, "entries total") {
+		t.Errorf("expected 'entries total' wording in confirmation; got: %s", out)
+	}
+	if strings.Contains(out, "patterns total") {
+		t.Errorf("confirmation should not say 'patterns total'; got: %s", out)
+	}
 	allow, _ := listsOf(t, cfgPath)
 	if !contains(allow, "new.example") {
 		t.Errorf("file did not receive entry: %v", allow)
@@ -161,6 +169,13 @@ func TestBackend_ListPrintsCurrentEntries(t *testing.T) {
 	out, _ := runLines(t, b, "list all")
 	if !strings.Contains(out, "x.example") || !strings.Contains(out, "y.example") {
 		t.Errorf("list missing entries: %s", out)
+	}
+	// Footer wording must say "entries", not "patterns" (closes #73).
+	if !strings.Contains(out, "entries)") {
+		t.Errorf("expected '(N entries)' footer; got: %s", out)
+	}
+	if strings.Contains(out, "patterns)") {
+		t.Errorf("list footer should not say 'patterns)'; got: %s", out)
 	}
 }
 

@@ -42,8 +42,8 @@ func newValidateCmd() *cobra.Command {
 				"trollbridge validate: OK\n"+
 					"  config:    %s\n"+
 					"  mode:      %s\n"+
-					"  allowlist: %d patterns\n"+
-					"  denylist:  %d patterns\n"+
+					"  allowlist: %d entries\n"+
+					"  denylist:  %d entries\n"+
 					"  rules:     %d (version %s)\n"+
 					"  known modifiers: %v\n",
 				configPath, cfg.Mode,

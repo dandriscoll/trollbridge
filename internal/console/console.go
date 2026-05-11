@@ -182,7 +182,7 @@ func (b *Backend) addPattern(out io.Writer, label, pattern string) {
 		return
 	}
 	count := b.countList(label)
-	fmt.Fprintf(out, "added %s to %s (%d patterns total)\n", pattern, label, count)
+	fmt.Fprintf(out, "added %s to %s (%d entries total)\n", pattern, label, count)
 	b.triggerReload()
 }
 
@@ -251,7 +251,7 @@ func printList(out io.Writer, name string, entries []string) {
 		fmt.Fprintf(out, "  %s\n", e)
 		count++
 	}
-	fmt.Fprintf(out, "(%d patterns)\n", count)
+	fmt.Fprintf(out, "(%d entries)\n", count)
 }
 
 func (b *Backend) countList(label string) int {
@@ -289,7 +289,7 @@ func (b *Backend) printHelp(out io.Writer) {
   allow <pattern>    add to lists.allow in trollbridge.yaml
   deny <pattern>     add to lists.deny in trollbridge.yaml
   remove <pattern>   remove from either list
-  list [allow|deny]  show current patterns
+  list [allow|deny]  show current entries
   reload             re-parse trollbridge.yaml into the running matcher
   test <url>         send one request through this proxy and print result
   doctor             run the same checks as `+"`trollbridge doctor`"+`

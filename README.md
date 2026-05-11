@@ -277,13 +277,13 @@ pane (Tab to focus) accepts live edits to `lists.allow` /
 
 ```
 trollbridge> allow api.github.com
-added api.github.com to allow (3 patterns total)
+added api.github.com to allow (3 entries total)
 trollbridge> list allow
 allow:
   127.0.0.1
   api.github.com
   localhost
-(3 patterns)
+(3 entries)
 ```
 
 Mutations rewrite trollbridge.yaml in place; comments outside
