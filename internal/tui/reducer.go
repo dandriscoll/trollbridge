@@ -356,11 +356,13 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	if e.Rune == 'r' {
 		return m, CmdRefresh{}
 	}
-	// Bottom-panel switcher (closes #66). Numbered keys 1/2/3/4 open a
-	// panel; 0 closes any open panel back to approvals-only. The
-	// approvals key set already consumes a/d/j/k/r/q/Tab so the
-	// numeric row was free; '0' is the natural "nothing selected"
-	// member of that row.
+	// Bottom-panel switcher (closes #66). Numbered keys 1/2/3/4 open
+	// or switch panels; 0 closes any open panel back to
+	// approvals-only. Pressing a digit whose panel is already
+	// visible toggles it closed — same result as 0 from that state
+	// (closes #76). The approvals key set already consumes
+	// a/d/j/k/r/q/Tab so the numeric row was free; '0' is the
+	// natural "nothing selected" member of that row.
 	switch e.Rune {
 	case '0':
 		m.BottomPanelOpen = false
@@ -370,18 +372,38 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		m.Focused = PaneApprovals
 		return m, CmdNone{}
 	case '1':
+		if m.BottomPanelOpen && m.BottomPanel == BottomPanelConsole {
+			m.BottomPanelOpen = false
+			m.Focused = PaneApprovals
+			return m, CmdNone{}
+		}
 		m.BottomPanel = BottomPanelConsole
 		m.BottomPanelOpen = true
 		return m, CmdNone{}
 	case '2':
+		if m.BottomPanelOpen && m.BottomPanel == BottomPanelInfo {
+			m.BottomPanelOpen = false
+			m.Focused = PaneApprovals
+			return m, CmdNone{}
+		}
 		m.BottomPanel = BottomPanelInfo
 		m.BottomPanelOpen = true
 		return m, CmdNone{}
 	case '3':
+		if m.BottomPanelOpen && m.BottomPanel == BottomPanelLLM {
+			m.BottomPanelOpen = false
+			m.Focused = PaneApprovals
+			return m, CmdNone{}
+		}
 		m.BottomPanel = BottomPanelLLM
 		m.BottomPanelOpen = true
 		return m, CmdDigestRefresh{}
 	case '4':
+		if m.BottomPanelOpen && m.BottomPanel == BottomPanelURLs {
+			m.BottomPanelOpen = false
+			m.Focused = PaneApprovals
+			return m, CmdNone{}
+		}
 		m.BottomPanel = BottomPanelURLs
 		m.BottomPanelOpen = true
 		return m, CmdNone{}

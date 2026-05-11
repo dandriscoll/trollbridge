@@ -208,6 +208,68 @@ func TestApplyKey_NumberedKeysOpenPanels(t *testing.T) {
 	}
 }
 
+// TestApplyKey_NumberedKeysToggleSamePanelClosed pins #76: pressing
+// a numeric hotkey whose own panel is already the visible one
+// toggles it closed — same result as pressing '0' from that state.
+func TestApplyKey_NumberedKeysToggleSamePanelClosed(t *testing.T) {
+	cases := []struct {
+		key   rune
+		panel BottomPanel
+	}{
+		{'1', BottomPanelConsole},
+		{'2', BottomPanelInfo},
+		{'3', BottomPanelLLM},
+		{'4', BottomPanelURLs},
+	}
+	for _, c := range cases {
+		t.Run(string(c.key), func(t *testing.T) {
+			// Focus is on approvals — operator presses the hotkey
+			// for the currently-visible panel. (Console-focus
+			// behavior is pinned separately by
+			// TestApplyKey_NumberedKeysPassThroughInConsoleFocus:
+			// digits get typed into the input line, not consumed.)
+			m := Model{
+				Cols: 100, Rows: 30,
+				Focused:         PaneApprovals,
+				BottomPanel:     c.panel,
+				BottomPanelOpen: true,
+			}
+			got, cmd := Apply(m, KeyEvent{Rune: c.key})
+			if got.BottomPanelOpen {
+				t.Errorf("BottomPanelOpen still true after pressing %q on its own panel; want false (toggle close)", c.key)
+			}
+			if got.Focused != PaneApprovals {
+				t.Errorf("Focused = %v after toggle-close; want PaneApprovals (no visible bottom pane)", got.Focused)
+			}
+			if got.BottomPanel != c.panel {
+				t.Errorf("BottomPanel selection should survive the toggle-close; got %d, want %d", got.BottomPanel, c.panel)
+			}
+			if _, ok := cmd.(CmdNone); !ok {
+				t.Errorf("toggle-close emitted Cmd %T; want CmdNone (no refresh side effect)", cmd)
+			}
+		})
+	}
+}
+
+// TestApplyKey_NumberedKeysSwitchAcrossPanels pins that pressing
+// a numeric hotkey while a DIFFERENT panel is open switches to that
+// panel; it does not close. Distinct case from #76 toggle.
+func TestApplyKey_NumberedKeysSwitchAcrossPanels(t *testing.T) {
+	m := Model{
+		Cols: 100, Rows: 30,
+		Focused:         PaneApprovals,
+		BottomPanel:     BottomPanelURLs,
+		BottomPanelOpen: true,
+	}
+	got, _ := Apply(m, KeyEvent{Rune: '1'})
+	if !got.BottomPanelOpen {
+		t.Errorf("BottomPanelOpen flipped to false on cross-panel switch; want true")
+	}
+	if got.BottomPanel != BottomPanelConsole {
+		t.Errorf("BottomPanel = %d, want BottomPanelConsole on '1' from URLs", got.BottomPanel)
+	}
+}
+
 // TestApplyKey_TabIsNoopWhenPanelClosed pins the new Tab semantics:
 // when the bottom pane is hidden, Tab does not move focus (there is
 // nothing to focus on).
