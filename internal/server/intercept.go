@@ -52,7 +52,13 @@ const interceptHandshakeDeadline = 15 * time.Second
 // interceptCONNECT terminates the CONNECT tunnel as TLS, performs
 // per-HTTP-request policy decisions on the inner stream, and
 // proxies HTTP/1.1 to the origin under a verified TLS dial.
-func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, sessionID, identityID string) error {
+//
+// connectReqID is the request_id of the outer CONNECT op already
+// in the ring under `CONNECT host:port`. The first successfully-
+// dispatched inner request rebinds that entry to its own
+// method+URL (closes #75); subsequent inner requests on the same
+// tunnel get fresh entries via the usual Begin path.
+func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, sessionID, identityID, connectReqID string) error {
 	leaf, err := s.ca.LeafFor(host)
 	if err != nil {
 		return fmt.Errorf("leaf cert: %w", err)
@@ -119,6 +125,7 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 	_ = clientConn.SetDeadline(time.Time{})
 
 	br := bufio.NewReader(tlsConn)
+	connectRebound := false
 	for {
 		req, err := http.ReadRequest(br)
 		if err != nil {
@@ -154,7 +161,7 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 			req.URL.Host = net.JoinHostPort(host, strconv.Itoa(port))
 		}
 
-		if err := s.dispatchInterceptedRequest(tlsConn, req, host, port, sessionID, identityID); err != nil {
+		if err := s.dispatchInterceptedRequest(tlsConn, req, host, port, sessionID, identityID, connectReqID, &connectRebound); err != nil {
 			s.opLog.Error("intercept dispatch error",
 				"event", oplog.EventInterceptError,
 				"host", host, "port", port,
@@ -168,7 +175,7 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 	}
 }
 
-func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, host string, port int, sessionID, identityID string) error {
+func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, host string, port int, sessionID, identityID, connectReqID string, connectRebound *bool) error {
 	start := time.Now()
 	requestID := uuid.NewString()
 
@@ -215,6 +222,13 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		req.BodySize = int64(len(bodyBuf))
 	}
 
+	opURL := opURLForRequest(req)
+	if !*connectRebound && s.ops.Rebind(connectReqID, req.ID, req.Method, opURL) {
+		*connectRebound = true
+	} else {
+		s.ops.Begin(req.ID, req.Method, opURL)
+	}
+
 	rlog := s.opLog.With(
 		"request_id", req.ID,
 		"identity", identityID,
@@ -242,6 +256,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		decision = s.holdAndWait(req, decision)
 		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
+	s.transitionOpFromEvaluating(req.ID, decision.Effect)
 	s.engine.History().Record(req, decision, time.Now().UTC())
 
 	if !(decision.Effect == types.EffectAllow || decision.Effect == types.EffectAskUserResolvedAllow) {

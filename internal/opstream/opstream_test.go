@@ -183,6 +183,66 @@ func TestRing_NilSafe(t *testing.T) {
 	if got := r.Snapshot(); got != nil {
 		t.Errorf("nil ring snapshot = %v, want nil", got)
 	}
+	if r.Rebind("x", "y", "GET", "/") {
+		t.Errorf("nil ring Rebind returned true; want false")
+	}
+}
+
+func TestRing_Rebind_RelabelsExistingEntry(t *testing.T) {
+	r := New(10)
+	r.Begin("connect-1", "CONNECT", "api.example.com")
+	r.Resolve("connect-1", "200")
+
+	ok := r.Rebind("connect-1", "inner-1", "GET", "https://api.example.com/path")
+	if !ok {
+		t.Fatalf("Rebind returned false on existing id")
+	}
+
+	snap := r.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("snapshot len = %d, want 1", len(snap))
+	}
+	got := snap[0]
+	if got.RequestID != "inner-1" {
+		t.Errorf("RequestID = %q, want inner-1", got.RequestID)
+	}
+	if got.Method != "GET" {
+		t.Errorf("Method = %q, want GET", got.Method)
+	}
+	if got.URL != "https://api.example.com/path" {
+		t.Errorf("URL = %q, want https://api.example.com/path", got.URL)
+	}
+	if got.Status != StatusChecking {
+		t.Errorf("Status = %q, want %q (rebind resets to checking)", got.Status, StatusChecking)
+	}
+}
+
+func TestRing_Rebind_UnknownIDReturnsFalse(t *testing.T) {
+	r := New(10)
+	if r.Rebind("never-began", "new", "GET", "/") {
+		t.Errorf("Rebind on unknown id returned true; want false")
+	}
+}
+
+func TestRing_Rebind_SameIDIsRelabelOnly(t *testing.T) {
+	r := New(10)
+	r.Begin("req-1", "CONNECT", "host")
+	if !r.Rebind("req-1", "req-1", "GET", "https://host/p") {
+		t.Fatalf("Rebind(same id) returned false")
+	}
+	snap := r.Snapshot()
+	if snap[0].Method != "GET" || snap[0].URL != "https://host/p" {
+		t.Errorf("relabel did not apply: %+v", snap[0])
+	}
+}
+
+func TestRing_Rebind_ClashReturnsFalse(t *testing.T) {
+	r := New(10)
+	r.Begin("a", "CONNECT", "h")
+	r.Begin("b", "GET", "https://h/x")
+	if r.Rebind("a", "b", "GET", "https://h/y") {
+		t.Errorf("Rebind into existing newID returned true; want false")
+	}
 }
 
 func equalStrings(a, b []string) bool {

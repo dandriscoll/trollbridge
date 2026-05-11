@@ -834,7 +834,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		rlog.Debug("response", "phase", oplog.PhaseResponse,
 			"status", http.StatusOK, "bytes", 0, "latency_ms", time.Since(start).Milliseconds())
 		s.writeAudit(req, decision, "", 0, http.StatusOK, 0, time.Since(start), "")
-		_ = s.interceptCONNECT(clientConn, host, port, sess.ID, identityID)
+		_ = s.interceptCONNECT(clientConn, host, port, sess.ID, identityID, req.ID)
 		return
 	}
 

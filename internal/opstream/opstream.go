@@ -147,6 +147,46 @@ func (r *Ring) HoldPending(requestID, holdID string) {
 	op.UpdatedAt = r.now()
 }
 
+// Rebind relabels an existing entry under a new identity. Used when
+// an intercepted CONNECT's inner TLS flow becomes available: the
+// outer `CONNECT host:443` placeholder row gets replaced by the inner
+// request's method+URL so the operator sees the real operation, not
+// the tunnel. Status resets to checking; the next writeAudit/
+// HoldPending call on newID transitions it from there. Returns false
+// when oldID has been evicted, so the caller falls back to Begin.
+// Closes #75.
+func (r *Ring) Rebind(oldID, newID, method, url string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	op, ok := r.items[oldID]
+	if !ok {
+		return false
+	}
+	if oldID != newID {
+		if _, clash := r.items[newID]; clash {
+			return false
+		}
+		delete(r.items, oldID)
+		for i, id := range r.order {
+			if id == oldID {
+				r.order[i] = newID
+				break
+			}
+		}
+		op.RequestID = newID
+		r.items[newID] = op
+	}
+	op.Method = method
+	op.URL = url
+	op.Status = StatusChecking
+	op.HoldID = ""
+	op.UpdatedAt = r.now()
+	return true
+}
+
 // Resolve moves an operation to a terminal status. status is a free-
 // form string — typically one of the Status constants or a
 // stringified HTTP status code. Silent no-op if the operation is

@@ -517,3 +517,65 @@ func TestEngine_FailsClosedOnBodyRequiredButMissing(t *testing.T) {
 		t.Errorf("status: got %d, want %d (fail-closed on body-required rule)", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
 }
+
+// TestIntercept_OpsRing_ReplacesCONNECTWithInnerMethod pins the
+// behavior of issue #75: once an intercepted CONNECT's inner TLS
+// flow is established and the first inner HTTP request is parsed,
+// the ops ring entry that previously read `CONNECT host:443` must
+// be replaced by the inner request's method+URL. The TUI rolls up
+// from this ring snapshot, so this assertion is the load-bearing
+// guarantee for the operator surface.
+func TestIntercept_OpsRing_ReplacesCONNECTWithInnerMethod(t *testing.T) {
+	rules := `
+- id: a
+  match: {host: 127.0.0.1}
+  effect: allow
+`
+	h := bootInterceptProxy(t, rules, "")
+	// Drive the inner request — the harness's `close()` consumes
+	// audit entries by cancelling the context, so we do not call it
+	// here.
+	defer h.cancel()
+
+	c := h.clientWithOurCA()
+	resp, err := c.Get(h.originURL + "/echo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	// Allow the deferred ops.Resolve / Rebind to settle.
+	time.Sleep(50 * time.Millisecond)
+
+	snap := h.srv.Ops().Snapshot()
+	if len(snap) == 0 {
+		t.Fatalf("ops ring empty after intercepted request")
+	}
+	var connectRows, innerRows int
+	var innerOp *struct {
+		Method, URL string
+	}
+	for i := range snap {
+		op := snap[i]
+		switch op.Method {
+		case "CONNECT":
+			connectRows++
+		case "GET":
+			innerRows++
+			innerOp = &struct{ Method, URL string }{op.Method, op.URL}
+		}
+	}
+	if connectRows != 0 {
+		t.Errorf("ops ring still has %d CONNECT row(s) after interception; want 0 (rebound to inner)\nsnap=%+v", connectRows, snap)
+	}
+	if innerRows == 0 || innerOp == nil {
+		t.Fatalf("ops ring missing inner GET row; snap=%+v", snap)
+	}
+	if !strings.Contains(innerOp.URL, "/echo") {
+		t.Errorf("inner row URL = %q, want substring %q", innerOp.URL, "/echo")
+	}
+	if !strings.HasPrefix(innerOp.URL, "https://") {
+		t.Errorf("inner row URL = %q, want https:// prefix", innerOp.URL)
+	}
+}
