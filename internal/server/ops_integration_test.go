@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -104,5 +106,79 @@ func TestOps_RecordsDeniedRequest(t *testing.T) {
 	}
 	if snap[0].Status != opstream.StatusDenied {
 		t.Errorf("op.Status = %q, want %q", snap[0].Status, opstream.StatusDenied)
+	}
+}
+
+// TestOps_AllowDecisionLeavesEvaluatingBeforeUpstreamReturns pins #58:
+// a request the proxy has already decided (here, via allow-list /
+// rule match) must not linger in "evaluating" while waiting on a
+// slow upstream. The slow handler blocks on a channel; the test
+// snapshots the ring mid-upstream and asserts the row is no longer
+// "evaluating".
+func TestOps_AllowDecisionLeavesEvaluatingBeforeUpstreamReturns(t *testing.T) {
+	release := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(origin.Close)
+
+	originURL := origin.URL
+	originHost := strings.TrimPrefix(originURL, "http://")
+	originHostOnly, _, _ := net.SplitHostPort(originHost)
+	rules := fmt.Sprintf(`
+- id: allow-origin
+  match: {host: %s}
+  effect: allow
+`, originHostOnly)
+	h := bootProxy(t, "default-deny", rules)
+	defer h.close()
+	ring := h.srv.Ops()
+
+	// Fire the request in a goroutine; it blocks on `release`.
+	done := make(chan struct{})
+	c := h.clientThroughProxy()
+	go func() {
+		resp, err := c.Get(origin.URL + "/slow")
+		if err == nil && resp != nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+		close(done)
+	}()
+
+	// Wait for the op to land in the ring.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var snap []opstream.Op
+	for time.Now().Before(deadline) {
+		snap = ring.Snapshot()
+		if len(snap) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(snap) == 0 {
+		close(release)
+		<-done
+		t.Fatalf("ops ring empty after request start")
+	}
+
+	// Now poll a few times — the row must transition out of
+	// evaluating without the upstream having replied.
+	transitioned := false
+	for i := 0; i < 50; i++ {
+		snap = ring.Snapshot()
+		if len(snap) > 0 && snap[0].Status != opstream.StatusEvaluating {
+			transitioned = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Release the upstream so the request finishes regardless.
+	close(release)
+	<-done
+	if !transitioned {
+		t.Errorf("op.Status stuck at %q while upstream blocked; should leave 'evaluating' once the decision lands",
+			snap[0].Status)
 	}
 }

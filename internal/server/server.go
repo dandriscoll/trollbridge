@@ -476,6 +476,13 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
 
+	// Transition the op row out of "evaluating" the moment we have a
+	// non-ask decision. writeAudit later overwrites with the final
+	// HTTP status; this prevents an allowed-and-forwarding request
+	// from sitting in "evaluating" for the duration of a slow upstream
+	// (closes #58).
+	s.transitionOpFromEvaluating(req.ID, decision.Effect)
+
 	// History records the resolved decision.
 	s.engine.History().Record(req, decision, time.Now().UTC())
 
@@ -746,6 +753,8 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		decision = s.holdAndWait(req, decision)
 		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
+	// See HTTP path comment above — same lifecycle (closes #58).
+	s.transitionOpFromEvaluating(req.ID, decision.Effect)
 	s.engine.History().Record(req, decision, time.Now().UTC())
 	if !(decision.Effect == types.EffectAllow || decision.Effect == types.EffectAskUserResolvedAllow) {
 		headers, body, contentType := denyResponse(decision, req.ID, r.Header.Get("Accept"))
@@ -1011,6 +1020,22 @@ func opURLForRequest(req *types.RequestEvent) string {
 		return fmt.Sprintf("%s:%d", req.Host, req.Port)
 	}
 	return fmt.Sprintf("%s://%s:%d%s", req.Scheme, req.Host, req.Port, req.Path)
+}
+
+// transitionOpFromEvaluating moves the op row out of "evaluating"
+// the moment a non-ask decision lands, so the operator UI does not
+// linger in evaluating during a slow upstream (closes #58). The
+// final HTTP status is set by writeAudit when the request finishes;
+// this call is a transient intermediate state for allow, and the
+// terminal state for deny. Ask effects are no-ops (HoldPending owns
+// that transition).
+func (s *Server) transitionOpFromEvaluating(reqID string, e types.Effect) {
+	switch e {
+	case types.EffectAllow, types.EffectAskUserResolvedAllow:
+		s.ops.Resolve(reqID, opstream.StatusAllowed)
+	case types.EffectDeny, types.EffectAskUserResolvedDeny, types.EffectAskUserTimedOut:
+		s.ops.Resolve(reqID, opstream.StatusDenied)
+	}
 }
 
 // opStatusFromAudit maps an audit Entry to a single human-readable
