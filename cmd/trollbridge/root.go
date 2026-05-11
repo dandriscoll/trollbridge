@@ -171,6 +171,7 @@ conditions. See DESIGN.md for the full specification.`,
 		op(newRunCmd(), groupOperate),
 		op(newSelftestCmd(), groupOperate),
 		op(newTestCmd(), groupOperate),
+		op(newUpdateCmd(), groupOperate),
 		op(newVersionCmd(), groupOperate),
 
 		op(newInitCmd(), groupConfigure),
