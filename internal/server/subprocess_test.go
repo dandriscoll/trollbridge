@@ -1,3 +1,5 @@
+//go:build !windows
+
 package server_test
 
 import (
@@ -144,24 +146,6 @@ policy:
 	}
 }
 
-// findRepoRoot walks up from the test file to locate go.mod.
-func findRepoRoot(t *testing.T) string {
-	t.Helper()
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := cwd
-	for i := 0; i < 8; i++ {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-	t.Fatalf("could not find repo root from %s", cwd)
-	return ""
-}
+// findRepoRoot moved to repo_root_test.go (cross-platform; the
+// sweep test imports it on Windows where subprocess_test.go is
+// build-excluded).
