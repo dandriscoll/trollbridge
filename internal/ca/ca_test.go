@@ -1,6 +1,8 @@
 package ca
 
 import (
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"net"
@@ -140,6 +142,89 @@ func TestFlushCache_DropsLeaves(t *testing.T) {
 	a2, _ := c.LeafFor("x.example.com")
 	if a == a2 {
 		t.Error("expected different leaf after flush; got same")
+	}
+}
+
+// TestCAClientCert_HonorsConfigLeafKeyType asserts that the
+// leafKeyType passed to Load is honored when issuing the three
+// kinds of leaf certificate the CA produces: server-auth interception
+// leaves (LeafFor), client-auth control-plane creds (IssueClientCert),
+// and the controller's TLS-listener leaf (IssueServerCertFor).
+//
+// Filed at job 058 NF-1 and deferred at the time of the #28 fix that
+// added LeafKeyType to config without an assertion that the field
+// actually drives the runtime path. Closing the deferral guards
+// against a future config-vs-runtime drift where the YAML key is
+// parsed but ignored.
+func TestCAClientCert_HonorsConfigLeafKeyType(t *testing.T) {
+	cases := []struct {
+		name        string
+		rootKT      KeyType
+		leafKT      KeyType
+		wantLeafKey any // type-only check: &ecdsa.PublicKey{} or &rsa.PublicKey{}
+	}{
+		{"ECDSA leaves under ECDSA root", KeyTypeECDSAP256, KeyTypeECDSAP256, &ecdsa.PublicKey{}},
+		// RSA leaves under an ECDSA root exercises the case where
+		// `interception.leaf_key_type` overrides the root's key type
+		// — the config drives the leaf type independently.
+		{"RSA leaves under ECDSA root (config override)", KeyTypeECDSAP256, KeyTypeRSA4096, &rsa.PublicKey{}},
+		{"ECDSA leaves under RSA root (config override)", KeyTypeRSA4096, KeyTypeECDSAP256, &ecdsa.PublicKey{}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cp := filepath.Join(dir, "ca.crt")
+			kp := filepath.Join(dir, "ca.key")
+			// Init writes the root cert+key with rootKT.
+			if _, err := Init(cp, kp, tc.rootKT, false); err != nil {
+				t.Fatalf("Init(%s): %v", tc.rootKT, err)
+			}
+			// Load with the leaf override — this is the path the
+			// proxy takes at startup using the config-driven
+			// `interception.leaf_key_type`.
+			c, err := Load(cp, kp, tc.leafKT, 0)
+			if err != nil {
+				t.Fatalf("Load(%s leafKT=%s): %v", tc.rootKT, tc.leafKT, err)
+			}
+
+			// 1) Interception leaf (LeafFor).
+			leaf, err := c.LeafFor("test.example.com")
+			if err != nil {
+				t.Fatalf("LeafFor: %v", err)
+			}
+			assertPubKeyType(t, "LeafFor", leaf.Leaf.PublicKey, tc.wantLeafKey)
+
+			// 2) Control-plane client cert.
+			client, err := c.IssueClientCert("operator-1")
+			if err != nil {
+				t.Fatalf("IssueClientCert: %v", err)
+			}
+			assertPubKeyType(t, "IssueClientCert", client.Leaf.PublicKey, tc.wantLeafKey)
+
+			// 3) Controller TLS listener cert.
+			server, err := c.IssueServerCertFor("controller", []string{"127.0.0.1"})
+			if err != nil {
+				t.Fatalf("IssueServerCertFor: %v", err)
+			}
+			assertPubKeyType(t, "IssueServerCertFor", server.Leaf.PublicKey, tc.wantLeafKey)
+		})
+	}
+}
+
+func assertPubKeyType(t *testing.T, where string, got any, want any) {
+	t.Helper()
+	switch want.(type) {
+	case *ecdsa.PublicKey:
+		if _, ok := got.(*ecdsa.PublicKey); !ok {
+			t.Errorf("%s: leaf public key type = %T, want *ecdsa.PublicKey", where, got)
+		}
+	case *rsa.PublicKey:
+		if _, ok := got.(*rsa.PublicKey); !ok {
+			t.Errorf("%s: leaf public key type = %T, want *rsa.PublicKey", where, got)
+		}
+	default:
+		t.Fatalf("test bug: unrecognized want %T", want)
 	}
 }
 
