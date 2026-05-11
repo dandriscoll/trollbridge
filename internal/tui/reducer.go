@@ -263,16 +263,27 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 			return m, CmdNone{}
 		}
 		op := displayed[m.Selected]
-		if op.HoldID == "" || op.Status != opstream.StatusPending {
-			m.LastErr = "selected operation is not pending approval"
+		if op.HoldID != "" && op.Status == opstream.StatusPending {
+			if e.Rune == 'a' {
+				m.LastInfo = "approving " + op.HoldID + "…"
+				return m, CmdApprove{ID: op.HoldID}
+			}
+			m.LastInfo = "denying " + op.HoldID + "…"
+			return m, CmdDeny{ID: op.HoldID}
+		}
+		// Retroactive add to allow / deny list (closes #60). Routed
+		// through the console pane so the same configwrite + oplog
+		// shape runs as if the operator had typed `allow <url>`.
+		if op.URL == "" {
+			m.LastErr = "selected row has no URL to add"
 			return m, CmdNone{}
 		}
-		if e.Rune == 'a' {
-			m.LastInfo = "approving " + op.HoldID + "…"
-			return m, CmdApprove{ID: op.HoldID}
+		verb := "allow"
+		if e.Rune == 'd' {
+			verb = "deny"
 		}
-		m.LastInfo = "denying " + op.HoldID + "…"
-		return m, CmdDeny{ID: op.HoldID}
+		m.LastInfo = verb + "ing " + op.URL + "…"
+		return m, CmdConsoleExec{Line: verb + " " + op.URL}
 	}
 	return m, CmdNone{}
 }

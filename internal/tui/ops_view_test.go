@@ -156,10 +156,11 @@ func TestApplyKey_ApprovesUsesHoldIDFromOp(t *testing.T) {
 	}
 }
 
-// TestApplyKey_ApprovesNonPendingShowsError pins the affordance
-// guard: pressing 'a' on a row whose status is not pending should
-// not fire CmdApprove — it sets an error and waits.
-func TestApplyKey_ApprovesNonPendingShowsError(t *testing.T) {
+// TestApplyKey_ApproveOnNonPendingRowRoutesThroughConsole pins the
+// post-#60 contract: pressing 'a' on a non-pending row no longer
+// errors — it routes through the console pane as `allow <url>`,
+// adding the URL to the allow list retroactively.
+func TestApplyKey_ApproveOnNonPendingRowRoutesThroughConsole(t *testing.T) {
 	m := Model{
 		Cols:    100, Rows: 30,
 		Focused: PaneApprovals,
@@ -168,12 +169,13 @@ func TestApplyKey_ApprovesNonPendingShowsError(t *testing.T) {
 		},
 		Selected: 0,
 	}
-	got, cmd := Apply(m, KeyEvent{Rune: 'a'})
-	if _, ok := cmd.(CmdApprove); ok {
-		t.Errorf("approve fired on non-pending op; want no-op")
+	_, cmd := Apply(m, KeyEvent{Rune: 'a'})
+	exec, ok := cmd.(CmdConsoleExec)
+	if !ok {
+		t.Fatalf("cmd = %T, want CmdConsoleExec for retroactive add", cmd)
 	}
-	if !strings.Contains(got.LastErr, "not pending") {
-		t.Errorf("LastErr = %q, want 'not pending'-ish", got.LastErr)
+	if !strings.Contains(exec.Line, "allow ") || !strings.Contains(exec.Line, "https://x/") {
+		t.Errorf("CmdConsoleExec.Line = %q, want it to contain `allow https://x/`", exec.Line)
 	}
 }
 
