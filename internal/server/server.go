@@ -1059,13 +1059,21 @@ func (s *Server) transitionOpFromEvaluating(reqID string, e types.Effect) {
 }
 
 // opStatusFromAudit maps an audit Entry to the op-stream status
-// string per #57's vocabulary: raw HTTP code when one was sent
-// (e.g., "200" for proxied OK, "470" for declined, "502" for
-// upstream error); "error" for a request that ended before a
-// status was sent; "running" as a defensive fallback (should not
-// happen in practice — every audit entry carries either a status
-// or an error).
+// string. Real HTTP status codes (from upstream responses) appear
+// as their numeric form ("200", "502"). Trollbridge-internal wire
+// codes — 470 (declined) and 471 (pending-signal) — are NOT real
+// HTTP statuses; they surface as named tokens ("denied",
+// "signaled") so the operator UI does not lie about where the
+// status came from (#71). Pre-HTTP errors map to "error";
+// "running" is a defensive fallback (every audit entry should
+// carry either a status or an error).
 func opStatusFromAudit(e audit.Entry) string {
+	switch e.ResponseStatus {
+	case StatusTrollbridgeDeclined:
+		return opstream.StatusDenied
+	case StatusTrollbridgePending:
+		return opstream.StatusSignaled
+	}
 	if e.ResponseStatus > 0 {
 		return strconv.Itoa(e.ResponseStatus)
 	}

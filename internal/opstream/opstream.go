@@ -22,9 +22,12 @@ import (
 const DefaultCap = 50
 
 // Op-status string constants. Stringified HTTP status codes
-// ("200", "403", "470", "502") appear in Op.Status when a response
-// status was sent. The five non-numeric states cover the lifecycle
-// before / outside of a normal HTTP response (closes #57).
+// ("200", "403", "502") appear in Op.Status when an upstream
+// response status was sent. The non-numeric states cover the
+// lifecycle before / outside of a normal HTTP response (closes #57)
+// AND the trollbridge-internal wire codes (470 / 471) which are not
+// real HTTP statuses and must not be displayed as numeric codes
+// (closes #71).
 const (
 	// StatusChecking — the LLM advisor is evaluating, or the policy
 	// engine has not yet decided. Pre-decision and brief.
@@ -33,12 +36,21 @@ const (
 	StatusPending = "pending"
 	// StatusRunning — decision is allow, response not yet complete.
 	// writeAudit overwrites with the upstream HTTP code on response.
-	// Deny variants briefly pass through Running before the proxy's
-	// 470 lands and overwrites.
 	StatusRunning = "running"
 	// StatusError — pre-HTTP error (no status sent), e.g., upstream
 	// dial failure, body-read failure, hijack failure.
 	StatusError = "error"
+	// StatusDenied — the proxy denied the request. Surfaces in place
+	// of the trollbridge-internal 470 wire code; the consumer's wire
+	// response still carries 470 but the operator-facing display uses
+	// a name, not a number (closes #71).
+	StatusDenied = "denied"
+	// StatusSignaled — the proxy emitted a 471 pending-signal to the
+	// consumer (approvals.signal_after_seconds fired); the hold
+	// remains in the queue. Surfaces in place of "471" for the same
+	// reason as StatusDenied: 471 is a trollbridge-internal wire code,
+	// not a real HTTP status.
+	StatusSignaled = "signaled"
 )
 
 // Op is one operation's view-state. JSON tags exist because /v1/ops

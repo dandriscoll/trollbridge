@@ -37,7 +37,7 @@ func TestApplyKey_RetroactiveDenyOnCompletedRow(t *testing.T) {
 	m := Model{
 		Cols: 100, Rows: 30, Focused: PaneApprovals,
 		Ops: []opstream.Op{
-			{RequestID: "r1", Method: "GET", URL: "evil.example.com", Status: "470"},
+			{RequestID: "r1", Method: "GET", URL: "evil.example.com", Status: opstream.StatusDenied},
 		},
 		Selected: 0,
 	}

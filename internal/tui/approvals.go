@@ -694,17 +694,19 @@ func colorizeURLForRow(cell, url string) string {
 }
 
 // colorizeStatus wraps the status in a class color per #57's
-// vocabulary: green for running/2xx, yellow for checking/pending,
-// red for error/4xx/5xx, cyan for 3xx. Unknown statuses pass
-// through uncolored.
+// vocabulary: green for running/2xx, yellow for checking/pending/
+// signaled, red for denied/error/4xx/5xx, cyan for 3xx. Unknown
+// statuses pass through uncolored. The "denied" and "signaled"
+// tokens replace the trollbridge-internal 470/471 wire codes per
+// #71.
 func colorizeStatus(status string) string {
 	color := ""
 	switch status {
 	case opstream.StatusRunning:
 		color = "\x1b[32m"
-	case opstream.StatusChecking, opstream.StatusPending:
+	case opstream.StatusChecking, opstream.StatusPending, opstream.StatusSignaled:
 		color = "\x1b[33m"
-	case opstream.StatusError:
+	case opstream.StatusError, opstream.StatusDenied:
 		color = "\x1b[31m"
 	default:
 		// HTTP status codes: 2xx green, 3xx cyan, 4xx/5xx red.

@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -74,8 +73,11 @@ func TestOps_RecordsAllowedRequestWithHTTPCode(t *testing.T) {
 }
 
 // TestOps_RecordsDeniedRequest pins that a request the engine denies
-// shows up in the ring with status "denied" — not the HTTP status
-// the client sees (which is StatusTrollbridgeDeclined).
+// shows up in the ring with status "denied" — not the trollbridge-
+// internal 470 wire code that the consumer's HTTP response carries.
+// Closes #71: the operator-facing display uses a name, not a number.
+// The audit log continues to record the policy-effect token (e.g.,
+// "deny") and the response_status field (470).
 func TestOps_RecordsDeniedRequest(t *testing.T) {
 	_, originURL := plainOrigin(t, "shouldnotreach")
 	h := bootProxy(t, "default-deny", `
@@ -93,15 +95,12 @@ func TestOps_RecordsDeniedRequest(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	// Per #57: a denied request shows the proxy's wire status code
-	// (470 = StatusTrollbridgeDeclined), not a synthetic "denied"
-	// string. The audit log still records the policy effect token.
-	deniedCode := strconv.Itoa(StatusTrollbridgeDeclined)
+	const want = opstream.StatusDenied // "denied"
 	deadline := time.Now().Add(250 * time.Millisecond)
 	var snap []opstream.Op
 	for time.Now().Before(deadline) {
 		snap = ring.Snapshot()
-		if len(snap) > 0 && snap[0].Status == deniedCode {
+		if len(snap) > 0 && snap[0].Status == want {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -109,8 +108,8 @@ func TestOps_RecordsDeniedRequest(t *testing.T) {
 	if len(snap) == 0 {
 		t.Fatalf("ops ring empty after denied request")
 	}
-	if snap[0].Status != deniedCode {
-		t.Errorf("op.Status = %q, want %q", snap[0].Status, deniedCode)
+	if snap[0].Status != want {
+		t.Errorf("op.Status = %q, want %q (the operator-facing display must not show the trollbridge-internal 470 wire code; #71)", snap[0].Status, want)
 	}
 }
 
