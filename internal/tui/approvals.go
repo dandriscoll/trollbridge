@@ -760,7 +760,7 @@ func colorizeStatus(status string) string {
 		color = "\x1b[32m"
 	case opstream.StatusChecking, opstream.StatusPending, opstream.StatusSignaled:
 		color = "\x1b[33m"
-	case opstream.StatusError, opstream.StatusDenied:
+	case opstream.StatusError, opstream.StatusDenied, opstream.StatusTLSFailed:
 		color = "\x1b[31m"
 	default:
 		// HTTP status codes: 2xx green, 3xx cyan, 4xx/5xx red.

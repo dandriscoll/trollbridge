@@ -970,6 +970,59 @@ func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryReda
 	s.ops.Resolve(req.ID, opStatusFromAudit(entry))
 }
 
+// writeAuditTLSHandshakeFail emits the audit entry for a TLS
+// handshake failure on an intercepted CONNECT (either client → proxy
+// or, when called with TLSErrUpstream*, proxy → origin). It carries
+// the classified category and the recorded ClientHello details so an
+// operator reading audit.jsonl can diagnose the failure without
+// re-running it. The companion OpStream row resolves to
+// StatusTLSFailed so the failure shows up in the TUI as a class,
+// not as a generic "error".
+func (s *Server) writeAuditTLSHandshakeFail(
+	req *types.RequestEvent,
+	d types.Decision,
+	category TLSErrorCategory,
+	hello ClientHelloSnapshot,
+	status int,
+	latency time.Duration,
+	errStr string,
+) {
+	entry := audit.Entry{
+		TrollbridgeVersion:     Version,
+		AuditSchemaVersion:     1,
+		RequestID:              req.ID,
+		SessionID:              req.SessionID,
+		IdentityID:             req.IdentityID,
+		ClientAddr:             req.ClientAddr,
+		Method:                 req.Method,
+		Scheme:                 req.Scheme,
+		Host:                   req.Host,
+		Port:                   req.Port,
+		Path:                   req.Path,
+		Decision:               string(d.Effect),
+		DecisionSource:         string(d.Source),
+		RuleID:                 d.RuleID,
+		RuleSetVersion:         s.engine.RuleSetVersion(),
+		LLMConfidence:          "n/a",
+		Reason:                 d.Reason,
+		BodyInspectionStatus:   "not_required",
+		ResponseStatus:         status,
+		LatencyMS:              latency.Milliseconds(),
+		Error:                  errStr,
+		TLSErrorCategory:       string(category),
+		TLSSNI:                 hello.SNI,
+		TLSALPNOffered:         hello.OfferedALPN,
+		TLSVersionsOffered:     hello.OfferedVersions,
+		TLSCipherSuitesOffered: hello.OfferedCipherSuites,
+	}
+	if err := s.audit.Write(entry); err != nil {
+		s.opLog.Warn("audit write failure",
+			"event", oplog.EventAuditWriteFailure,
+			"request_id", req.ID, "error", err.Error())
+	}
+	s.ops.Resolve(req.ID, opstream.StatusTLSFailed)
+}
+
 // buildAdvisorInputs assembles the advisor's read-only context: a
 // header map with credential headers redacted, the current allow/
 // deny list snapshot, and the canonical Input the advisor will see.

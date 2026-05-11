@@ -40,6 +40,15 @@ func (s *Server) shouldIntercept(host string) bool {
 	return true
 }
 
+// handshakeDeadline bounds how long the proxy will wait for the
+// inner TLS handshake on an intercepted CONNECT. A client that opens
+// the tunnel then sends nothing (or a partial ClientHello) would
+// otherwise pin a goroutine indefinitely. 15s is generous — a normal
+// TLS handshake is well under a second — and short enough that
+// stalled clients surface as `tls_error_category=handshake_timeout`
+// in the audit log rather than as silent leaks.
+const interceptHandshakeDeadline = 15 * time.Second
+
 // interceptCONNECT terminates the CONNECT tunnel as TLS, performs
 // per-HTTP-request policy decisions on the inner stream, and
 // proxies HTTP/1.1 to the origin under a verified TLS dial.
@@ -48,12 +57,20 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 	if err != nil {
 		return fmt.Errorf("leaf cert: %w", err)
 	}
-	tlsCfg := &tls.Config{
+	baseCfg := &tls.Config{
 		Certificates: []tls.Certificate{*leaf},
 		// ALPN h1 only in Phase 3 — DESIGN.md §6.5.
 		NextProtos: []string{"http/1.1"},
 		MinVersion: tls.VersionTLS12,
 	}
+	// Wrap the config so we record the ClientHello (SNI / ALPN /
+	// versions / cipher suites) before cert selection. The snapshot
+	// is what makes TLS handshake failures actually diagnosable —
+	// without it the audit log would only carry crypto/tls's terse
+	// error string.
+	tlsCfg, helloRec := makeCaptureConfig(baseCfg)
+	handshakeStart := time.Now()
+	_ = clientConn.SetDeadline(time.Now().Add(interceptHandshakeDeadline))
 	tlsConn := tls.Server(clientConn, tlsCfg)
 	defer tlsConn.Close()
 	if err := tlsConn.Handshake(); err != nil {
@@ -61,16 +78,26 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 		// HTTP request to attribute this to, but the operator still
 		// needs an audit-shaped record (and a correlated operational
 		// log line) so that "TLS to trollbridge stopped working" is
-		// debuggable. Mint a synthetic request_id and emit a deny
-		// entry, mirroring the malformed-request shape below.
+		// debuggable. Mint a synthetic request_id, classify the
+		// failure, and carry the recorded ClientHello so the
+		// operator can see what the client actually offered.
 		requestID := uuid.NewString()
+		category := ClassifyClientHandshakeError(err)
+		hello := helloRec.snapshot()
+		opURL := fmt.Sprintf("https://%s:%d", host, port)
+		s.ops.Begin(requestID, "TLS", opURL)
 		s.opLog.Warn("intercept TLS handshake failure",
 			"event", oplog.EventInterceptHandshakeFail,
 			"request_id", requestID,
 			"identity", identityID,
 			"host", host, "port", port,
+			"tls_error_category", string(category),
+			"tls_sni", hello.SNI,
+			"tls_alpn", strings.Join(hello.OfferedALPN, ","),
+			"tls_versions", strings.Join(hello.OfferedVersions, ","),
+			"tls_cipher_suites", strings.Join(hello.OfferedCipherSuites, ","),
 			"error", err.Error())
-		s.writeAudit(&types.RequestEvent{
+		s.writeAuditTLSHandshakeFail(&types.RequestEvent{
 			ID:         requestID,
 			SessionID:  sessionID,
 			IdentityID: identityID,
@@ -83,10 +110,13 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 		}, types.Decision{
 			Effect: types.EffectDeny,
 			Source: types.SourceDefault,
-			Reason: "TLS handshake failed: " + err.Error(),
-		}, "", 0, http.StatusBadGateway, 0, 0, err.Error())
+			Reason: "TLS handshake failed (" + string(category) + "): " + err.Error(),
+		}, category, hello, http.StatusBadGateway, time.Since(handshakeStart), err.Error())
 		return fmt.Errorf("tls server handshake: %w", err)
 	}
+	// Handshake succeeded — clear the deadline so the inner HTTP
+	// request loop is not bounded by the handshake budget.
+	_ = clientConn.SetDeadline(time.Time{})
 
 	br := bufio.NewReader(tlsConn)
 	for {
@@ -258,10 +288,17 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	})
 	dialMS := time.Since(dialStart).Milliseconds()
 	if err != nil {
-		rlog.Debug("upstream_dial",
+		// Origin TLS dial failed — classify so an operator can
+		// distinguish "upstream cert untrusted" from "host
+		// unreachable" without parsing crypto/tls error strings.
+		category := ClassifyOriginTLSError(err)
+		rlog.Warn("upstream_dial",
 			"phase", oplog.PhaseUpstreamDial,
+			"event", oplog.EventInterceptUpstreamTLSFail,
 			"ok", false,
 			"duration_ms", dialMS,
+			"tls_error_category", string(category),
+			"sni", host,
 			"error", err.Error(),
 		)
 	} else {

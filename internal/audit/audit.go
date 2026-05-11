@@ -51,6 +51,17 @@ type Entry struct {
 	LatencyMS         int64 `json:"latency_ms"`
 
 	Error string `json:"error"`
+
+	// TLS-failure diagnostics. Populated only when the entry
+	// records a TLS handshake failure (either client → proxy or
+	// proxy → origin); omitted otherwise so successful requests
+	// remain compact in the JSONL log. See
+	// internal/server/tls_diag.go for the source of TLSErrorCategory.
+	TLSErrorCategory       string   `json:"tls_error_category,omitempty"`
+	TLSSNI                 string   `json:"tls_sni,omitempty"`
+	TLSALPNOffered         []string `json:"tls_alpn_offered,omitempty"`
+	TLSVersionsOffered     []string `json:"tls_versions_offered,omitempty"`
+	TLSCipherSuitesOffered []string `json:"tls_cipher_suites_offered,omitempty"`
 }
 
 // OverflowMode controls how the logger reacts when its buffer is

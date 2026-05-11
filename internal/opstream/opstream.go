@@ -51,6 +51,12 @@ const (
 	// reason as StatusDenied: 471 is a trollbridge-internal wire code,
 	// not a real HTTP status.
 	StatusSignaled = "signaled"
+	// StatusTLSFailed — the inner TLS handshake on an intercepted
+	// CONNECT failed before any HTTP request could be parsed. The
+	// matching audit entry carries a tls_error_category and the
+	// recorded ClientHello details. Distinct from StatusError so
+	// the operator UI can render handshake failures as a class.
+	StatusTLSFailed = "tls_failed"
 )
 
 // Op is one operation's view-state. JSON tags exist because /v1/ops

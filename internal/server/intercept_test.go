@@ -361,6 +361,125 @@ func TestIntercept_BodyRedactionSweep(t *testing.T) {
 	}
 }
 
+// TestIntercept_ClientRejectsCA_ClassifiedAndAudited drives a client
+// that does NOT trust the trollbridge CA through the proxy. The
+// outer CONNECT is allowed, but the inner TLS handshake fails — the
+// proxy must:
+//   - classify the failure as client_rejected_ca
+//   - write an audit entry carrying the category, SNI, and ALPN
+//   - surface the row in the OpStream as StatusTLSFailed
+// This guards the diagnose-SSL-interception-failures contract from
+// silent regression.
+func TestIntercept_ClientRejectsCA_ClassifiedAndAudited(t *testing.T) {
+	rules := `
+- id: a
+  match: {host: 127.0.0.1}
+  effect: allow
+`
+	h := bootInterceptProxy(t, rules, "")
+	defer h.close()
+
+	// Client that does NOT trust h.dbCA: an empty pool with no roots.
+	pool := x509.NewCertPool()
+	pURL, _ := url.Parse("http://" + h.addr)
+	c := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(pURL),
+			TLSClientConfig: &tls.Config{
+				RootCAs:    pool,
+				ServerName: "127.0.0.1",
+			},
+		},
+		Timeout: 10 * time.Second,
+	}
+	// Use a fresh request_id-bearing GET; we expect it to fail with
+	// a TLS verification error on the client side.
+	_, err := c.Get(h.originURL + "/anything")
+	if err == nil {
+		t.Fatal("client GET unexpectedly succeeded; expected TLS verify failure")
+	}
+
+	entries := h.auditEntries()
+	var tlsFail *audit.Entry
+	for i := range entries {
+		if entries[i].TLSErrorCategory != "" {
+			tlsFail = &entries[i]
+			break
+		}
+	}
+	if tlsFail == nil {
+		t.Fatalf("no audit entry with tls_error_category; entries=%+v", entries)
+	}
+	if tlsFail.TLSErrorCategory != string(TLSErrClientRejectedCA) {
+		t.Errorf("tls_error_category = %q, want %q", tlsFail.TLSErrorCategory, TLSErrClientRejectedCA)
+	}
+	if tlsFail.Scheme != "https-intercepted" {
+		t.Errorf("scheme = %q, want https-intercepted", tlsFail.Scheme)
+	}
+	if tlsFail.Decision != "deny" {
+		t.Errorf("decision = %q, want deny", tlsFail.Decision)
+	}
+	if tlsFail.Host != "127.0.0.1" {
+		t.Errorf("host = %q, want 127.0.0.1", tlsFail.Host)
+	}
+	// SNI is intentionally empty for IP literals (RFC 6066 §3), and
+	// the harness uses 127.0.0.1. The ClientHello capture is
+	// evidenced by the other recorded fields: ALPN, versions, and
+	// cipher suites. If they are all empty the GetConfigForClient
+	// callback regressed.
+	if len(tlsFail.TLSVersionsOffered) == 0 && len(tlsFail.TLSCipherSuitesOffered) == 0 {
+		t.Errorf("expected ClientHello capture (versions / cipher suites); got empty arrays")
+	}
+}
+
+// TestIntercept_ClientRejectsCA_SurfacesInOpStream verifies the
+// failing handshake produces an OpStream row with StatusTLSFailed.
+// The TUI reads from this ring, so the row is the operator-visible
+// signal that "an SSL interception just failed."
+func TestIntercept_ClientRejectsCA_SurfacesInOpStream(t *testing.T) {
+	rules := `
+- id: a
+  match: {host: 127.0.0.1}
+  effect: allow
+`
+	h := bootInterceptProxy(t, rules, "")
+	// Don't auto-close; we want to read Ops() while the server is up.
+	defer h.cancel()
+
+	pool := x509.NewCertPool()
+	pURL, _ := url.Parse("http://" + h.addr)
+	c := &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyURL(pURL),
+			TLSClientConfig: &tls.Config{
+				RootCAs:    pool,
+				ServerName: "127.0.0.1",
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+	_, _ = c.Get(h.originURL + "/anything")
+
+	// Allow the audit-write goroutine to land its op.Resolve.
+	deadline := time.Now().Add(2 * time.Second)
+	var found bool
+	for time.Now().Before(deadline) {
+		for _, op := range h.srv.Ops().Snapshot() {
+			if op.Status == "tls_failed" {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !found {
+		t.Errorf("expected an OpStream entry with status=tls_failed; snapshot=%+v", h.srv.Ops().Snapshot())
+	}
+}
+
 // Body cap fail-closed regression (carry-forward 032.I.4).
 func TestEngine_FailsClosedOnBodyRequiredButMissing(t *testing.T) {
 	rules := `
