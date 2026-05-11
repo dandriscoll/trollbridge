@@ -151,6 +151,12 @@ func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, 
 	if !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(out.Fd())) {
 		return errors.New("trollbridge ui: stdin/stdout is not a terminal")
 	}
+	// Windows: opt into ANSI VT processing before entering raw mode
+	// so failures are reported on the original screen rather than a
+	// half-broken alt-screen. Unix: no-op (closes #61).
+	if err := enableConsoleVT(); err != nil {
+		return err
+	}
 	oldState, err := term.MakeRaw(int(in.Fd()))
 	if err != nil {
 		return fmt.Errorf("trollbridge ui: enter raw mode: %w", err)
