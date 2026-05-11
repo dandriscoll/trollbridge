@@ -2,6 +2,7 @@ package console
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -320,4 +321,125 @@ func equal(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestBackend_Update_Windows_PrintsManualHint pins #78 Windows
+// branch: the installer must NOT be invoked on Windows; the
+// operator gets the same fallback link the CLI prints.
+func TestBackend_Update_Windows_PrintsManualHint(t *testing.T) {
+	prev := updateGOOS
+	updateGOOS = "windows"
+	defer func() { updateGOOS = prev }()
+
+	prevRunner := updateRunner
+	updateRunner = func(stdout, stderr io.Writer) error {
+		t.Fatalf("installer must not be invoked on windows; got call")
+		return nil
+	}
+	defer func() { updateRunner = prevRunner }()
+
+	b := &Backend{LocalOnly: true}
+	out, _ := runLines(t, b, "update")
+	if !strings.Contains(out, "not yet supported on Windows") {
+		t.Errorf("windows hint missing cause: %s", out)
+	}
+	if !strings.Contains(out, "github.com/dandriscoll/trollbridge/releases/latest") {
+		t.Errorf("windows hint missing next-action URL: %s", out)
+	}
+}
+
+// TestBackend_Update_NonWindows_InvokesInstaller pins that the
+// installer pipeline runs on non-Windows and its output reaches
+// the console scrollback.
+func TestBackend_Update_NonWindows_InvokesInstaller(t *testing.T) {
+	prev := updateGOOS
+	updateGOOS = "linux"
+	defer func() { updateGOOS = prev }()
+
+	called := false
+	prevRunner := updateRunner
+	updateRunner = func(stdout, stderr io.Writer) error {
+		called = true
+		_, _ = stdout.Write([]byte("installer ran\n"))
+		return nil
+	}
+	defer func() { updateRunner = prevRunner }()
+
+	b := &Backend{LocalOnly: true}
+	out, _ := runLines(t, b, "update")
+	if !called {
+		t.Errorf("installer runner was not invoked")
+	}
+	if !strings.Contains(out, "installer ran") {
+		t.Errorf("installer stdout not wired through; got: %s", out)
+	}
+	if !strings.Contains(out, "restart trollbridge to use the new binary") {
+		t.Errorf("update success hint missing restart guidance; got: %s", out)
+	}
+}
+
+// TestBackend_Update_InstallerFailureSurfaces pins that an installer
+// non-zero exit surfaces as an `update: <err>` line.
+func TestBackend_Update_InstallerFailureSurfaces(t *testing.T) {
+	prev := updateGOOS
+	updateGOOS = "linux"
+	defer func() { updateGOOS = prev }()
+
+	prevRunner := updateRunner
+	updateRunner = func(stdout, stderr io.Writer) error {
+		return errors.New("curl: network unreachable")
+	}
+	defer func() { updateRunner = prevRunner }()
+
+	b := &Backend{LocalOnly: true}
+	out, _ := runLines(t, b, "update")
+	if !strings.Contains(out, "update: curl: network unreachable") {
+		t.Errorf("installer failure not surfaced; got: %s", out)
+	}
+	if strings.Contains(out, "restart trollbridge to use the new binary") {
+		t.Errorf("success hint should not print on installer failure; got: %s", out)
+	}
+}
+
+// TestBackend_Update_AvailableInAttachMode pins that 'update' is
+// NOT gated by LocalOnly — updating the local binary is host-local,
+// not proxy-state.
+func TestBackend_Update_AvailableInAttachMode(t *testing.T) {
+	prev := updateGOOS
+	updateGOOS = "linux"
+	defer func() { updateGOOS = prev }()
+
+	called := false
+	prevRunner := updateRunner
+	updateRunner = func(stdout, stderr io.Writer) error {
+		called = true
+		return nil
+	}
+	defer func() { updateRunner = prevRunner }()
+
+	b := &Backend{LocalOnly: false}
+	out, _ := runLines(t, b, "update")
+	if !called {
+		t.Errorf("update runner skipped in attach mode; got: %s", out)
+	}
+	if strings.Contains(out, "not available in attach mode") {
+		t.Errorf("update should not be gated by attach mode; got: %s", out)
+	}
+}
+
+// TestBackend_Update_ListedInHelp pins that both help variants name
+// the update command.
+func TestBackend_Update_ListedInHelp(t *testing.T) {
+	for _, localOnly := range []bool{true, false} {
+		t.Run(map[bool]string{true: "local", false: "attach"}[localOnly], func(t *testing.T) {
+			b := &Backend{LocalOnly: localOnly}
+			out, _ := runLines(t, b, "help")
+			if !strings.Contains(out, "update") {
+				t.Errorf("help missing update entry (LocalOnly=%v); got: %s", localOnly, out)
+			}
+			if !strings.Contains(out, "trollbridge.dev/install.sh") {
+				t.Errorf("help missing install.sh URL (LocalOnly=%v); got: %s", localOnly, out)
+			}
+		})
+	}
 }

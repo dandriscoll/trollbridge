@@ -13,12 +13,31 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/dandriscoll/trollbridge/internal/configwrite"
 	"github.com/dandriscoll/trollbridge/internal/hostlist"
 )
+
+// updateGOOS is read in place of runtime.GOOS so tests can pick the
+// Windows branch of `update` without cross-compiling. Production
+// callers leave it at runtime.GOOS. Mirrors the CLI plumbing in
+// cmd/trollbridge/update.go.
+var updateGOOS = runtime.GOOS
+
+// updateRunner shells out to the install.sh pipeline and streams
+// installer output. Replaced in tests with a recorder so the
+// shell-out path can be exercised without touching the network.
+// Mirrors the CLI plumbing in cmd/trollbridge/update.go (closes #78).
+var updateRunner = func(stdout, stderr io.Writer) error {
+	c := exec.Command("sh", "-c", "curl -fsSL https://trollbridge.dev/install.sh | sh")
+	c.Stdout = stdout
+	c.Stderr = stderr
+	return c.Run()
+}
 
 // Backend executes one operator command line at a time. The TUI's
 // console pane creates a Backend per session and calls Execute on
@@ -75,6 +94,8 @@ func (b *Backend) Execute(out io.Writer, line string) (quit bool) {
 		b.runTest(out, arg)
 	case "doctor":
 		b.runDoctor(out)
+	case "update":
+		b.runUpdate(out)
 	case "help", "?":
 		b.printHelp(out)
 	case "quit", "exit":
@@ -147,6 +168,30 @@ func (b *Backend) runDoctor(out io.Writer) {
 	if err := b.OnDoctor(out); err != nil {
 		fmt.Fprintf(out, "doctor: %s\n", err)
 	}
+}
+
+// runUpdate streams the install.sh pipeline into the console
+// scrollback. Available in both LocalOnly (run) and attach modes —
+// updating the local binary is host-local regardless of where the
+// daemon runs. The running daemon keeps its loaded text until
+// restart; the success message names that explicitly.
+func (b *Backend) runUpdate(out io.Writer) {
+	if updateGOOS == "windows" {
+		fmt.Fprintln(out, "Auto-update is not yet supported on Windows.")
+		fmt.Fprintln(out, "Download the latest release from https://github.com/dandriscoll/trollbridge/releases/latest")
+		return
+	}
+	fmt.Fprintln(out, "running: curl -fsSL https://trollbridge.dev/install.sh | sh")
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(out, "update: panic: %v\n", r)
+		}
+	}()
+	if err := updateRunner(out, out); err != nil {
+		fmt.Fprintf(out, "update: %s\n", err)
+		return
+	}
+	fmt.Fprintln(out, "update complete — restart trollbridge to use the new binary")
 }
 
 func (b *Backend) addPattern(out io.Writer, label, pattern string) {
@@ -293,12 +338,14 @@ func (b *Backend) printHelp(out io.Writer) {
   reload             re-parse trollbridge.yaml into the running matcher
   test <url>         send one request through this proxy and print result
   doctor             run the same checks as `+"`trollbridge doctor`"+`
+  update             update the local trollbridge binary via trollbridge.dev/install.sh
   help               this text
   quit | exit        leave the UI (the proxy keeps running)
 `)
 		return
 	}
 	fmt.Fprint(out, `commands available in attach mode:
+  update             update the local trollbridge binary via trollbridge.dev/install.sh
   help               this text
   quit | exit        close the attach session
 
