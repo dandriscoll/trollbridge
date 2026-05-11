@@ -2,6 +2,7 @@ package approvals
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -308,6 +309,123 @@ func TestQueue_PersistCallbackFiresOnDeny(t *testing.T) {
 	}
 	if lastSource != "attach" {
 		t.Errorf("source = %q, want %q", lastSource, "attach")
+	}
+}
+
+// TestQueue_ApproveAfterAdvisorResolved_DoesNotDoubleFire pins #55.
+// Scenario: the advisor resolves a hold with EffectDeny; Wait drains
+// the channel and removes the hold from q.items shortly after; the
+// operator presses 'a' on the same row while Approve's lookup races
+// with remove. The legacy code allowed Approve's push to succeed
+// against the now-empty channel and fire a second persistCb,
+// adding the URL to lists.allow even though the advisor had already
+// added it to lists.deny.
+//
+// This test simulates the race by manually draining the channel
+// (the queue's Wait normally does this) without calling remove,
+// then invoking Approve. Without the resolved-flag claim, Approve
+// would push successfully and fire persistCb with EffectAllow;
+// with the claim, Approve returns false and persistCb stays at one
+// invocation.
+func TestQueue_ApproveAfterAdvisorResolved_DoesNotDoubleFire(t *testing.T) {
+	q := New(8, time.Minute, "deny")
+	var (
+		mu    sync.Mutex
+		calls []types.Effect
+	)
+	q.SetDecisionPersist(func(_ *types.RequestEvent, e types.Effect, _ string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, e)
+	})
+	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+
+	if !q.ResolveByAdvisor(id, types.Decision{Effect: types.EffectDeny}) {
+		t.Fatal("ResolveByAdvisor returned false unexpectedly")
+	}
+	// Simulate Wait having read the resolveCh; do NOT remove the hold,
+	// reproducing the race window where another resolver finds the hold
+	// still in q.items but the channel is empty.
+	<-ch
+
+	if q.Approve(id, "once", "tui") {
+		t.Errorf("Approve returned true after hold was advisor-resolved")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("persistCb fired %d times, want 1: %v", len(calls), calls)
+	}
+	if calls[0] != types.EffectDeny {
+		t.Errorf("persistCb effect = %v, want %v", calls[0], types.EffectDeny)
+	}
+}
+
+// TestQueue_AdvisorAfterApprove_DoesNotDoubleFire is the symmetric
+// direction of #55: operator approves, Wait drains, advisor's
+// callback finishes later and tries to resolve. Must not fire a
+// second persistCb / second lifecycle log.
+func TestQueue_AdvisorAfterApprove_DoesNotDoubleFire(t *testing.T) {
+	q := New(8, time.Minute, "deny")
+	var (
+		mu    sync.Mutex
+		calls []types.Effect
+	)
+	q.SetDecisionPersist(func(_ *types.RequestEvent, e types.Effect, _ string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, e)
+	})
+	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+
+	if !q.Approve(id, "once", "tui") {
+		t.Fatal("Approve returned false unexpectedly")
+	}
+	<-ch
+
+	if q.ResolveByAdvisor(id, types.Decision{Effect: types.EffectDeny}) {
+		t.Errorf("ResolveByAdvisor returned true after operator already approved")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("persistCb fired %d times, want 1: %v", len(calls), calls)
+	}
+	if calls[0] != types.EffectAllow {
+		t.Errorf("persistCb effect = %v, want %v", calls[0], types.EffectAllow)
+	}
+}
+
+// TestQueue_DenyAfterAdvisorResolved_DoesNotDoubleFire covers the
+// Deny path's at-most-once gate (#55 sibling).
+func TestQueue_DenyAfterAdvisorResolved_DoesNotDoubleFire(t *testing.T) {
+	q := New(8, time.Minute, "deny")
+	var (
+		mu    sync.Mutex
+		calls []types.Effect
+	)
+	q.SetDecisionPersist(func(_ *types.RequestEvent, e types.Effect, _ string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, e)
+	})
+	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+
+	if !q.ResolveByAdvisor(id, types.Decision{Effect: types.EffectAllow}) {
+		t.Fatal("ResolveByAdvisor returned false unexpectedly")
+	}
+	<-ch
+
+	if q.Deny(id, "operator denied", "tui") {
+		t.Errorf("Deny returned true after hold was advisor-resolved")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("persistCb fired %d times, want 1: %v", len(calls), calls)
+	}
+	if calls[0] != types.EffectAllow {
+		t.Errorf("persistCb effect = %v, want %v", calls[0], types.EffectAllow)
 	}
 }
 

@@ -46,6 +46,16 @@ type Hold struct {
 	Decision  types.Decision    // the engine's ask_user decision; carries reason
 	CreatedAt time.Time
 	resolveCh chan types.Decision
+	// resolved is set under Queue.mu by the first resolver that wins
+	// the at-most-once claim (Approve / Deny / ResolveByAdvisor).
+	// Subsequent resolvers see resolved=true and return false without
+	// pushing to resolveCh or firing persistCb / lifecycle oplog.
+	// Closes #55: prior code relied on the cap-1 channel for race
+	// protection, but Wait can drain the channel between two
+	// resolvers' lookups, letting the second push succeed and the
+	// second persistCb fire — writing to both lists.allow and
+	// lists.deny for a single operator action.
+	resolved bool
 }
 
 // Snapshot returns a JSON-friendly description of the hold (used by
@@ -107,6 +117,22 @@ func New(maxPending int, timeout time.Duration, onTimeout string) *Queue {
 
 // ErrFull is returned when the queue is at capacity.
 var ErrFull = errors.New("approval queue full")
+
+// claim returns the hold iff it exists and has not yet been resolved,
+// atomically marking it resolved under Queue.mu. Returns nil
+// otherwise. This is the at-most-once gate every resolver
+// (Approve / Deny / ResolveByAdvisor) passes through; only the
+// winning caller proceeds to push on resolveCh and fire persistCb.
+func (q *Queue) claim(id string) *Hold {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	h, ok := q.items[id]
+	if !ok || h.resolved {
+		return nil
+	}
+	h.resolved = true
+	return h
+}
 
 // Enqueue creates a new Hold and stores it. Returns the hold ID and
 // a channel that resolves with the operator's decision (or a
@@ -193,19 +219,17 @@ func (q *Queue) Wait(ctx context.Context, id string, ch <-chan types.Decision) t
 // "attach" for an mTLS control-plane approval; it propagates to the
 // DecisionPersist callback for source attribution in oplog.
 func (q *Queue) Approve(id, scope, source string) bool {
-	q.mu.Lock()
-	h, ok := q.items[id]
-	q.mu.Unlock()
-	if !ok {
+	h := q.claim(id)
+	if h == nil {
 		return false
 	}
 	if scope == "" {
 		scope = "once"
 	}
-	// Non-blocking send: the hold's resolveCh is cap-1; if a prior
-	// resolver already pushed (operator double-click; advisor
-	// goroutine resolved first), we drop the duplicate rather than
-	// deadlock. The Wait side reads exactly once.
+	// claim() set resolved=true under the lock, so no concurrent
+	// resolver can compete for this hold; the push is exclusive.
+	// Keep select+default as belt-and-suspenders — a future regression
+	// that leaves a stale value in resolveCh must not block here.
 	select {
 	case h.resolveCh <- types.Decision{
 		Effect:    types.EffectAskUserResolvedAllow,
@@ -240,10 +264,8 @@ func (q *Queue) Approve(id, scope, source string) bool {
 // "attach"; see Approve. Returns false if the hold was already
 // resolved (race with another Approve/Deny/ResolveByAdvisor).
 func (q *Queue) Deny(id, reason, source string) bool {
-	q.mu.Lock()
-	h, ok := q.items[id]
-	q.mu.Unlock()
-	if !ok {
+	h := q.claim(id)
+	if h == nil {
 		return false
 	}
 	if reason == "" {
@@ -287,10 +309,8 @@ func (q *Queue) Deny(id, reason, source string) bool {
 // and the AdvisorID it was emitted under, so the audit log
 // attributes the resolution to the LLM rather than the queue.
 func (q *Queue) ResolveByAdvisor(id string, d types.Decision) bool {
-	q.mu.Lock()
-	h, ok := q.items[id]
-	q.mu.Unlock()
-	if !ok {
+	h := q.claim(id)
+	if h == nil {
 		return false
 	}
 	// Preserve the original rule id if the advisor's decision did
