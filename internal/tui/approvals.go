@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/dandriscoll/trollbridge/internal/console"
@@ -34,6 +35,11 @@ type ControlClient interface {
 	RecentOps() ([]opstream.Op, error)
 	Approve(id string) error
 	Deny(id, reason string) error
+	// RecentLLMDigests returns recent advisor.Classify outcomes for
+	// the LLM bottom panel (closes #66). In-process clients delegate
+	// to advisor.Service.Digests(). HTTP clients currently return
+	// nil (control-plane /v1/llm-digests endpoint is a follow-up).
+	RecentLLMDigests() ([]advisor.Digest, error)
 }
 
 type httpClient struct{ cfg *config.Config }
@@ -72,6 +78,13 @@ func (c *httpClient) Deny(id, reason string) error {
 	return err
 }
 
+func (c *httpClient) RecentLLMDigests() ([]advisor.Digest, error) {
+	// Control-plane /v1/llm-digests endpoint is a follow-up
+	// (filed in job 120's improvements). Until then, attach mode
+	// shows an empty LLM panel.
+	return nil, nil
+}
+
 // NewHTTPClient returns a ControlClient that talks to the daemon's
 // mTLS control plane. Used by `trollbridge attach` (separate process).
 func NewHTTPClient(cfg *config.Config) ControlClient {
@@ -81,6 +94,9 @@ func NewHTTPClient(cfg *config.Config) ControlClient {
 type inProcessClient struct {
 	q   *approvals.Queue
 	ops *opstream.Ring
+	// adv is the advisor service whose Digests() ring backs the
+	// LLM bottom panel (closes #66). May be nil if no advisor wired.
+	adv *advisor.Service
 }
 
 func (c *inProcessClient) ListHolds() ([]approvals.Snapshot, error) {
@@ -117,6 +133,13 @@ func (c *inProcessClient) Deny(id, reason string) error {
 	return nil
 }
 
+func (c *inProcessClient) RecentLLMDigests() ([]advisor.Digest, error) {
+	if c.adv == nil {
+		return nil, nil
+	}
+	return c.adv.Digests().Snapshot(), nil
+}
+
 // NewInProcessClient returns a ControlClient that calls the daemon's
 // approvals queue and ops ring directly. Use this when the operator
 // UI is embedded in the daemon (e.g. `trollbridge run`): it removes
@@ -126,6 +149,13 @@ func (c *inProcessClient) Deny(id, reason string) error {
 // only view.
 func NewInProcessClient(q *approvals.Queue, ops *opstream.Ring) ControlClient {
 	return &inProcessClient{q: q, ops: ops}
+}
+
+// NewInProcessClientWithAdvisor is the variant that also wires the
+// advisor service for the LLM bottom panel (closes #66). adv may be
+// nil — the LLM panel then renders empty.
+func NewInProcessClientWithAdvisor(q *approvals.Queue, ops *opstream.Ring, adv *advisor.Service) ControlClient {
+	return &inProcessClient{q: q, ops: ops, adv: adv}
 }
 
 // RunOperator drives the unified two-pane operator UI. The caller
@@ -285,6 +315,14 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				select {
 				case <-loopCtx.Done():
 				case events <- ActionResult{ID: id, Action: "deny", Err: err}:
+				}
+			}()
+		case CmdDigestRefresh:
+			go func() {
+				ds, err := client.RecentLLMDigests()
+				select {
+				case <-loopCtx.Done():
+				case events <- DigestTickResult{Digests: ds, Err: err}:
 				}
 			}()
 		case CmdConsoleExec:
@@ -489,7 +527,7 @@ func render(out io.Writer, m Model) error {
 	}
 
 	renderApprovalsPane(&b, m, topRows)
-	renderConsolePane(&b, m, bottomRows)
+	renderBottomPane(&b, m, bottomRows)
 
 	// Strip the very last line terminator so the cursor settles on
 	// the bottom row instead of one past it. With the trailing \n the
@@ -934,4 +972,133 @@ func runeTrunc(s string, width int) string {
 		return string(rs[:width])
 	}
 	return string(rs[:width-1]) + "…"
+}
+
+// renderBottomPane dispatches to one of four panel renderers per
+// Model.BottomPanel. The numbered key shortcuts (1-4 with approvals
+// focused) cycle the selection; the default is the console pane,
+// preserving prior behavior (closes #66).
+func renderBottomPane(b *strings.Builder, m Model, rows int) {
+	switch m.BottomPanel {
+	case BottomPanelInfo:
+		renderInfoPane(b, m, rows)
+	case BottomPanelLLM:
+		renderLLMPane(b, m, rows)
+	case BottomPanelURLs:
+		renderURLsPane(b, m, rows)
+	default:
+		renderConsolePane(b, m, rows)
+	}
+}
+
+// panelHeaderLine renders the panel title row + the keystroke hint
+// reminding the operator how to switch panels.
+func panelHeaderLine(b *strings.Builder, m Model, title string) {
+	hint := "[1]console  [2]info  [3]llm  [4]urls"
+	left := title
+	right := hint
+	gap := m.Cols - len([]rune(left)) - len([]rune(right))
+	if gap < 1 {
+		gap = 1
+	}
+	b.WriteString(left + strings.Repeat(" ", gap) + right)
+	b.WriteString("\r\n")
+}
+
+// renderInfoPane shows the full detail of the currently selected op.
+func renderInfoPane(b *strings.Builder, m Model, rows int) {
+	panelHeaderLine(b, m, "── info ── ")
+	used := 1
+	displayed := DisplayedOps(m)
+	if m.Selected < 0 || m.Selected >= len(displayed) {
+		b.WriteString(padRight("  (no operation selected — Tab to approvals, j/k to pick)", m.Cols))
+		b.WriteString("\r\n")
+		used++
+	} else {
+		o := displayed[m.Selected]
+		now := time.Now()
+		lines := []string{
+			fmt.Sprintf("  request_id : %s", o.RequestID),
+			fmt.Sprintf("  method     : %s", o.Method),
+			fmt.Sprintf("  url        : %s", o.URL),
+			fmt.Sprintf("  status     : %s", o.Status),
+			fmt.Sprintf("  hold_id    : %s", o.HoldID),
+			fmt.Sprintf("  count      : %d", o.Count),
+			fmt.Sprintf("  started    : %s", o.StartedAt.Local().Format("2006-01-02 15:04:05")),
+			fmt.Sprintf("  updated    : %s  (%s ago)", o.UpdatedAt.Local().Format("2006-01-02 15:04:05"), now.Sub(o.UpdatedAt).Truncate(time.Second)),
+		}
+		for _, l := range lines {
+			if used >= rows {
+				break
+			}
+			b.WriteString(padRight(runeTrunc(l, m.Cols), m.Cols))
+			b.WriteString("\r\n")
+			used++
+		}
+	}
+	for used < rows {
+		b.WriteString(padRight("", m.Cols))
+		b.WriteString("\r\n")
+		used++
+	}
+}
+
+// renderLLMPane shows the rolling advisor-classify digest.
+func renderLLMPane(b *strings.Builder, m Model, rows int) {
+	panelHeaderLine(b, m, "── llm ── ")
+	used := 1
+	if len(m.Digests) == 0 {
+		b.WriteString(padRight("  (no LLM evaluations yet — advisor disabled or no traffic)", m.Cols))
+		b.WriteString("\r\n")
+		used++
+	} else {
+		// Newest first.
+		for i := len(m.Digests) - 1; i >= 0 && used < rows; i-- {
+			d := m.Digests[i]
+			ts := d.Timestamp.Local().Format("15:04:05")
+			line := fmt.Sprintf("  %s  %-7s %-7s %s  — %s",
+				ts,
+				d.Effect,
+				d.Confidence,
+				d.Host,
+				d.Reason,
+			)
+			b.WriteString(padRight(runeTrunc(line, m.Cols), m.Cols))
+			b.WriteString("\r\n")
+			used++
+		}
+	}
+	for used < rows {
+		b.WriteString(padRight("", m.Cols))
+		b.WriteString("\r\n")
+		used++
+	}
+}
+
+// renderURLsPane shows the distinct URLs seen in the ops ring with
+// the underlying repetition count.
+func renderURLsPane(b *strings.Builder, m Model, rows int) {
+	panelHeaderLine(b, m, "── urls ── ")
+	used := 1
+	displayed := DisplayedOps(m)
+	if len(displayed) == 0 {
+		b.WriteString(padRight("  (no URLs yet)", m.Cols))
+		b.WriteString("\r\n")
+		used++
+	} else {
+		for _, o := range displayed {
+			if used >= rows {
+				break
+			}
+			line := fmt.Sprintf("  %4d  %-7s %s", o.Count, o.Method, o.URL)
+			b.WriteString(padRight(runeTrunc(line, m.Cols), m.Cols))
+			b.WriteString("\r\n")
+			used++
+		}
+	}
+	for used < rows {
+		b.WriteString(padRight("", m.Cols))
+		b.WriteString("\r\n")
+		used++
+	}
 }

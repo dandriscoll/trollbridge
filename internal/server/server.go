@@ -302,6 +302,11 @@ func (s *Server) Queue() *approvals.Queue { return s.queue }
 // embedded TUI).
 func (s *Server) Ops() *opstream.Ring { return s.ops }
 
+// Advisor returns the LLM advisor service for the operator UI's
+// LLM-digest panel (closes #66). May be nil if the advisor was
+// not configured.
+func (s *Server) Advisor() *advisor.Service { return s.advisor }
+
 // SessionsTracker returns the per-client session tracker.
 func (s *Server) SessionsTracker() *sessions.Tracker { return s.sessions }
 

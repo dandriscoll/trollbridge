@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/console"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
@@ -55,6 +56,10 @@ func (s *stubClient) Deny(id, reason string) error {
 	defer s.mu.Unlock()
 	s.denyIDs = append(s.denyIDs, id)
 	return s.denyErr
+}
+
+func (s *stubClient) RecentLLMDigests() ([]advisor.Digest, error) {
+	return nil, nil
 }
 
 // TestRunLoop_ApproveFlowEndToEnd drives runLoop with scripted

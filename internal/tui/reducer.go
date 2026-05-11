@@ -10,6 +10,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
 )
@@ -20,6 +21,19 @@ type Pane int
 const (
 	PaneApprovals Pane = iota
 	PaneConsole
+)
+
+// BottomPanel names which content the lower half of the screen shows.
+// The default — BottomPanelConsole — preserves the existing console
+// behavior. Numbered keys 1/2/3/4 (when the approvals pane is
+// focused) cycle through the four panels (closes #66).
+type BottomPanel int
+
+const (
+	BottomPanelConsole BottomPanel = iota
+	BottomPanelInfo
+	BottomPanelLLM
+	BottomPanelURLs
 )
 
 // ConsoleModel is the lower-pane state: a scrollback buffer plus the
@@ -55,6 +69,14 @@ type Model struct {
 
 	Focused Pane
 	Console ConsoleModel
+
+	// BottomPanel selects which content the lower half shows. The
+	// default zero value is BottomPanelConsole, preserving the prior
+	// always-on console-pane behavior (closes #66).
+	BottomPanel BottomPanel
+	// Digests is the rolling advisor-classify log shown by the LLM
+	// bottom panel. Filled by DigestTickResult events.
+	Digests []advisor.Digest
 }
 
 // Event is the input to the reducer. Concrete types are below.
@@ -70,6 +92,13 @@ type TickResult struct {
 type OpsTickResult struct {
 	Ops []opstream.Op
 	Err error
+}
+
+// DigestTickResult arrives after a poll for recent LLM digests
+// completes. Used to back the LLM bottom panel (closes #66).
+type DigestTickResult struct {
+	Digests []advisor.Digest
+	Err     error
 }
 
 // KeyEvent arrives when the operator presses a key.
@@ -116,6 +145,7 @@ type ResizeEvent struct {
 
 func (TickResult) event()        {}
 func (OpsTickResult) event()     {}
+func (DigestTickResult) event()  {}
 func (KeyEvent) event()          {}
 func (ActionResult) event()      {}
 func (ResizeEvent) event()       {}
@@ -130,13 +160,15 @@ type CmdApprove struct{ ID string }
 type CmdDeny struct{ ID string }
 type CmdQuit struct{}
 type CmdConsoleExec struct{ Line string }
+type CmdDigestRefresh struct{}
 
-func (CmdNone) cmd()        {}
-func (CmdRefresh) cmd()     {}
-func (CmdApprove) cmd()     {}
-func (CmdDeny) cmd()        {}
-func (CmdQuit) cmd()        {}
-func (CmdConsoleExec) cmd() {}
+func (CmdNone) cmd()          {}
+func (CmdRefresh) cmd()       {}
+func (CmdApprove) cmd()       {}
+func (CmdDeny) cmd()          {}
+func (CmdQuit) cmd()          {}
+func (CmdConsoleExec) cmd()   {}
+func (CmdDigestRefresh) cmd() {}
 
 // Apply is the pure reducer. It does no I/O. Callers replace their
 // Model with the returned one and run the returned Cmd.
@@ -146,6 +178,11 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 		return applyTick(m, e)
 	case OpsTickResult:
 		return applyOpsTick(m, e)
+	case DigestTickResult:
+		if e.Err == nil {
+			m.Digests = e.Digests
+		}
+		return m, CmdNone{}
 	case KeyEvent:
 		return applyKey(m, e)
 	case ActionResult:
@@ -256,6 +293,23 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	}
 	if e.Rune == 'r' {
 		return m, CmdRefresh{}
+	}
+	// Bottom-panel switcher (closes #66). Numbered keys 1/2/3/4 here
+	// because the approvals key set already consumes a/d/j/k/r/q/Tab
+	// and the numbered keys are free.
+	switch e.Rune {
+	case '1':
+		m.BottomPanel = BottomPanelConsole
+		return m, CmdNone{}
+	case '2':
+		m.BottomPanel = BottomPanelInfo
+		return m, CmdNone{}
+	case '3':
+		m.BottomPanel = BottomPanelLLM
+		return m, CmdDigestRefresh{}
+	case '4':
+		m.BottomPanel = BottomPanelURLs
+		return m, CmdNone{}
 	}
 	if e.Rune == 'a' || e.Rune == 'd' {
 		if m.Selected < 0 || m.Selected >= len(displayed) {
