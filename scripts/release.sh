@@ -324,24 +324,28 @@ TARGETS=(
     "linux/arm64"
     "darwin/amd64"
     "darwin/arm64"
+    "windows/amd64"
+    "windows/arm64"
 )
 
 build_matrix() {
     local new="$1"
     rm -rf "$DIST"
     mkdir -p "$DIST"
-    local ldflags target os arch stage tarname dirname
+    local ldflags target os arch stage tarname dirname binary
     ldflags="$(LDFLAGS_FOR "$new")"
     for target in "${TARGETS[@]}"; do
         os="${target%/*}"
         arch="${target#*/}"
         stage="$(mktemp -d)"
         dirname="trollbridge_v${new}_${os}_${arch}"
+        binary="trollbridge"
+        [[ "$os" == "windows" ]] && binary="trollbridge.exe"
         mkdir -p "$stage/$dirname"
         echo "build: $dirname" >&2
         CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
             go build -trimpath -ldflags="$ldflags" \
-            -o "$stage/$dirname/trollbridge" ./cmd/trollbridge
+            -o "$stage/$dirname/$binary" ./cmd/trollbridge
         cp LICENSE README.md "$stage/$dirname/"
         tarname="${dirname}.tar.gz"
         tar -czf "$DIST/$tarname" -C "$stage" "$dirname"
