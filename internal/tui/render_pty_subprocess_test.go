@@ -63,6 +63,12 @@ func TestRenderPTY_BordersAppearOnRealTerminal(t *testing.T) {
 	}
 	defer slave.Close()
 
+	// Positive PTY round-trip check before spending time on the
+	// binary build + subprocess startup. Sandboxes that expose
+	// /dev/ptmx but cannot move bytes through it (issue #69) skip
+	// here cleanly instead of failing late on a partial render.
+	ptySmokeOrSkip(t, master, slave)
+
 	repoRoot := findRepoRoot(t)
 	binPath := filepath.Join(t.TempDir(), "trollbridge")
 	build := exec.Command("go", "build", "-o", binPath, "./cmd/trollbridge")
@@ -144,6 +150,46 @@ approvals:
 	if !strings.Contains(out, "\x1b[36m") {
 		t.Errorf("PTY render missing cyan focused-pane escape; %d bytes captured", len(buf))
 	}
+}
+
+// ptySmokeOrSkip runs a tiny write/read round-trip on the freshly-
+// allocated PTY pair to validate that the environment can actually
+// move bytes through ptmx within a reasonable deadline. Some sandboxes
+// expose /dev/ptmx and accept the unlock/getpt ioctls but then time
+// out on the first real read or write — issue #69 is the recurrent
+// failure shape. When the round-trip fails, we t.Skipf with the
+// captured error so the test is a clean skip in those environments;
+// CI runners with a functional PTY still exercise the test body.
+//
+// The smoke check writes one byte to master, reads it back from
+// slave with a 500 ms deadline. Both the write and the read must
+// succeed within the deadline; either failure produces a skip.
+func ptySmokeOrSkip(t *testing.T, master, slave *os.File) {
+	t.Helper()
+	const probe byte = 'P'
+	// Strict per-op deadlines on master AND slave — write goes to
+	// master, slave receives.
+	if err := master.SetWriteDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Skipf("PTY smoke: SetWriteDeadline on master: %v", err)
+	}
+	if _, err := master.Write([]byte{probe}); err != nil {
+		t.Skipf("PTY smoke: master.Write timed out or failed (likely a non-functional ptmx in this environment): %v", err)
+	}
+	if err := slave.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Skipf("PTY smoke: SetReadDeadline on slave: %v", err)
+	}
+	buf := make([]byte, 1)
+	if _, err := slave.Read(buf); err != nil {
+		t.Skipf("PTY smoke: slave.Read timed out or failed: %v", err)
+	}
+	if buf[0] != probe {
+		t.Skipf("PTY smoke: round-trip mismatch (got %q, want %q) — kernel PTY discipline misbehaving in this environment", buf[0], probe)
+	}
+	// Clear both deadlines so the real test body uses its own
+	// timeouts; subsequent SetDeadline calls in the test body
+	// supersede these.
+	_ = master.SetDeadline(time.Time{})
+	_ = slave.SetDeadline(time.Time{})
 }
 
 // findRepoRoot walks up from the test's CWD until it sees go.mod.

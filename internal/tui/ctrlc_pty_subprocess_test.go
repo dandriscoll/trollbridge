@@ -55,6 +55,11 @@ func TestSinglePressCtrlCExits(t *testing.T) {
 	}
 	defer slave.Close()
 
+	// Positive PTY round-trip check before exec/build work. Issue
+	// #69 covers sandboxes where ptmx opens but i/o times out — skip
+	// rather than fail late at master.Write.
+	ptySmokeOrSkip(t, master, slave)
+
 	repoRoot := findRepoRoot(t)
 	binPath := filepath.Join(t.TempDir(), "trollbridge")
 	build := exec.Command("go", "build", "-o", binPath, "./cmd/trollbridge")
