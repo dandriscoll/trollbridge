@@ -77,6 +77,20 @@ type Model struct {
 	// Digests is the rolling advisor-classify log shown by the LLM
 	// bottom panel. Filled by DigestTickResult events.
 	Digests []advisor.Digest
+
+	// Alerts carries the operator-attention state (chime on new
+	// pending; visual indicator is always-on in the renderer). The
+	// chime can be muted at runtime with `b` or pre-muted in config
+	// via `tui.alerts.chime: false`. Closes #72.
+	Alerts AlertsState
+}
+
+// AlertsState carries the chime toggle plus the last pending count
+// observed by the reducer (so the chime fires only on transitions
+// UP, not on every tick that has pending requests).
+type AlertsState struct {
+	ChimeEnabled    bool
+	LastPendingSeen int
 }
 
 // Event is the input to the reducer. Concrete types are below.
@@ -158,6 +172,12 @@ type CmdNone struct{}
 type CmdRefresh struct{}
 type CmdApprove struct{ ID string }
 type CmdDeny struct{ ID string }
+
+// CmdRingBell is emitted on the tick where the pending count
+// transitions up (e.g. 0→1 or 2→3) and the chime is enabled. The
+// runtime writes a single BEL byte to the TUI output stream;
+// terminal emulators then beep / flash per their own settings.
+type CmdRingBell struct{}
 type CmdQuit struct{}
 type CmdConsoleExec struct{ Line string }
 type CmdDigestRefresh struct{}
@@ -169,6 +189,7 @@ func (CmdDeny) cmd()          {}
 func (CmdQuit) cmd()          {}
 func (CmdConsoleExec) cmd()   {}
 func (CmdDigestRefresh) cmd() {}
+func (CmdRingBell) cmd()      {}
 
 // Apply is the pure reducer. It does no I/O. Callers replace their
 // Model with the returned one and run the returned Cmd.
@@ -218,7 +239,33 @@ func applyOpsTick(m Model, e OpsTickResult) (Model, Cmd) {
 	m.LastErr = ""
 	preserveSelectionByRequestID(&m)
 	clampSelection(&m)
+
+	// Pending-rose detection. PendingCount surveys the same
+	// displayed-ops list the renderer's label uses, so the chime is
+	// in lockstep with what the operator visually counts. Fire only
+	// on transitions UP — a drop to zero (operator cleared the queue)
+	// is silent. (#72)
+	curr := PendingCount(m)
+	prev := m.Alerts.LastPendingSeen
+	m.Alerts.LastPendingSeen = curr
+	if curr > prev && m.Alerts.ChimeEnabled {
+		return m, CmdRingBell{}
+	}
 	return m, CmdNone{}
+}
+
+// PendingCount returns the number of displayed ops currently in the
+// pending-approval state. Exposed for use by the renderer (so the
+// label, the chime detection, and any tests are computed from a
+// single source) and by tests asserting the alert contract.
+func PendingCount(m Model) int {
+	n := 0
+	for _, o := range DisplayedOps(m) {
+		if o.Status == opstream.StatusPending {
+			n++
+		}
+	}
+	return n
 }
 
 // preserveSelectionByRequestID keeps the operator's selection on the
@@ -309,6 +356,15 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		return m, CmdDigestRefresh{}
 	case '4':
 		m.BottomPanel = BottomPanelURLs
+		return m, CmdNone{}
+	}
+	if e.Rune == 'b' {
+		m.Alerts.ChimeEnabled = !m.Alerts.ChimeEnabled
+		if m.Alerts.ChimeEnabled {
+			m.LastInfo = "chime: on (press 'b' to mute)"
+		} else {
+			m.LastInfo = "chime: muted (press 'b' to unmute)"
+		}
 		return m, CmdNone{}
 	}
 	if e.Rune == 'a' || e.Rune == 'd' {

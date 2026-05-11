@@ -338,3 +338,50 @@ func TestLoad_FileNotFound_NamesInitCommand(t *testing.T) {
 		}
 	}
 }
+
+// TestTUIAlerts_ChimeDefaultsOn pins #72's default: operators get
+// the chime unless they explicitly mute via `tui.alerts.chime: false`.
+func TestTUIAlerts_ChimeDefaultsOn(t *testing.T) {
+	var a TUIAlerts // zero value — Chime is nil
+	if !a.ChimeEnabled() {
+		t.Error("zero TUIAlerts: ChimeEnabled = false, want true")
+	}
+}
+
+func TestTUIAlerts_ChimeExplicitFalseTurnsOff(t *testing.T) {
+	path := writeYaml(t, `proxy: lo:8080
+control: lo:8081
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+tui:
+  alerts:
+    chime: false
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TUI.Alerts.ChimeEnabled() {
+		t.Error("tui.alerts.chime=false: ChimeEnabled() = true, want false")
+	}
+}
+
+func TestTUIAlerts_ChimeExplicitTrueIsOn(t *testing.T) {
+	path := writeYaml(t, `proxy: lo:8080
+control: lo:8081
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+tui:
+  alerts:
+    chime: true
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TUI.Alerts.ChimeEnabled() {
+		t.Error("tui.alerts.chime=true: ChimeEnabled() = false, want true")
+	}
+}

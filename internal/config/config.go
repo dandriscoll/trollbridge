@@ -52,6 +52,36 @@ type Config struct {
 	Policy        Policy        `yaml:"policy"`
 	Upstream      Upstream      `yaml:"upstream"`
 	DecisionCache DecisionCache `yaml:"decisioncache"`
+	TUI           TUI           `yaml:"tui"`
+}
+
+// TUI carries operator-UI options that affect the local TUI shell.
+// They have no effect when trollbridge is run with --no-console or
+// when stdin/stdout is not a TTY.
+type TUI struct {
+	Alerts TUIAlerts `yaml:"alerts"`
+}
+
+// TUIAlerts controls the operator-attention signals the TUI emits
+// when new requests enter the pending state. The visual indicator
+// (color + glyph on the pending count) is always on; only the
+// audible chime is opt-out, because terminal bells can be annoying
+// in shared environments (closes #72).
+type TUIAlerts struct {
+	// Chime, when true (the default), causes the TUI to emit a
+	// single BEL character (`\x07`) on every tick where the pending
+	// count increases. The TUI also supports a runtime toggle: press
+	// `b` to flip the chime on or off without restarting.
+	Chime *bool `yaml:"chime"`
+}
+
+// ChimeEnabled returns the effective chime flag: true unless the
+// operator explicitly set `tui.alerts.chime: false` in config.
+func (a TUIAlerts) ChimeEnabled() bool {
+	if a.Chime == nil {
+		return true
+	}
+	return *a.Chime
 }
 
 // Bind is a per-surface listen address: host + port. Port 0 means

@@ -66,7 +66,7 @@ Keys:
 			// requestShutdown is nil: attach is a remote consumer-host
 			// client that does not own the proxy daemon, so quitting the
 			// TUI must not propagate a cancel anywhere.
-			if err := tui.RunOperator(cmd.Context(), tui.NewHTTPClient(cfg), os.Stdin, os.Stdout, backend, "", nil); err != nil {
+			if err := tui.RunOperator(cmd.Context(), tui.NewHTTPClient(cfg), os.Stdin, os.Stdout, backend, "", nil, tui.Options{ChimeEnabled: cfg.TUI.Alerts.ChimeEnabled()}); err != nil {
 				return &runtimeErr{err}
 			}
 			return nil

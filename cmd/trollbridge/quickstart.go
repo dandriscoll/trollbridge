@@ -289,7 +289,7 @@ func runProxyLoop(cmd *cobra.Command, configPath string, verbose bool) error {
 						"error", fmt.Sprintf("%v", r))
 				}
 			}()
-			if err := tui.RunOperator(ctx, tui.NewInProcessClientWithAdvisor(srv.Queue(), srv.Ops(), srv.Advisor()), os.Stdin, os.Stdout, backend, welcome, cancel); err != nil {
+			if err := tui.RunOperator(ctx, tui.NewInProcessClientWithAdvisor(srv.Queue(), srv.Ops(), srv.Advisor()), os.Stdin, os.Stdout, backend, welcome, cancel, tui.Options{ChimeEnabled: cfg.TUI.Alerts.ChimeEnabled()}); err != nil {
 				opLog.Warn("operator UI exited",
 					"event", oplog.EventOperatorUIError,
 					"error", err.Error())

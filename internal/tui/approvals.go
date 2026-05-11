@@ -173,11 +173,27 @@ func NewInProcessClientWithAdvisor(q *approvals.Queue, ops *opstream.Ring, adv *
 // a second press, after the TUI has restored cooked mode (closes #48).
 // `trollbridge attach` passes nil — its TUI is a remote client, not
 // the daemon.
-func RunOperator(ctx context.Context, client ControlClient, in, out *os.File, backend *console.Backend, welcome string, requestShutdown func()) (err error) {
-	return runWithClient(ctx, in, out, client, backend, welcome, requestShutdown)
+func RunOperator(ctx context.Context, client ControlClient, in, out *os.File, backend *console.Backend, welcome string, requestShutdown func(), opts Options) (err error) {
+	return runWithClient(ctx, in, out, client, backend, welcome, requestShutdown, opts)
 }
 
-func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, backend *console.Backend, welcome string, requestShutdown func()) (err error) {
+// Options bundles operator-UI preferences that span the TUI's
+// lifetime. Callers should compose with DefaultOptions() and adjust
+// only the fields they want to override.
+type Options struct {
+	// ChimeEnabled, when true, lets the TUI emit a single BEL on
+	// every tick where the pending count rises. The operator can
+	// toggle this at runtime by pressing `b`. False pre-mutes;
+	// `b` still unmutes (#72).
+	ChimeEnabled bool
+}
+
+// DefaultOptions returns the TUI's default Options: chime on.
+func DefaultOptions() Options {
+	return Options{ChimeEnabled: true}
+}
+
+func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, backend *console.Backend, welcome string, requestShutdown func(), opts Options) (err error) {
 	if !term.IsTerminal(int(in.Fd())) || !term.IsTerminal(int(out.Fd())) {
 		return errors.New("trollbridge ui: stdin/stdout is not a terminal")
 	}
@@ -213,7 +229,7 @@ func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, 
 		rows = 24
 	}
 
-	return runLoop(ctx, client, backend, in, out, out, cols, rows, welcome, requestShutdown)
+	return runLoop(ctx, client, backend, in, out, out, cols, rows, welcome, requestShutdown, opts)
 }
 
 // runLoop is the testable inner loop. resize may be nil in tests.
@@ -221,13 +237,14 @@ func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, 
 // operator-initiated quit (CmdQuit) — see RunOperator for rationale.
 // It is NOT invoked when the loop exits because ctx is already done
 // (the parent is already shutting down for another reason).
-func runLoop(ctx context.Context, client ControlClient, backend *console.Backend, in io.Reader, out io.Writer, resize *os.File, cols, rows int, welcome string, requestShutdown func()) error {
+func runLoop(ctx context.Context, client ControlClient, backend *console.Backend, in io.Reader, out io.Writer, resize *os.File, cols, rows int, welcome string, requestShutdown func(), opts Options) error {
 	model := Model{
 		Selected: -1,
 		Cols:     cols,
 		Rows:     rows,
 		Focused:  PaneApprovals,
 		Console:  ConsoleModel{Prompt: "trollbridge> "},
+		Alerts:   AlertsState{ChimeEnabled: opts.ChimeEnabled},
 	}
 	if welcome != "" {
 		for _, line := range splitLines(welcome) {
@@ -338,6 +355,15 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				case events <- ConsoleExecResult{Line: c.Line, Output: "console busy: a prior command is still running\n"}:
 				}
 			}
+		case CmdRingBell:
+			// Single BEL byte; terminal emulators map this to beep,
+			// flash, or a desktop notification per the operator's
+			// own preferences. Errors are swallowed — we're writing
+			// to the same `out` that the renderer already uses, so
+			// any failure here is a downstream render-side problem
+			// the next render will surface.
+			_, _ = out.Write([]byte{0x07})
+			_ = c
 		}
 	}
 }
@@ -560,7 +586,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			pending++
 		}
 	}
-	label := formatPaneLabel(fmt.Sprintf("trollbridge operations — %d total · %d pending", len(displayed), pending), focused)
+	label := formatPaneLabel(formatOpsPaneLabelText(len(displayed), pending), focused)
 	rightHint := ""
 	if focused {
 		rightHint = formatTabHint(m.Focused)
@@ -693,6 +719,21 @@ func colorizeURLForRow(cell, url string) string {
 	return cell
 }
 
+// formatOpsPaneLabelText builds the "trollbridge operations — …"
+// label shown at the top of the approvals pane. When `pending > 0`,
+// the pending segment gains a bell glyph and a bold+red ANSI wrap
+// so the indicator is visible from across the room (closes #72).
+// formatPaneLabel further wraps the result with the pane's focus
+// styling.
+func formatOpsPaneLabelText(total, pending int) string {
+	if pending == 0 {
+		return fmt.Sprintf("trollbridge operations — %d total · %d pending", total, pending)
+	}
+	// \x1b[1;31m = bold red. The bell-glyph prefix doubles as a
+	// no-color affordance for terminals that strip ANSI.
+	return fmt.Sprintf("trollbridge operations — %d total · \x1b[1;31m␇ %d pending\x1b[22;39m", total, pending)
+}
+
 // colorizeStatus wraps the status in a class color per #57's
 // vocabulary: green for running/2xx, yellow for checking/pending/
 // signaled, red for denied/error/4xx/5xx, cyan for 3xx. Unknown
@@ -773,7 +814,7 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			pending++
 		}
 	}
-	header := fmt.Sprintf("trollbridge operations — %d total · %d pending", len(displayed), pending)
+	header := formatOpsPaneLabelText(len(displayed), pending)
 	if m.Focused == PaneApprovals {
 		b.WriteString(boldLine("▶ "+header, m.Cols))
 	} else {
