@@ -108,6 +108,10 @@ type Service struct {
 	// provider returns ErrAdvisorWire / ErrAdvisorSchema (issue #25).
 	// nil-safe; tests pass nil.
 	opLog Logger
+	// digests captures every Classify call's outcome for the TUI's
+	// LLM-browse surface (closes #65). Bounded ring; the audit log
+	// is the durable record.
+	digests *DigestRing
 }
 
 // Logger is a tiny subset of *slog.Logger used by the advisor for
@@ -142,7 +146,38 @@ func New(cfg Config, prov Provider) *Service {
 	if cfg.KnownModifiers == nil {
 		cfg.KnownModifiers = map[string]bool{}
 	}
-	return &Service{cfg: cfg, prov: prov, cache: newCache(cfg.CacheTTL)}
+	return &Service{
+		cfg:     cfg,
+		prov:    prov,
+		cache:   newCache(cfg.CacheTTL),
+		digests: NewDigestRing(DigestDefaultCap),
+	}
+}
+
+// Digests returns the in-memory ring of recent Classify outcomes.
+// Used by the operator UI to browse LLM evaluations (closes #65).
+func (s *Service) Digests() *DigestRing { return s.digests }
+
+// recordDigest appends one entry to the digest ring. Safe to call
+// with a nil receiver (mock services in tests).
+func (s *Service) recordDigest(req *types.RequestEvent, outcome, effect, confidence, advisorID, reason string) {
+	if s == nil || s.digests == nil || req == nil {
+		return
+	}
+	s.digests.Add(Digest{
+		Timestamp:  time.Now().UTC(),
+		RequestID:  req.ID,
+		Method:     req.Method,
+		Scheme:     req.Scheme,
+		Host:       req.Host,
+		Port:       req.Port,
+		Path:       req.Path,
+		Effect:     effect,
+		Confidence: confidence,
+		AdvisorID:  advisorID,
+		Reason:     reason,
+		Outcome:    outcome,
+	})
 }
 
 // ErrDisabled means the advisor is not configured.
@@ -172,7 +207,9 @@ type ListContext struct {
 // would let it.
 func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSetVersion string, recent []RecentDecision, headersRedacted map[string]string, lists *ListContext) (types.Decision, string) {
 	if !s.cfg.Enabled || s.prov == nil {
-		return s.unavailableDecision("advisor disabled"), ""
+		d := s.unavailableDecision("advisor disabled")
+		s.recordDigest(req, DigestOutcomeUnavailable, string(d.Effect), "", "", d.Reason)
+		return d, ""
 	}
 	cacheKey := buildCacheKey(ruleSetVersion, req)
 	if cached, ok := s.cache.get(cacheKey); ok {
@@ -212,15 +249,19 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 	out, err := s.prov.Classify(cctx, in)
 	if err != nil {
 		s.logFailure(err, req)
-		return s.unavailableDecision("advisor unavailable: " + err.Error()), ""
+		d := s.unavailableDecision("advisor unavailable: " + err.Error())
+		s.recordDigest(req, DigestOutcomeUnavailable, string(d.Effect), "", "", d.Reason)
+		return d, ""
 	}
 
-	d, advisorID, err := s.validate(out, in)
-	if err != nil {
+	d, advisorID, verr := s.validate(out, in)
+	if verr != nil {
+		reason := "advisor validation failed: " + verr.Error()
+		s.recordDigest(req, DigestOutcomeValidationFailed, string(types.EffectAskUser), "", "", reason)
 		return types.Decision{
 			Effect: types.EffectAskUser,
 			Source: types.SourceLLMAdvisor,
-			Reason: "advisor validation failed: " + err.Error(),
+			Reason: reason,
 		}, ""
 	}
 	if s.opLog != nil {
@@ -231,8 +272,10 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 			"effect", string(d.Effect),
 			"confidence", string(out.Confidence),
 			"scope", out.Scope,
-			"advisor_id", advisorID)
+			"advisor_id", advisorID,
+			"reason", out.Reason)
 	}
+	s.recordDigest(req, DigestOutcomeClassified, string(d.Effect), string(out.Confidence), advisorID, out.Reason)
 	s.cache.put(cacheKey, cacheValue{decision: d, advisorID: advisorID})
 	return d, advisorID
 }
