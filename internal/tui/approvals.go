@@ -537,28 +537,27 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString(bodyLine(padRight(runeTrunc("  (no recent operations — waiting for traffic)", inner), inner), m.Cols, focused))
 		used++
 	} else {
-		const methodW, statusW = 7, 11
-		urlW := inner - methodW - statusW - 4 // 1 leading space + 2 column gaps + 1 trailing
+		const methodW, statusW, timeW = 7, 11, 14
+		urlW := inner - methodW - statusW - timeW - 5 // 1 leading space + 3 column gaps + 1 trailing
 		if urlW < 8 {
 			urlW = 8
 		}
-		colHeader := fmt.Sprintf(" %-*s %-*s %s",
-			methodW, "METHOD", urlW, "URL", "STATUS")
+		colHeader := fmt.Sprintf(" %-*s %-*s %-*s %s",
+			methodW, "METHOD", urlW, "URL", statusW, "STATUS", "TIME")
 		b.WriteString(bodyLine(padRight(runeTrunc(colHeader, inner), inner), m.Cols, focused))
 		used++
+		now := time.Now()
 		for i, o := range displayed {
 			if used >= bodyLines {
 				break
 			}
 			urlCell := runeTrunc(o.URL, urlW)
-			// Pad first (display columns), color second (escapes carry
-			// no width). +16 lets the brown wrapper escape bytes pass
-			// through the surrounding format without disturbing layout.
 			urlCellPadded := padRight(urlCell, urlW)
-			row := fmt.Sprintf(" %-*s %s %s",
+			row := fmt.Sprintf(" %-*s %s %-*s %s",
 				methodW, runeTrunc(o.Method, methodW),
 				colorizeURLForRow(urlCellPadded, o.URL),
-				runeTrunc(colorizeStatus(o.Status), statusW+8),
+				statusW+8, runeTrunc(colorizeStatus(o.Status), statusW+8),
+				formatOpTime(o.UpdatedAt, now),
 			)
 			row = padRightVisible(row, inner)
 			if i == m.Selected {
@@ -587,6 +586,18 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	// Bottom border carries the keybindings on the right.
 	keys := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [q] quit"
 	b.WriteString(bottomBorder("", keys, m.Cols, focused))
+}
+
+// formatOpTime renders an op's UpdatedAt in the compact form #67
+// describes: HH:MM:SS for today (operator's local TZ); MM-DD HH:MM:SS
+// for older. Year is always omitted.
+func formatOpTime(t, now time.Time) string {
+	local := t.Local()
+	nowLocal := now.Local()
+	if local.Year() == nowLocal.Year() && local.YearDay() == nowLocal.YearDay() {
+		return local.Format("15:04:05")
+	}
+	return local.Format("01-02 15:04:05")
 }
 
 // colorizeURLForRow wraps cell in a brown 256-color escape when url
@@ -697,26 +708,28 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 		b.WriteString("\r\n")
 		used++
 	} else {
-		const methodW, statusW = 7, 11
-		urlW := m.Cols - methodW - statusW - 4
+		const methodW, statusW, timeW = 7, 11, 14
+		urlW := m.Cols - methodW - statusW - timeW - 5
 		if urlW < 8 {
 			urlW = 8
 		}
-		colHeader := fmt.Sprintf(" %-*s %-*s %s",
-			methodW, "METHOD", urlW, "URL", "STATUS")
+		colHeader := fmt.Sprintf(" %-*s %-*s %-*s %s",
+			methodW, "METHOD", urlW, "URL", statusW, "STATUS", "TIME")
 		b.WriteString(padRight(colHeader, m.Cols))
 		b.WriteString("\r\n")
 		used++
+		now := time.Now()
 		for i, o := range displayed {
 			if used >= bodyLines {
 				break
 			}
 			urlCell := runeTrunc(o.URL, urlW)
 			urlCellPadded := padRight(urlCell, urlW)
-			row := fmt.Sprintf(" %-*s %s %s",
+			row := fmt.Sprintf(" %-*s %s %-*s %s",
 				methodW, runeTrunc(o.Method, methodW),
 				colorizeURLForRow(urlCellPadded, o.URL),
-				colorizeStatus(o.Status),
+				statusW, colorizeStatus(o.Status),
+				formatOpTime(o.UpdatedAt, now),
 			)
 			if i == m.Selected {
 				b.WriteString("\x1b[7m")
