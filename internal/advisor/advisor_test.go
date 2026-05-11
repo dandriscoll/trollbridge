@@ -7,12 +7,36 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/types"
 )
+
+// TestOutput_NoListMutationField pins alignment principle §1
+// (docs/alignment-principles.md): the LLM advisor's response shape
+// must not include any field that names or implies a list mutation.
+// Catches a regression that adds e.g. `suggested_rule` or
+// `add_to_allow` back to the response shape.
+func TestOutput_NoListMutationField(t *testing.T) {
+	forbidden := map[string]bool{
+		"suggested_rule": true,
+		"add_to_allow":   true,
+		"add_to_deny":    true,
+		"remove_from_allow": true,
+		"remove_from_deny":  true,
+	}
+	tp := reflect.TypeOf(Output{})
+	for i := 0; i < tp.NumField(); i++ {
+		f := tp.Field(i)
+		jsonTag := strings.SplitN(f.Tag.Get("json"), ",", 2)[0]
+		if forbidden[jsonTag] {
+			t.Errorf("Output struct exposes list-mutation field %q (alignment principle §1) — the LLM must have no way to suggest list changes", jsonTag)
+		}
+	}
+}
 
 func newReq() *types.RequestEvent {
 	return &types.RequestEvent{
@@ -129,8 +153,8 @@ func newCaptureServer(t *testing.T, replyStatus int, replyBody []byte) *captureS
 
 func TestHTTPClassifier_AnthropicSendsXAPIKeyAndVersion(t *testing.T) {
 	// Reply with a synthetic Anthropic Messages response carrying a
-	// tool_use block with the trollbridge_decision arguments.
-	reply := []byte(`{"type":"message","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"trollbridge_decision","input":{"effect":"allow","confidence":"high","reason":"ok"}}]}`)
+	// tool_use block with the classify_request arguments.
+	reply := []byte(`{"type":"message","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"classify_request","input":{"effect":"allow","confidence":"high","reason":"ok"}}]}`)
 	srv := newCaptureServer(t, 200, reply)
 	defer srv.Close()
 
@@ -160,13 +184,13 @@ func TestHTTPClassifier_AnthropicSendsXAPIKeyAndVersion(t *testing.T) {
 	if !strings.Contains(string(srv.lastBody), `"model":"claude-3-5-sonnet-latest"`) {
 		t.Errorf("request body missing model: %s", string(srv.lastBody))
 	}
-	if !strings.Contains(string(srv.lastBody), `"name":"trollbridge_decision"`) {
+	if !strings.Contains(string(srv.lastBody), `"name":"classify_request"`) {
 		t.Errorf("request body missing tool definition: %s", string(srv.lastBody))
 	}
 }
 
 func TestHTTPClassifier_AOAISendsApiKeyHeader(t *testing.T) {
-	reply := []byte(`{"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"trollbridge_decision","arguments":"{\"effect\":\"deny\",\"confidence\":\"high\",\"reason\":\"blocked\"}"}}]}}]}`)
+	reply := []byte(`{"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"classify_request","arguments":"{\"effect\":\"deny\",\"confidence\":\"high\",\"reason\":\"blocked\"}"}}]}}]}`)
 	srv := newCaptureServer(t, 200, reply)
 	defer srv.Close()
 
@@ -204,7 +228,7 @@ func TestHTTPClassifier_AOAISendsApiKeyHeader(t *testing.T) {
 		t.Errorf("system message missing trollbridge mode baseline; got %q", sys)
 	}
 	if seen.ToolChoice == nil || seen.ToolChoice.Function.Name != toolName {
-		t.Errorf("tool_choice did not force trollbridge_decision: %+v", seen.ToolChoice)
+		t.Errorf("tool_choice did not force classify_request: %+v", seen.ToolChoice)
 	}
 }
 

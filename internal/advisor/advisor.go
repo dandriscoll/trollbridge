@@ -63,14 +63,16 @@ type RecentDecision struct {
 }
 
 // Output is the structured response shape the advisor MUST return.
+// Per docs/alignment-principles.md §1, this shape does NOT include
+// any list-mutation field — the LLM has no opportunity to suggest
+// changes to the operator's allow/deny lists. Mutation is human-only.
 type Output struct {
-	Effect          string   `json:"effect"`
-	Scope           string   `json:"scope"`
-	Reason          string   `json:"reason"`
-	Modifiers       []string `json:"modifiers"`
-	SuggestedRule   any      `json:"suggested_rule"`
-	Confidence      string   `json:"confidence"`
-	AdvisorID       string   `json:"advisor_id,omitempty"`
+	Effect     string   `json:"effect"`
+	Scope      string   `json:"scope"`
+	Reason     string   `json:"reason"`
+	Modifiers  []string `json:"modifiers"`
+	Confidence string   `json:"confidence"`
+	AdvisorID  string   `json:"advisor_id,omitempty"`
 }
 
 // Provider is the abstract LLM advisor interface. Mock and

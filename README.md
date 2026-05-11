@@ -290,7 +290,8 @@ Mutations rewrite trollbridge.yaml in place; comments outside
 the `lists:` subtree survive. The running daemon re-parses the
 file after each mutation. List mutation is human-only — the
 LLM advisor cannot modify `lists.allow` / `lists.deny`
-under any circumstance.
+under any circumstance. See `docs/alignment-principles.md` for
+the four principles governing the LLM advisor's role.
 
 See `docs/deploy.md` for deployment recipes and `DESIGN.md` for
 the full specification.

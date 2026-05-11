@@ -7,7 +7,7 @@ import (
 
 // anthropicTranslator speaks the Anthropic Messages API
 // (https://docs.anthropic.com/en/api/messages). It forces a single
-// tool call to the trollbridge_decision tool so the model's reply
+// tool call to the classify_request tool so the model's reply
 // always carries a structured advisor decision.
 //
 // Auth: x-api-key (NOT Authorization: Bearer). anthropic-version
@@ -45,7 +45,7 @@ func (anthropicTranslator) Name() string { return "anthropic" }
 type anthropicTool struct {
 	// Type is set for built-in server-side tools (web_search). Empty
 	// for caller-defined tools that carry Name/Description/InputSchema
-	// (the trollbridge_decision tool).
+	// (the classify_request tool).
 	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`

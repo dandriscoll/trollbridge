@@ -10,7 +10,7 @@ import (
 // The deployment is part of the URL path (operator-supplied via
 // llm.endpoint); the body's `model` field is informational and
 // echoed back by the service. We force a single function tool_call
-// to the trollbridge_decision function so the model's reply always
+// to the classify_request function so the model's reply always
 // carries a structured advisor decision.
 //
 // Auth: api-key (NOT Authorization: Bearer). The header name is

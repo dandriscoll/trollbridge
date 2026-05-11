@@ -257,8 +257,11 @@ func TestAdvisor_ReceivesListsAsInput(t *testing.T) {
 }
 
 // TestAdvisor_CannotMutateLists pins the human-only mutation
-// property: even when the advisor's response carries a
-// `suggested_rule`, neither allow.txt nor deny.txt is modified.
+// property (docs/alignment-principles.md §1): even when the advisor
+// returns a high-confidence allow for a host that is NOT on the
+// allow list, neither allow.txt nor deny.txt is mutated as a side
+// effect of the decision. The decision allows this one request; the
+// list stays as the operator wrote it.
 func TestAdvisor_CannotMutateLists(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "ok")
@@ -272,13 +275,13 @@ func TestAdvisor_CannotMutateLists(t *testing.T) {
   effect: ask_llm
 `, originHost)
 
-	// Advisor proposes a suggested_rule. trollbridge must NOT
-	// auto-apply it.
+	// Advisor returns a high-confidence allow. The host is NOT in
+	// the allow list (it's not in allowSeed below) — yet the
+	// proxy must not extrapolate that into a list edit.
 	prov := &advisor.MockProvider{Output: advisor.Output{
-		Effect:        "allow",
-		Confidence:    "high",
-		Reason:        "would-suggest-adding-host",
-		SuggestedRule: map[string]any{"add_to_allow": originHost},
+		Effect:     "allow",
+		Confidence: "high",
+		Reason:     "advisor decided this one request is benign",
 	}}
 
 	allowSeed := "# initial header\npre.example\n"

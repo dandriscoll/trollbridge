@@ -42,7 +42,7 @@ type Translator interface {
 var ErrAdvisorWire = errors.New("advisor wire error")
 
 // ErrAdvisorSchema wraps a 2xx upstream response whose body did
-// not carry a parseable trollbridge advisor decision (e.g. the LLM
+// not carry a parseable classifier decision (e.g. the LLM
 // returned text instead of invoking the structured-output tool, or
 // the tool arguments did not match the expected schema).
 var ErrAdvisorSchema = errors.New("advisor schema error")
@@ -69,12 +69,17 @@ func TranslatorFor(provider, endpoint string) (Translator, bool) {
 
 // toolName is the structured-output function/tool name both
 // translators use. Both providers force the model to invoke this
-// tool; trollbridge then decodes its arguments as the advisor
+// tool; the response handler decodes its arguments as the advisor
 // Output.
-const toolName = "trollbridge_decision"
+//
+// Per docs/alignment-principles.md §4, this name does not identify
+// the host application — it names the action ("classify_request")
+// generically.
+const toolName = "classify_request"
 
-// toolDescription is shown to the model.
-const toolDescription = "Return the trollbridge advisor decision for the supplied HTTP request. Always invoke this tool exactly once."
+// toolDescription is shown to the model. Per alignment principle §4
+// it does not name the host application.
+const toolDescription = "Classify the supplied HTTP request against the operator's policy lists and directives. Always invoke this tool exactly once."
 
 // decisionSchema is the JSON Schema for the tool's input. Both
 // providers accept this shape (Anthropic input_schema, AOAI
@@ -118,9 +123,12 @@ func decisionSchema() map[string]any {
 // userPrompt builds the human-readable wrapper around the advisor
 // Input JSON. Both translators send the same content-shape; the
 // directives ride in the system prompt.
+//
+// Per docs/alignment-principles.md §4, this prompt is generic and
+// does not name the host application or describe its role.
 func userPrompt(serializedInput []byte) string {
 	var b strings.Builder
-	b.WriteString("Classify the following HTTP request per your security-advisor role. Invoke the ")
+	b.WriteString("Classify the following HTTP request. Invoke the ")
 	b.WriteString(toolName)
 	b.WriteString(" tool exactly once.\n\n```json\n")
 	b.Write(serializedInput)

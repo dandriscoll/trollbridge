@@ -921,21 +921,23 @@ defined in code by a JSON Schema):
   "scope": "once",
   "reason": "GitHub API listing repo issues; consistent with prior behavior.",
   "modifiers": ["redact_authorization_header"],
-  "suggested_rule": null,
   "confidence": "high"
 }
 ```
 
 - `effect` is one of `{allow, deny, ask_user, narrow_scope,
   redact_and_retry, prefer_structured_tool}`.
-- `scope` is one of `{once, session, suggest_rule}`. `suggest_rule`
-  MUST NOT auto-create a rule; it surfaces a suggestion to the
-  operator via the CLI.
+- `scope` is one of `{once, session}`. Scoping further than the single
+  request is advisory; the engine does not promote a scope into a
+  durable rule.
 - `modifiers` is a list of named transformations the engine knows.
-- `suggested_rule` is null in Phase 4; in later phases it MAY contain
-  a draft rule that the operator can accept.
 - `confidence` is `{low, medium, high}`. Used by the engine to decide
   whether to apply or fall back to `ask_user`.
+
+The response shape carries no field that names or implies a list
+mutation. Per `docs/alignment-principles.md` §1, the LLM is never
+involved in editing the operator's allow/deny lists, even as a
+"suggestion." Mutation is human-only.
 
 ### 9.5 Validation
 
@@ -1162,11 +1164,12 @@ The flat lists are mutated only by:
    which atomically rewrites the YAML file in place.
 
 The LLM advisor MUST NOT modify either list. The advisor's
-output schema (§9.4) MAY include a `suggested_rule` field
-surfaced to the operator, but no code path in trollbridge
-writes the lists in response to advisor output. This is a
-load-bearing safety property: a malicious or jailbroken advisor
-cannot expand its own permitted destinations.
+output schema (§9.4) carries no list-mutation field — there is
+no "suggested_rule" or equivalent in the wire shape. This is a
+load-bearing safety property (see `docs/alignment-principles.md`
+§1): a malicious or jailbroken advisor cannot expand its own
+permitted destinations, even by routing a suggestion through the
+operator.
 
 #### 10.8.2 Mutation propagation
 
@@ -2228,12 +2231,17 @@ justifies the complexity.
 ### 20.8 Should the proxy auto-suggest rules?
 
 **Tradeoff.** "After a request is approved, suggest a rule" sounds
-ergonomic. It also lets the LLM (indirectly) write its own rules.
+ergonomic. It also lets the LLM (indirectly) write its own rules
+even when the surfacing is "advisory": the suggestion is in the
+operator's eyeline, the operator clicks accept, the LLM has just
+moved a host into the allow list.
 
-**Recommendation.** The advisor MAY produce a `suggested_rule` in
-its output; trollbridge surfaces it via `trollbridge decisions
---suggestions`, but it MUST NOT auto-create the rule. Rule
-authorship stays operator-only.
+**Recommendation.** The advisor produces no rule-suggestion
+output. Per `docs/alignment-principles.md` §1, list authorship is
+human-only — directly editing `trollbridge.yaml`, via TUI/CLI
+commands, or via the approval-persist flow when the operator
+approves a held request. The LLM has no field in its response
+shape that names or implies a list mutation.
 
 ### 20.9 Should the proxy have a web UI?
 
