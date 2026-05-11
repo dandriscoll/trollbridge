@@ -79,11 +79,70 @@ func mutate(path, which string, transform func([]string) []string) (bool, error)
 	}
 	replaceSeqContent(seqNode, updated)
 
+	blanks := captureBlankLines(data)
+
 	out, err := encodeNode(&root)
 	if err != nil {
 		return false, fmt.Errorf("encode: %w", err)
 	}
+	out = reinsertBlankLines(out, blanks)
 	return true, atomicWrite(path, out, 0o600)
+}
+
+// blankAnchor records that `blankBefore` empty lines preceded the
+// line `line` in the original source. Used to re-insert blank lines
+// after yaml.v3 round-trips them out.
+type blankAnchor struct {
+	line        string
+	blankBefore int
+}
+
+// captureBlankLines scans src and records the run of blank lines
+// preceding each non-blank line, in document order. Trailing blank
+// lines (after the last non-blank line) are dropped — yaml.v3
+// already emits a single trailing newline.
+func captureBlankLines(src []byte) []blankAnchor {
+	lines := strings.Split(string(src), "\n")
+	var anchors []blankAnchor
+	blankRun := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			blankRun++
+			continue
+		}
+		if blankRun > 0 {
+			anchors = append(anchors, blankAnchor{
+				line:        strings.TrimRight(line, " \t"),
+				blankBefore: blankRun,
+			})
+		}
+		blankRun = 0
+	}
+	return anchors
+}
+
+// reinsertBlankLines walks encoded line-by-line and, when a line
+// matches the next anchor in order, emits that anchor's blank-line
+// run first. Anchors that never match (encoder reformatted the line)
+// are skipped — degrades to "no blank inserted there," matching
+// previous behavior.
+func reinsertBlankLines(encoded []byte, anchors []blankAnchor) []byte {
+	if len(anchors) == 0 {
+		return encoded
+	}
+	lines := strings.Split(string(encoded), "\n")
+	out := make([]string, 0, len(lines)+len(anchors))
+	ai := 0
+	for _, line := range lines {
+		if ai < len(anchors) && strings.TrimRight(line, " \t") == anchors[ai].line {
+			for n := 0; n < anchors[ai].blankBefore; n++ {
+				out = append(out, "")
+			}
+			ai++
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
 }
 
 // findOrCreateMappingChild looks up `key` under a mapping node,

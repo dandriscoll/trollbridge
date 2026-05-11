@@ -122,6 +122,46 @@ func TestPreservesHeadCommentsOutsideListsSubtree(t *testing.T) {
 	}
 }
 
+func TestPreservesBlankLines(t *testing.T) {
+	path := writeFixture(t)
+	if _, err := AddAllow(path, "z.example"); err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, path)
+
+	// Each blank line in the fixture is followed by a known anchor.
+	// Verify a blank line precedes each anchor in the output.
+	anchors := []string{
+		"# Per-surface bind",
+		"# Lists are inline",
+		"# LLM section keeps",
+	}
+	lines := strings.Split(got, "\n")
+	for _, anchor := range anchors {
+		found := false
+		for i, l := range lines {
+			if strings.Contains(l, anchor) {
+				if i == 0 || strings.TrimSpace(lines[i-1]) != "" {
+					t.Errorf("no blank line before %q in output:\n%s", anchor, got)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("anchor %q not present in output:\n%s", anchor, got)
+		}
+	}
+
+	// Sweep: blank-line count must be >= fixture's blank-line count.
+	wantBlanks := strings.Count(fixture, "\n\n")
+	gotBlanks := strings.Count(got, "\n\n")
+	if gotBlanks < wantBlanks {
+		t.Errorf("blank-line count regressed: got %d, want >= %d\noutput:\n%s",
+			gotBlanks, wantBlanks, got)
+	}
+}
+
 func TestAtomicWrite_DoesNotLeaveTempFile(t *testing.T) {
 	path := writeFixture(t)
 	if _, err := AddAllow(path, "z.example"); err != nil {
