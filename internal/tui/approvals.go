@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/approvals"
@@ -437,29 +435,20 @@ func tickRefresh(ctx context.Context, client ControlClient, events chan<- Event)
 	}
 }
 
-// watchResize emits a ResizeEvent on every SIGWINCH.
-func watchResize(ctx context.Context, out *os.File, events chan<- Event) {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGWINCH)
-	defer signal.Stop(ch)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ch:
-			cols, rows, _ := term.GetSize(int(out.Fd()))
-			if cols == 0 {
-				cols = 80
-			}
-			if rows == 0 {
-				rows = 24
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case events <- ResizeEvent{Cols: cols, Rows: rows}:
-			}
-		}
+// emitResize reads the current terminal size from out and pushes a
+// ResizeEvent into events. Shared between the SIGWINCH-driven unix
+// watcher and any other callers that need a one-shot resize push.
+func emitResize(ctx context.Context, out *os.File, events chan<- Event) {
+	cols, rows, _ := term.GetSize(int(out.Fd()))
+	if cols == 0 {
+		cols = 80
+	}
+	if rows == 0 {
+		rows = 24
+	}
+	select {
+	case <-ctx.Done():
+	case events <- ResizeEvent{Cols: cols, Rows: rows}:
 	}
 }
 
