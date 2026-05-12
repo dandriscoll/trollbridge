@@ -135,6 +135,14 @@ type Model struct {
 	// (closes #86).
 	URLsPendingReturn bool
 
+	// OpsPausedTicks > 0 freezes TickResult / OpsTickResult ingestion
+	// for N more ticks. Set by navigation keystrokes (j/k/Up/Down) in
+	// approvals focus; decremented on each tick that arrives while
+	// > 0; cleared on Tab/Shift-Tab or digit panel-switch so the
+	// operator can read the info pane without the list churning
+	// under them (closes #89).
+	OpsPausedTicks int
+
 	// GeneralizeOffer, when non-nil, surfaces the post-approve
 	// "make this more general?" prompt: a specific allow entry
 	// was just written for the named method+URL, and the operator
@@ -286,6 +294,12 @@ type CmdQuit struct{}
 type CmdConsoleExec struct{ Line string }
 type CmdDigestRefresh struct{}
 
+// opsPauseTicks is how many tick refreshes a navigation keystroke
+// suspends list ingestion for. At the ~1.5s tick cadence, 2 ticks ≈
+// 3 seconds — long enough for the operator to read the info pane
+// for the row they just landed on (#89).
+const opsPauseTicks = 2
+
 // CmdURLsRefresh asks the runtime to re-read the allow/deny lists
 // from trollbridge.yaml and emit a URLsTickResult. Emitted on '4'
 // open and after any console exec while the URLs pane is open
@@ -353,9 +367,14 @@ func applyTick(m Model, e TickResult) (Model, Cmd) {
 		m.LastErr = "control API: " + truncate(e.Err.Error(), 200)
 		return m, CmdNone{}
 	}
+	if m.OpsPausedTicks > 0 {
+		m.OpsPausedTicks--
+		return m, CmdNone{}
+	}
+	prevKey := selectedRequestKey(m)
 	m.Holds = e.Holds
 	m.LastErr = ""
-	preserveSelectionByRequestID(&m)
+	preserveSelectionByRequestID(&m, prevKey)
 	clampSelection(&m)
 	return m, CmdNone{}
 }
@@ -365,9 +384,14 @@ func applyOpsTick(m Model, e OpsTickResult) (Model, Cmd) {
 		m.LastErr = "control API (ops): " + truncate(e.Err.Error(), 200)
 		return m, CmdNone{}
 	}
+	if m.OpsPausedTicks > 0 {
+		m.OpsPausedTicks--
+		return m, CmdNone{}
+	}
+	prevKey := selectedRequestKey(m)
 	m.Ops = e.Ops
 	m.LastErr = ""
-	preserveSelectionByRequestID(&m)
+	preserveSelectionByRequestID(&m, prevKey)
 	clampSelection(&m)
 
 	// Pending-rose detection. PendingCount surveys the same
@@ -398,20 +422,31 @@ func PendingCount(m Model) int {
 	return n
 }
 
-// preserveSelectionByRequestID keeps the operator's selection on the
-// same logical operation across refresh ticks (closes #39 and the
-// per-tick rebinding of #52). When the displayed list rebuilds, the
-// previously-selected row's request_id (or hold_id, for holds-only
-// rows) is re-located in the new list.
-func preserveSelectionByRequestID(m *Model) {
-	displayed := DisplayedOps(*m)
-	prevKey := ""
-	if m.Selected >= 0 && m.Selected < len(displayed) {
-		prevKey = displayed[m.Selected].RequestID
-		if prevKey == "" {
-			prevKey = "hold:" + displayed[m.Selected].HoldID
-		}
+// selectedRequestKey returns the stable identifier (request_id or
+// `hold:<holdID>`) of the operator's currently-selected row, or ""
+// if no row is selected. Captured BEFORE m.Ops / m.Holds is replaced
+// by a tick so the post-tick preserve-selection step can re-locate
+// the same logical row in the new list (closes #89 part 2).
+func selectedRequestKey(m Model) string {
+	displayed := DisplayedOps(m)
+	if m.Selected < 0 || m.Selected >= len(displayed) {
+		return ""
 	}
+	key := displayed[m.Selected].RequestID
+	if key == "" {
+		key = "hold:" + displayed[m.Selected].HoldID
+	}
+	return key
+}
+
+// preserveSelectionByRequestID keeps the operator's selection on the
+// same logical operation across refresh ticks (closes #39, #52, and
+// #89). The caller passes prevKey — the key captured BEFORE the new
+// m.Ops/m.Holds was written. If prevKey is empty there is no
+// previously-selected row to track. If the new list does not contain
+// the prevKey, Selected resets to -1; clampSelection moves it onto
+// the head of the list afterwards.
+func preserveSelectionByRequestID(m *Model, prevKey string) {
 	if prevKey == "" {
 		return
 	}
@@ -502,6 +537,9 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 		} else {
 			m.Focused = PaneApprovals
 		}
+		// Operator changing focus is the explicit "release the pause"
+		// signal (#89): they're done navigating; resume tick ingestion.
+		m.OpsPausedTicks = 0
 		return m, CmdNone{}
 	}
 	// Pane-specific dispatch.
@@ -882,12 +920,17 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		if m.Selected > 0 {
 			m.Selected--
 		}
+		// Pause the auto-refresh while the operator is navigating
+		// (#89): the list (and the info pane that mirrors the
+		// selected op) must not churn under them while they read.
+		m.OpsPausedTicks = opsPauseTicks
 		return m, CmdNone{}
 	}
 	if e.Key == KeyDown || e.Rune == 'j' {
 		if m.Selected < len(displayed)-1 {
 			m.Selected++
 		}
+		m.OpsPausedTicks = opsPauseTicks
 		return m, CmdNone{}
 	}
 	if e.Rune == 'r' {
@@ -904,8 +947,11 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	// Any explicit panel choice cancels a URLs-pending-return: if
 	// the operator opened a/e mode and then manually picked another
 	// panel, the next exec must not yank them back to URLs (#86).
+	// It also releases the nav-pause (#89): explicit panel choice
+	// means the operator is done reading the approvals list.
 	if e.Rune >= '0' && e.Rune <= '4' {
 		m.URLsPendingReturn = false
+		m.OpsPausedTicks = 0
 	}
 	switch e.Rune {
 	case '0':
