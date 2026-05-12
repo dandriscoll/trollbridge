@@ -520,6 +520,9 @@ func TestInit_NextSteps_RemoteTopology_NamesCertDistribution(t *testing.T) {
 // host via `sudo -u trollbridge`. Yaml records the canonical
 // /etc/trollbridge/llm.key path.
 func TestInit_DaemonMode_LLM_DoesNotWriteKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("daemon-mode transcript is sudo/unix-shaped (see printDaemonNextSteps); Windows daemon flow is not yet implemented")
+	}
 	dir := t.TempDir()
 
 	prev := isTerminal
@@ -654,6 +657,9 @@ func TestInit_UserMode_LLM_WritesKeyInline(t *testing.T) {
 }
 
 func TestInit_InteractiveAOAIWritesEndpointInYaml(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("daemon-mode transcript is sudo/unix-shaped; Windows daemon flow is not yet implemented")
+	}
 	dir := t.TempDir()
 	endpoint := "https://contoso.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-02-15-preview"
 

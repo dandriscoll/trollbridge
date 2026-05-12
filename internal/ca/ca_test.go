@@ -68,6 +68,9 @@ func TestInit_ForceArchives(t *testing.T) {
 }
 
 func TestLoad_RefusesPermissiveKey(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits are not enforceable on Windows; see keymode_windows.go")
+	}
 	_, cp, kp := tmpCA(t, KeyTypeECDSAP256)
 	if err := os.Chmod(kp, 0o644); err != nil {
 		t.Fatal(err)

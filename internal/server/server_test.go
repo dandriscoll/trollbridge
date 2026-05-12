@@ -82,10 +82,16 @@ func bootProxy(t *testing.T, mode string, rules string) *proxyHarness {
 		_ = srv.ServeOnListener(ctx, ln)
 		close(done)
 	}()
-	return &proxyHarness{
+	h := &proxyHarness{
 		t: t, srv: srv, addr: ln.Addr().String(),
 		auditPath: auditPath, auditLog: auditLogger, cancel: cancel, done: done,
 	}
+	// Register cleanup so individual tests don't have to remember.
+	// Idempotent: explicit h.close() in a test is fine — the second
+	// close() is a no-op on the cancelled context and a swallowed
+	// double-close on the audit logger.
+	t.Cleanup(h.close)
+	return h
 }
 
 func (h *proxyHarness) close() {

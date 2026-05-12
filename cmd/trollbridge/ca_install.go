@@ -343,12 +343,12 @@ this command will find it without --cert.`,
 // derived path is supplied. Cwd-relative paths are deliberately NOT
 // in this list — the cert location must be cross-machine stable, and
 // `./trollbridge-ca.crt` is not (issue #14). An operator who wants a
-// non-canonical path passes --cert <abs>.
+// non-canonical path passes --cert <abs>. The Debian trust-store
+// drop-in is only listed on unix where it exists; Windows uses the
+// system root store accessed via certutil and has no parallel
+// drop-in directory.
 func installCertCandidates() []string {
-	return []string{
-		DefaultCACertPath,
-		"/usr/local/share/ca-certificates/trollbridge-ca.crt",
-	}
+	return append([]string{DefaultCACertPath}, extraInstallCertCandidates()...)
 }
 
 // findInstallCert resolves the cert path for `ca install`.

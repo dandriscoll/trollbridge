@@ -163,7 +163,7 @@ policy:
 		close(done)
 	}()
 	time.Sleep(50 * time.Millisecond)
-	return &interceptHarness{
+	h := &interceptHarness{
 		t:          t,
 		srv:        srv,
 		addr:       ln.Addr().String(),
@@ -176,6 +176,8 @@ policy:
 		originPort: originPort,
 		originURL:  originURL,
 	}
+	t.Cleanup(h.close)
+	return h
 }
 
 func (h *interceptHarness) close() {
