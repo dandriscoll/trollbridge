@@ -1255,11 +1255,18 @@ func formatInfoBytes(n int64) string {
 // shared across info/llm/urls panels' bottom borders (closes #88).
 const panelSwitcherHint = "[0]hide  [1]console  [2]info  [3]llm  [4]urls"
 
-// llmDetailLineCount is the number of labelled fields the LLM detail
-// view renders for a selected digest. Used by both the inline expand
-// path (renderLLMPane) and the modal-promotion decision in render
-// (closes #81).
-const llmDetailLineCount = 8
+// llmDetailLineCount is the conservative line-count estimate used by
+// the modal-promotion decision (`shouldRenderLLMModal`). The detail
+// block has 7 base fields (request_id row dropped per #92) plus
+// optional wrap continuations for `url` and `reason` (#91); the
+// budget covers up to 3 wrap lines across both.
+const llmDetailLineCount = 10
+
+// llmSelectionBar is the leading marker for the selected digest's
+// rows (#91). Replaces the old inverse-video block highlight. Two
+// cells wide so unselected rows can align with a two-space pad.
+const llmSelectionBar = "┃ "
+const llmSelectionPad = "  "
 
 // llmDetailFitsInline reports whether the LLM panel's inline-expand
 // layout has enough room to render the detail block plus the panel
@@ -1298,24 +1305,104 @@ func shouldRenderLLMModal(m Model, bodyRows int) bool {
 	return !llmDetailFitsInline(bottomRows)
 }
 
-// digestDetailLines formats the per-digest detail block as a fixed
-// 8-line labelled list. Field order: timestamp, request_id, method,
-// url (scheme://host:port/path), effect, confidence, advisor_id,
-// outcome — reason is the last (potentially long) field and is
-// placed after the structured fields so it can be truncated by the
-// renderer without losing higher-priority context.
-func digestDetailLines(d advisor.Digest) []string {
+// digestDetailLines formats the per-digest detail block as a fixed-
+// label list, with url and reason wrapped to the supplied width if
+// it's set (#91). request_id is omitted per #92. width <= 0 means
+// "no wrap — return one line per field".
+func digestDetailLines(d advisor.Digest, width int) []string {
 	url := fmt.Sprintf("%s://%s:%d%s", d.Scheme, d.Host, d.Port, d.Path)
-	return []string{
+	out := []string{
 		fmt.Sprintf("  time       : %s", d.Timestamp.Local().Format("2006-01-02 15:04:05")),
-		fmt.Sprintf("  request_id : %s", d.RequestID),
 		fmt.Sprintf("  method     : %s", d.Method),
-		fmt.Sprintf("  url        : %s", url),
+	}
+	out = append(out, wrapAfterLabel("  url        : ", url, width)...)
+	out = append(out,
 		fmt.Sprintf("  effect     : %s   confidence: %s", d.Effect, d.Confidence),
 		fmt.Sprintf("  outcome    : %s", d.Outcome),
 		fmt.Sprintf("  advisor_id : %s", d.AdvisorID),
-		fmt.Sprintf("  reason     : %s", d.Reason),
+	)
+	out = append(out, wrapAfterLabel("  reason     : ", d.Reason, width)...)
+	return out
+}
+
+// wrapAfterLabel emits a multi-line slice for a labelled value:
+// the first line begins with the label, continuation lines indent
+// to align under the value column. Wrapping is greedy on whitespace
+// boundaries; a word longer than the value column is allowed to
+// overflow (rare in practice for URLs without spaces — see fallback
+// in the loop).
+func wrapAfterLabel(label, value string, width int) []string {
+	if width <= 0 {
+		return []string{label + value}
 	}
+	labelW := runeLen(label)
+	if width <= labelW+1 {
+		return []string{label + value}
+	}
+	valueW := width - labelW
+	indent := strings.Repeat(" ", labelW)
+	if runeLen(value) <= valueW {
+		return []string{label + value}
+	}
+	// Greedy word-wrap on spaces. URLs without spaces fall through
+	// to character-wrap.
+	var out []string
+	rest := value
+	first := true
+	for runeLen(rest) > valueW {
+		cut := lastSpaceWithin(rest, valueW)
+		if cut <= 0 {
+			cut = valueW
+		}
+		chunk := strings.TrimRight(rest[:cut], " ")
+		if first {
+			out = append(out, label+chunk)
+			first = false
+		} else {
+			out = append(out, indent+chunk)
+		}
+		rest = strings.TrimLeft(rest[cut:], " ")
+	}
+	if rest != "" {
+		if first {
+			out = append(out, label+rest)
+		} else {
+			out = append(out, indent+rest)
+		}
+	}
+	return out
+}
+
+// lastSpaceWithin returns the byte index of the last ASCII space at
+// or before column `maxCol` (counted in runes), or -1 if none.
+func lastSpaceWithin(s string, maxCol int) int {
+	col := 0
+	lastSpace := -1
+	for i, r := range s {
+		if col >= maxCol {
+			break
+		}
+		if r == ' ' {
+			lastSpace = i
+		}
+		col++
+	}
+	return lastSpace
+}
+
+// leadingMark returns the per-row prefix used by the LLM panel
+// (#91): a focus-colored bar `┃ ` for the selected digest (and its
+// wrap continuations), or two spaces of padding for everything
+// else. The bar replaces the previous inverse-video highlight.
+func leadingMark(selected, focused bool) string {
+	if !selected {
+		return llmSelectionPad
+	}
+	color := colorUnfocused
+	if focused {
+		color = colorFocused
+	}
+	return color + llmSelectionBar + colorReset
 }
 
 // renderLLMPane shows the rolling advisor-classify digest inside a
@@ -1343,26 +1430,30 @@ func renderLLMPane(b *strings.Builder, m Model, rows int) {
 	if inner < 1 {
 		inner = 1
 	}
+	// Body content fills `inner` cells; subtract the leading mark
+	// (`┃ ` / `  `) when computing the wrap budget per row.
+	contentWidth := inner - runeLen(llmSelectionPad)
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
 	used := 0
 	writeLine := func(s string, selected bool) {
 		if used >= bodyLines {
 			return
 		}
-		text := padRight(runeTrunc(s, inner), inner)
-		if selected {
-			text = "\x1b[7m" + text + "\x1b[0m"
-		}
-		b.WriteString(bodyLine(text, m.Cols, focused))
+		mark := leadingMark(selected, focused)
+		body := padRight(runeTrunc(s, contentWidth), contentWidth)
+		b.WriteString(bodyLine(mark+body, m.Cols, focused))
 		used++
 	}
 	if len(m.Digests) == 0 {
-		writeLine("  (no LLM evaluations yet — advisor disabled or no traffic)", false)
+		writeLine("(no LLM evaluations yet — advisor disabled or no traffic)", false)
 	} else {
 		for i := len(m.Digests) - 1; i >= 0 && used < bodyLines; i-- {
 			d := m.Digests[i]
 			selected := d.RequestID == m.DigestSelected
 			if selected && m.DigestExpanded {
-				for _, line := range digestDetailLines(d) {
+				for _, line := range digestDetailLines(d, contentWidth) {
 					if used >= bodyLines {
 						break
 					}
@@ -1371,13 +1462,8 @@ func renderLLMPane(b *strings.Builder, m Model, rows int) {
 				continue
 			}
 			ts := d.Timestamp.Local().Format("15:04:05")
-			line := fmt.Sprintf("  %s  %-7s %-7s %s  — %s",
-				ts,
-				d.Effect,
-				d.Confidence,
-				d.Host,
-				d.Reason,
-			)
+			line := fmt.Sprintf("%s  %-7s %-7s %s  — %s",
+				ts, d.Effect, d.Confidence, d.Host, d.Reason)
 			writeLine(line, selected)
 		}
 	}
@@ -1385,18 +1471,32 @@ func renderLLMPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
 		used++
 	}
-	b.WriteString(bottomBorder("[↑↓/jk] nav  [Enter] detail  [Esc] close", panelSwitcherHint, m.Cols, focused))
+	b.WriteString(bottomBorder("[↑↓/jk] nav  [Enter] collapse/expand  [Esc] close", panelSwitcherHint, m.Cols, focused))
 }
 
 // renderLLMPaneNoBorder is the narrow-terminal fallback for the LLM
-// pane — preserves the previous flat layout when cols < borderMinThreshold.
+// pane — same wrap + side-bar conventions as the bordered version
+// (#91), without the box-drawing chrome.
 func renderLLMPaneNoBorder(b *strings.Builder, m Model, rows int) {
-	panelHeaderLine(b, m, "── llm ── [↑↓/jk] nav  [Enter] detail  [Esc] close ")
+	panelHeaderLine(b, m, "── llm ── [↑↓/jk] nav  [Enter] collapse/expand  [Esc] close ")
 	used := 1
-	if len(m.Digests) == 0 {
-		b.WriteString(padRight("  (no LLM evaluations yet — advisor disabled or no traffic)", m.Cols))
+	focused := m.Focused == PaneConsole
+	contentWidth := m.Cols - runeLen(llmSelectionPad)
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	writeLine := func(s string, selected bool) {
+		if used >= rows {
+			return
+		}
+		mark := leadingMark(selected, focused)
+		body := padRight(runeTrunc(s, contentWidth), contentWidth)
+		b.WriteString(mark + body)
 		b.WriteString("\r\n")
 		used++
+	}
+	if len(m.Digests) == 0 {
+		writeLine("(no LLM evaluations yet — advisor disabled or no traffic)", false)
 		for used < rows {
 			b.WriteString(padRight("", m.Cols))
 			b.WriteString("\r\n")
@@ -1404,26 +1504,11 @@ func renderLLMPaneNoBorder(b *strings.Builder, m Model, rows int) {
 		}
 		return
 	}
-	writeLine := func(s string, selected bool) {
-		if used >= rows {
-			return
-		}
-		text := padRight(runeTrunc(s, m.Cols), m.Cols)
-		if selected {
-			b.WriteString("\x1b[7m")
-			b.WriteString(text)
-			b.WriteString("\x1b[0m")
-		} else {
-			b.WriteString(text)
-		}
-		b.WriteString("\r\n")
-		used++
-	}
 	for i := len(m.Digests) - 1; i >= 0 && used < rows; i-- {
 		d := m.Digests[i]
 		selected := d.RequestID == m.DigestSelected
 		if selected && m.DigestExpanded {
-			for _, line := range digestDetailLines(d) {
+			for _, line := range digestDetailLines(d, contentWidth) {
 				if used >= rows {
 					break
 				}
@@ -1432,7 +1517,7 @@ func renderLLMPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			continue
 		}
 		ts := d.Timestamp.Local().Format("15:04:05")
-		line := fmt.Sprintf("  %s  %-7s %-7s %s  — %s",
+		line := fmt.Sprintf("%s  %-7s %-7s %s  — %s",
 			ts, d.Effect, d.Confidence, d.Host, d.Reason)
 		writeLine(line, selected)
 	}
@@ -1446,7 +1531,8 @@ func renderLLMPaneNoBorder(b *strings.Builder, m Model, rows int) {
 // renderLLMModal draws the full-body LLM detail view when the
 // inline expansion would not fit. The modal takes over both the
 // approvals pane and the bottom pane region; the operator returns
-// to the panel with Esc (closes #81).
+// to the panel with Esc (#81). Detail content wraps to the full
+// terminal width (#91).
 func renderLLMModal(b *strings.Builder, m Model, rows int) {
 	panelHeaderLine(b, m, "── llm detail ── [Esc] back  [0]/[3] close ")
 	used := 1
@@ -1464,7 +1550,7 @@ func renderLLMModal(b *strings.Builder, m Model, rows int) {
 		b.WriteString("\r\n")
 		used++
 	} else {
-		for _, line := range digestDetailLines(d) {
+		for _, line := range digestDetailLines(d, m.Cols) {
 			if used >= rows {
 				break
 			}

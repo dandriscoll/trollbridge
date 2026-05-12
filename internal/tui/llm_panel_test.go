@@ -141,18 +141,19 @@ func TestApplyKeyLLM_EnterOnEmptyIsNoop(t *testing.T) {
 	}
 }
 
-// TestApplyKeyLLM_NavigateCollapsesExpansion: j/k while expanded
-// collapses first, then moves.
-func TestApplyKeyLLM_NavigateCollapsesExpansion(t *testing.T) {
+// TestApplyKeyLLM_NavigateKeepsExpanded: j/k while expanded moves
+// selection AND keeps the new selection expanded (#91 — expand-by-
+// default). The pre-#91 behavior auto-collapsed on nav.
+func TestApplyKeyLLM_NavigateKeepsExpanded(t *testing.T) {
 	m := modelWithDigests([]advisor.Digest{digestAt(0), digestAt(1)})
 	m.DigestSelected = "req-b"
 	m.DigestExpanded = true
 	got, _ := Apply(m, KeyEvent{Rune: 'j'})
-	if got.DigestExpanded {
-		t.Errorf("j while expanded did not collapse; DigestExpanded still true")
+	if !got.DigestExpanded {
+		t.Errorf("j collapsed expansion; #91 keeps it open")
 	}
 	if got.DigestSelected != "req-a" {
-		t.Errorf("j while expanded did not move selection; got %q want %q", got.DigestSelected, "req-a")
+		t.Errorf("j did not move selection; got %q want %q", got.DigestSelected, "req-a")
 	}
 }
 
@@ -260,25 +261,30 @@ func TestDigestTickResult_EmptyClearsSelection(t *testing.T) {
 	}
 }
 
-// TestRenderLLMPane_SelectionCursorVisible: with a digest selected
-// (not expanded), the rendered output contains the inverse-video
-// ANSI sequence on the matching row.
+// TestRenderLLMPane_SelectionCursorVisible: with a digest selected,
+// the rendered output marks the selected row(s) with the leading
+// side-bar (#91). Replaces the prior inverse-video block highlight.
 func TestRenderLLMPane_SelectionCursorVisible(t *testing.T) {
 	m := modelWithDigests([]advisor.Digest{digestAt(0), digestAt(1)})
 	m.DigestSelected = "req-b"
+	m.DigestExpanded = false // compact form so we test the leader, not the detail
 	var b strings.Builder
 	if err := render(&b, m); err != nil {
 		t.Fatalf("render: %v", err)
 	}
 	out := b.String()
-	// Inverse-video sequence used by the renderer for selection.
-	if !strings.Contains(out, "\x1b[7m") {
-		t.Errorf("rendered output missing inverse-video escape (\\x1b[7m); first 600: %q", first(out, 600))
+	if !strings.Contains(out, llmSelectionBar) {
+		t.Errorf("LLM render missing leading side-bar %q; first 600: %q", llmSelectionBar, first(out, 600))
 	}
+	// The all-white highlight should be gone from the LLM panel.
+	// (other panes — approvals — may still use inverse video for
+	// their own selection signal, so don't fail on its global
+	// presence; restrict to the LLM lines by searching for the
+	// bar-color escape next to a digit-time string.)
 }
 
 // TestRenderLLMPane_NewLegendShown: the panel header carries the
-// new keystroke hints.
+// updated keystroke hints (#91 — "collapse/expand" wording).
 func TestRenderLLMPane_NewLegendShown(t *testing.T) {
 	m := modelWithDigests([]advisor.Digest{digestAt(0)})
 	var b strings.Builder
@@ -286,7 +292,7 @@ func TestRenderLLMPane_NewLegendShown(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	out := b.String()
-	for _, want := range []string{"Enter", "Esc", "nav", "detail"} {
+	for _, want := range []string{"Enter", "Esc", "nav", "collapse/expand"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("LLM panel header missing %q; first 600: %q", want, first(out, 600))
 		}
@@ -317,8 +323,8 @@ func TestRenderLLMPane_ExpandedInline(t *testing.T) {
 	if strings.Contains(out, "── llm detail ──") {
 		t.Errorf("inline expand wrongly drew the modal header (── llm detail ──)")
 	}
-	// Detail field labels.
-	for _, want := range []string{"request_id", "effect", "advisor_id", "reason"} {
+	// Detail field labels (request_id dropped per #92).
+	for _, want := range []string{"effect", "advisor_id", "reason"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("inline expand missing detail field label %q", want)
 		}
@@ -343,16 +349,16 @@ func TestRenderLLMPane_ExpandedPromotesToModal(t *testing.T) {
 	if !strings.Contains(out, "── llm detail ──") {
 		t.Errorf("overflow case did not promote to modal; first 600: %q", first(out, 600))
 	}
-	// Detail fields present in modal.
-	for _, want := range []string{"request_id", "effect", "advisor_id"} {
+	// Detail fields present in modal (request_id dropped per #92).
+	for _, want := range []string{"effect", "advisor_id"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("modal missing detail field label %q", want)
 		}
 	}
 	// Modal suppresses the normal split — the non-modal LLM panel
-	// chrome (top-border "llm" label, bottom-border [Enter] detail
-	// hint) should be absent.
-	if strings.Contains(out, "── llm ──") || strings.Contains(out, "[Enter] detail") {
+	// chrome (top-border "llm" label, bottom-border [Enter]
+	// collapse/expand hint) should be absent.
+	if strings.Contains(out, "── llm ──") || strings.Contains(out, "[Enter] collapse/expand") {
 		t.Errorf("modal wrongly drew the non-modal panel chrome alongside the modal")
 	}
 }
@@ -380,20 +386,20 @@ func TestRenderLLMPane_ModalEscReturnsToList(t *testing.T) {
 }
 
 // TestShouldRenderLLMModal_DecisionBoundary pins the modal-promotion
-// rule: with the panel chrome now consuming a top + bottom border
-// row (#88), inline needs panelRows >= 11 (2 borders + 8 detail + 1
-// peer).
+// rule: with the panel chrome consuming top + bottom border rows
+// (#88) and a wrap-tolerant detail block of up to 10 lines (#91),
+// inline needs panelRows >= 13 (2 borders + 10 detail + 1 peer).
 func TestShouldRenderLLMModal_DecisionBoundary(t *testing.T) {
 	m := modelWithDigests([]advisor.Digest{digestAt(0)})
 	m.DigestSelected = "req-a"
 	m.DigestExpanded = true
-	// bodyRows=22 → topRows=11 → bottomRows=11 → exactly fits (2+8+1).
-	if shouldRenderLLMModal(m, 22) {
-		t.Errorf("modal-promotion fired at bodyRows=22; bottom should fit 11 rows")
+	// bodyRows=26 → topRows=13 → bottomRows=13 → exactly fits.
+	if shouldRenderLLMModal(m, 26) {
+		t.Errorf("modal-promotion fired at bodyRows=26; bottom should fit 13 rows")
 	}
-	// bodyRows=20 → topRows=10 → bottomRows=10 → does NOT fit.
-	if !shouldRenderLLMModal(m, 20) {
-		t.Errorf("modal-promotion did not fire at bodyRows=20; bottom is 10 rows")
+	// bodyRows=24 → topRows=12 → bottomRows=12 → does NOT fit.
+	if !shouldRenderLLMModal(m, 24) {
+		t.Errorf("modal-promotion did not fire at bodyRows=24; bottom is 12 rows")
 	}
 }
 

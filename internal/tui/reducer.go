@@ -576,7 +576,9 @@ func reconcileDigestSelection(m *Model) {
 		}
 	}
 	m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
-	m.DigestExpanded = false
+	// Expand-by-default (#91): the new fallback selection inherits
+	// the same default-expanded state as the open path.
+	m.DigestExpanded = true
 }
 
 // digestSelectedIndex returns the index of the selected digest in
@@ -648,9 +650,9 @@ func applyKeyLLM(m Model, e KeyEvent) (Model, Cmd) {
 		return m, CmdNone{}
 	}
 	if e.Key == KeyUp || e.Rune == 'k' {
-		// Up/k moves toward newer digests. Collapse first so the
-		// move is unambiguous (Enter is the only expand verb).
-		m.DigestExpanded = false
+		// Up/k moves toward newer digests. The new selection auto-
+		// expands (#91) — operator never has to press Enter to see
+		// the detail.
 		idx := digestSelectedIndex(m)
 		if idx > 0 {
 			if d, ok := digestAtDisplayIndex(m, idx-1); ok {
@@ -659,10 +661,10 @@ func applyKeyLLM(m Model, e KeyEvent) (Model, Cmd) {
 		} else if idx < 0 && len(m.Digests) > 0 {
 			m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
 		}
+		m.DigestExpanded = true
 		return m, CmdNone{}
 	}
 	if e.Key == KeyDown || e.Rune == 'j' {
-		m.DigestExpanded = false
 		idx := digestSelectedIndex(m)
 		if idx >= 0 && idx < len(m.Digests)-1 {
 			if d, ok := digestAtDisplayIndex(m, idx+1); ok {
@@ -671,6 +673,7 @@ func applyKeyLLM(m Model, e KeyEvent) (Model, Cmd) {
 		} else if idx < 0 && len(m.Digests) > 0 {
 			m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
 		}
+		m.DigestExpanded = true
 		return m, CmdNone{}
 	}
 	return m, CmdNone{}
@@ -1009,6 +1012,9 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		if m.DigestSelected == "" && len(m.Digests) > 0 {
 			m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
 		}
+		// Default to expanded so the operator sees the detail block
+		// immediately, without an Enter dance (#91).
+		m.DigestExpanded = true
 		return m, CmdDigestRefresh{}
 	case '4':
 		if m.BottomPanelOpen && m.BottomPanel == BottomPanelURLs {
