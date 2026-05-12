@@ -580,12 +580,20 @@ func render(out io.Writer, m Model) error {
 	if bodyRows < 4 {
 		bodyRows = 4
 	}
-	// When the bottom panel is closed (the default), the approvals
-	// pane fills the entire body — operator sees only approvals until
-	// they press 1/2/3/4 to open something below (closes #66).
-	if !m.BottomPanelOpen {
+	switch {
+	case shouldRenderLLMModal(m, bodyRows):
+		// Modal LLM detail view (closes #81): the expanded detail
+		// for the selected digest does not fit inline, so it
+		// replaces both panes in the body. Operator returns to the
+		// panel with Esc.
+		renderLLMModal(&b, m, bodyRows)
+	case !m.BottomPanelOpen:
+		// When the bottom panel is closed (the default), the
+		// approvals pane fills the entire body — operator sees only
+		// approvals until they press 1/2/3/4 to open something
+		// below (closes #66).
 		renderApprovalsPane(&b, m, bodyRows)
-	} else {
+	default:
 		topRows := bodyRows / 2
 		if topRows < 3 {
 			topRows = 3
@@ -1137,26 +1145,163 @@ func renderInfoPane(b *strings.Builder, m Model, rows int) {
 	}
 }
 
-// renderLLMPane shows the rolling advisor-classify digest.
+// llmDetailLineCount is the number of labelled fields the LLM detail
+// view renders for a selected digest. Used by both the inline expand
+// path (renderLLMPane) and the modal-promotion decision in render
+// (closes #81).
+const llmDetailLineCount = 8
+
+// llmDetailFitsInline reports whether the LLM panel's inline-expand
+// layout has enough room to render the detail block plus the panel
+// header plus at least one peer digest row. When false, render
+// promotes the detail view to a full-body modal instead.
+func llmDetailFitsInline(panelRows int) bool {
+	// header (1) + detail block (llmDetailLineCount) + at least 1
+	// peer row.
+	return panelRows >= 1+llmDetailLineCount+1
+}
+
+// shouldRenderLLMModal reports whether the top-level render must
+// suppress the normal two-pane layout and draw the modal LLM detail
+// view in its place. True iff the LLM panel is open, the user has
+// expanded a selected digest, and the inline expansion would not
+// fit (closes #81).
+func shouldRenderLLMModal(m Model, bodyRows int) bool {
+	if !m.BottomPanelOpen || m.BottomPanel != BottomPanelLLM {
+		return false
+	}
+	if !m.DigestExpanded || m.DigestSelected == "" {
+		return false
+	}
+	// Bottom-pane allocation in the normal split: half the body
+	// (mirroring render). If that allocation would not fit the
+	// inline expansion, promote.
+	topRows := bodyRows / 2
+	if topRows < 3 {
+		topRows = 3
+	}
+	bottomRows := bodyRows - topRows
+	if bottomRows < 3 {
+		bottomRows = 3
+	}
+	return !llmDetailFitsInline(bottomRows)
+}
+
+// digestDetailLines formats the per-digest detail block as a fixed
+// 8-line labelled list. Field order: timestamp, request_id, method,
+// url (scheme://host:port/path), effect, confidence, advisor_id,
+// outcome — reason is the last (potentially long) field and is
+// placed after the structured fields so it can be truncated by the
+// renderer without losing higher-priority context.
+func digestDetailLines(d advisor.Digest) []string {
+	url := fmt.Sprintf("%s://%s:%d%s", d.Scheme, d.Host, d.Port, d.Path)
+	return []string{
+		fmt.Sprintf("  time       : %s", d.Timestamp.Local().Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("  request_id : %s", d.RequestID),
+		fmt.Sprintf("  method     : %s", d.Method),
+		fmt.Sprintf("  url        : %s", url),
+		fmt.Sprintf("  effect     : %s   confidence: %s", d.Effect, d.Confidence),
+		fmt.Sprintf("  outcome    : %s", d.Outcome),
+		fmt.Sprintf("  advisor_id : %s", d.AdvisorID),
+		fmt.Sprintf("  reason     : %s", d.Reason),
+	}
+}
+
+// renderLLMPane shows the rolling advisor-classify digest. With the
+// new selection cursor and inline expansion (#81), the panel
+// supports up/down navigation and an Enter-to-expand detail view
+// for the highlighted digest. When the expanded detail would not
+// fit in the panel's available rows, render() promotes the view to
+// a modal; this function only handles the inline-fit and collapsed
+// cases.
 func renderLLMPane(b *strings.Builder, m Model, rows int) {
-	panelHeaderLine(b, m, "── llm ── ")
+	panelHeaderLine(b, m, "── llm ── [↑↓/jk] nav  [Enter] detail  [Esc] close ")
 	used := 1
 	if len(m.Digests) == 0 {
 		b.WriteString(padRight("  (no LLM evaluations yet — advisor disabled or no traffic)", m.Cols))
 		b.WriteString("\r\n")
 		used++
+		for used < rows {
+			b.WriteString(padRight("", m.Cols))
+			b.WriteString("\r\n")
+			used++
+		}
+		return
+	}
+	writeLine := func(s string, selected bool) {
+		if used >= rows {
+			return
+		}
+		text := padRight(runeTrunc(s, m.Cols), m.Cols)
+		if selected {
+			b.WriteString("\x1b[7m")
+			b.WriteString(text)
+			b.WriteString("\x1b[0m")
+		} else {
+			b.WriteString(text)
+		}
+		b.WriteString("\r\n")
+		used++
+	}
+	// Newest first display order.
+	for i := len(m.Digests) - 1; i >= 0 && used < rows; i-- {
+		d := m.Digests[i]
+		selected := d.RequestID == m.DigestSelected
+		if selected && m.DigestExpanded {
+			// Inline expansion: replace the digest's compact row with
+			// the labelled detail block. The modal-promotion decision
+			// already happened in render(); reaching this branch
+			// means the inline layout fits.
+			for _, line := range digestDetailLines(d) {
+				if used >= rows {
+					break
+				}
+				writeLine(line, true)
+			}
+			continue
+		}
+		ts := d.Timestamp.Local().Format("15:04:05")
+		line := fmt.Sprintf("  %s  %-7s %-7s %s  — %s",
+			ts,
+			d.Effect,
+			d.Confidence,
+			d.Host,
+			d.Reason,
+		)
+		writeLine(line, selected)
+	}
+	for used < rows {
+		b.WriteString(padRight("", m.Cols))
+		b.WriteString("\r\n")
+		used++
+	}
+}
+
+// renderLLMModal draws the full-body LLM detail view when the
+// inline expansion would not fit. The modal takes over both the
+// approvals pane and the bottom pane region; the operator returns
+// to the panel with Esc (closes #81).
+func renderLLMModal(b *strings.Builder, m Model, rows int) {
+	panelHeaderLine(b, m, "── llm detail ── [Esc] back  [0]/[3] close ")
+	used := 1
+	var d advisor.Digest
+	found := false
+	for _, cand := range m.Digests {
+		if cand.RequestID == m.DigestSelected {
+			d = cand
+			found = true
+			break
+		}
+	}
+	if !found {
+		b.WriteString(padRight("  (selected digest no longer in ring — Esc to return)", m.Cols))
+		b.WriteString("\r\n")
+		used++
 	} else {
-		// Newest first.
-		for i := len(m.Digests) - 1; i >= 0 && used < rows; i-- {
-			d := m.Digests[i]
-			ts := d.Timestamp.Local().Format("15:04:05")
-			line := fmt.Sprintf("  %s  %-7s %-7s %s  — %s",
-				ts,
-				d.Effect,
-				d.Confidence,
-				d.Host,
-				d.Reason,
-			)
+		for _, line := range digestDetailLines(d) {
+			if used >= rows {
+				break
+			}
 			b.WriteString(padRight(runeTrunc(line, m.Cols), m.Cols))
 			b.WriteString("\r\n")
 			used++

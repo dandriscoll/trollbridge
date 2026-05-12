@@ -289,16 +289,20 @@ func TestApplyKey_OneSwitchesAndFocusesConsole(t *testing.T) {
 }
 
 // TestApplyKey_NonConsoleHotkeysKeepApprovalsFocus pins the
-// narrowed reading of #77: '2'/'3' open their panels but do NOT
-// auto-focus PaneConsole, because those panels have no
-// interactive input and focus-on-bottom would break single-
-// keystroke '0' and 'q' from the operator's hands.
+// narrowed reading of #77: '2' opens the info panel but does NOT
+// auto-focus PaneConsole, because that panel has no interactive
+// input and focus-on-bottom would break single-keystroke '0' and
+// 'q' from the operator's hands.
 //
-// '4' (URLs) is excluded from this rule: #79 makes the URLs pane
-// editable, so it gets auto-focus like the console panel does.
-// See TestApplyKey_FourOpensAndFocusesURLs.
+// '3' (LLM) was previously in this set; #81 makes the LLM panel
+// interactively browseable (up/down navigation + detail
+// expansion), so it now auto-focuses on '3' — see
+// TestApplyKey_ThreeOpensAndFocusesLLM.
+//
+// '4' (URLs) is also excluded: #79 makes the URLs pane editable,
+// so it gets auto-focus. See TestApplyKey_FourOpensAndFocusesURLs.
 func TestApplyKey_NonConsoleHotkeysKeepApprovalsFocus(t *testing.T) {
-	for _, key := range []rune{'2', '3'} {
+	for _, key := range []rune{'2'} {
 		t.Run(string(key), func(t *testing.T) {
 			m := Model{Cols: 100, Rows: 30, Focused: PaneApprovals}
 			got, _ := Apply(m, KeyEvent{Rune: key})

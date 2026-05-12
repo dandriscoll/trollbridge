@@ -85,6 +85,18 @@ type Model struct {
 	// Digests is the rolling advisor-classify log shown by the LLM
 	// bottom panel. Filled by DigestTickResult events.
 	Digests []advisor.Digest
+	// DigestSelected is the RequestID of the digest currently
+	// highlighted in the LLM bottom panel. Empty string means no
+	// selection (panel empty or never focused). Tracked by stable
+	// RequestID — not by slice index — so the selection survives
+	// DigestTickResult re-orderings and ring evictions (insight 12).
+	DigestSelected string
+	// DigestExpanded is true when the operator has pressed Enter on
+	// the selected digest to reveal its full detail. The renderer
+	// decides inline-vs-modal layout at draw time based on whether
+	// the detail block fits in the panel's available rows (closes
+	// #81).
+	DigestExpanded bool
 
 	// Alerts carries the operator-attention state (chime on new
 	// pending; visual indicator is always-on in the renderer). The
@@ -241,6 +253,7 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 	case DigestTickResult:
 		if e.Err == nil {
 			m.Digests = e.Digests
+			reconcileDigestSelection(&m)
 		}
 		return m, CmdNone{}
 	case URLsTickResult:
@@ -382,9 +395,133 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 		if m.BottomPanel == BottomPanelURLs {
 			return applyKeyURLs(m, e)
 		}
+		if m.BottomPanel == BottomPanelLLM {
+			return applyKeyLLM(m, e)
+		}
 		return applyKeyConsole(m, e)
 	}
 	return applyKeyApprovals(m, e)
+}
+
+// reconcileDigestSelection keeps the operator's LLM-panel selection
+// on the same digest across DigestTickResult updates. The ring is
+// keyed by RequestID; index-based selection drifts when the ring
+// evicts an old entry or re-orders during a snapshot (insight 12).
+// If the previously-selected RequestID is no longer present, fall
+// back to the newest digest, or the empty string when the list is
+// empty.
+func reconcileDigestSelection(m *Model) {
+	if len(m.Digests) == 0 {
+		m.DigestSelected = ""
+		m.DigestExpanded = false
+		return
+	}
+	if m.DigestSelected != "" {
+		for _, d := range m.Digests {
+			if d.RequestID == m.DigestSelected {
+				return
+			}
+		}
+	}
+	m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
+	m.DigestExpanded = false
+}
+
+// digestSelectedIndex returns the index of the selected digest in
+// newest-first display order, or -1 if there is no selection or it
+// has been evicted. Newest-first order matches the renderer's
+// iteration.
+func digestSelectedIndex(m Model) int {
+	if m.DigestSelected == "" || len(m.Digests) == 0 {
+		return -1
+	}
+	for i := len(m.Digests) - 1; i >= 0; i-- {
+		if m.Digests[i].RequestID == m.DigestSelected {
+			return (len(m.Digests) - 1) - i
+		}
+	}
+	return -1
+}
+
+// digestAtDisplayIndex returns the digest at the given newest-first
+// display index, or false if out of range.
+func digestAtDisplayIndex(m Model, idx int) (advisor.Digest, bool) {
+	if idx < 0 || idx >= len(m.Digests) {
+		return advisor.Digest{}, false
+	}
+	return m.Digests[len(m.Digests)-1-idx], true
+}
+
+// applyKeyLLM handles keystrokes when the LLM bottom panel is open
+// and focused (closes #81). Navigation moves the selection cursor
+// over the digest list; Enter toggles the per-digest detail view.
+// The renderer decides inline-vs-modal layout based on whether the
+// detail block fits in the panel's available rows.
+func applyKeyLLM(m Model, e KeyEvent) (Model, Cmd) {
+	if e.Key == KeyEsc {
+		// Esc collapses an expanded detail; if nothing is expanded,
+		// Esc defocuses back to approvals (matches applyKeyURLs and
+		// applyKeyConsole — Esc inside a panel "backs out").
+		if m.DigestExpanded {
+			m.DigestExpanded = false
+			return m, CmdNone{}
+		}
+		m.Focused = PaneApprovals
+		return m, CmdNone{}
+	}
+	if e.Rune == 'q' {
+		// `q` defocuses (does not quit the TUI); quitting still
+		// works from approvals focus.
+		m.DigestExpanded = false
+		m.Focused = PaneApprovals
+		return m, CmdNone{}
+	}
+	// Hotkey toggle: `0` closes the panel, `3` toggles it closed.
+	// Mirrors applyKeyURLs' digit handling so the operator can close
+	// the panel without first defocusing.
+	if e.Rune == '0' || e.Rune == '3' {
+		m.BottomPanelOpen = false
+		m.DigestExpanded = false
+		m.Focused = PaneApprovals
+		return m, CmdNone{}
+	}
+	if e.Key == KeyEnter {
+		// Enter toggles the per-digest detail view. Inline vs modal
+		// is a render decision — the reducer only tracks the binary
+		// "expanded" state.
+		if m.DigestSelected == "" {
+			return m, CmdNone{}
+		}
+		m.DigestExpanded = !m.DigestExpanded
+		return m, CmdNone{}
+	}
+	if e.Key == KeyUp || e.Rune == 'k' {
+		// Up/k moves toward newer digests. Collapse first so the
+		// move is unambiguous (Enter is the only expand verb).
+		m.DigestExpanded = false
+		idx := digestSelectedIndex(m)
+		if idx > 0 {
+			if d, ok := digestAtDisplayIndex(m, idx-1); ok {
+				m.DigestSelected = d.RequestID
+			}
+		} else if idx < 0 && len(m.Digests) > 0 {
+			m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
+		}
+		return m, CmdNone{}
+	}
+	if e.Key == KeyDown || e.Rune == 'j' {
+		m.DigestExpanded = false
+		idx := digestSelectedIndex(m)
+		if idx >= 0 && idx < len(m.Digests)-1 {
+			if d, ok := digestAtDisplayIndex(m, idx+1); ok {
+				m.DigestSelected = d.RequestID
+			}
+		} else if idx < 0 && len(m.Digests) > 0 {
+			m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
+		}
+		return m, CmdNone{}
+	}
+	return m, CmdNone{}
 }
 
 // applyKeyURLs handles keystrokes when the URLs pane is open and
@@ -499,11 +636,24 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	case '3':
 		if m.BottomPanelOpen && m.BottomPanel == BottomPanelLLM {
 			m.BottomPanelOpen = false
+			m.DigestExpanded = false
 			m.Focused = PaneApprovals
 			return m, CmdNone{}
 		}
 		m.BottomPanel = BottomPanelLLM
 		m.BottomPanelOpen = true
+		// Auto-focus the LLM pane so j/k/Up/Down/Enter reach
+		// applyKeyLLM without an explicit Tab. Matches the URLs
+		// auto-focus precedent (#79); the LLM panel is now
+		// interactively browseable (closes #81).
+		m.Focused = PaneConsole
+		// Initialize the selection to the newest digest if the
+		// existing selection has been evicted or is empty. The
+		// refresh below will reconcile against the freshly-fetched
+		// list.
+		if m.DigestSelected == "" && len(m.Digests) > 0 {
+			m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
+		}
 		return m, CmdDigestRefresh{}
 	case '4':
 		if m.BottomPanelOpen && m.BottomPanel == BottomPanelURLs {
