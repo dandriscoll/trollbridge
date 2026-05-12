@@ -154,12 +154,14 @@ func TestApply_KeyMovementClamps(t *testing.T) {
 }
 
 func TestApply_KeyQuit_ApprovalsPane(t *testing.T) {
+	// Quit affordances: 'q' from approvals focus, Ctrl-C from any
+	// state. Esc no longer quits (#87 — Esc closes the bottom panel
+	// when one is open, otherwise is a no-op).
 	for _, tc := range []struct {
 		name string
 		ev   KeyEvent
 	}{
 		{"q", KeyEvent{Rune: 'q'}},
-		{"esc", KeyEvent{Key: KeyEsc}},
 		{"ctrl-c", KeyEvent{Key: KeyCtrlC}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -282,13 +284,22 @@ func TestApply_QInConsolePaneAppendsToInput(t *testing.T) {
 	}
 }
 
-// Esc in the console pane returns focus to approvals (does not quit).
+// Under #87, Esc closes any open bottom panel and returns focus to
+// approvals (without quitting). When no panel is open, Esc is a
+// no-op.
 
-func TestApply_EscInConsolePaneReturnsFocus(t *testing.T) {
-	m := Model{Focused: PaneConsole}
+func TestApply_EscInConsolePaneClosesPanelAndReturnsFocus(t *testing.T) {
+	m := Model{
+		Focused:         PaneConsole,
+		BottomPanel:     BottomPanelConsole,
+		BottomPanelOpen: true,
+	}
 	got, cmd := Apply(m, KeyEvent{Key: KeyEsc})
 	if got.Quit {
-		t.Errorf("Esc-in-console set Quit; should only switch focus")
+		t.Errorf("Esc-in-console set Quit; should only close panel")
+	}
+	if got.BottomPanelOpen {
+		t.Errorf("BottomPanelOpen still true after Esc")
 	}
 	if got.Focused != PaneApprovals {
 		t.Errorf("Focused = %v, want PaneApprovals after Esc", got.Focused)

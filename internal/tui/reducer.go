@@ -460,8 +460,27 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 			// Dismissed; fall through to normal dispatch so the
 			// keystroke still does its usual thing (operator
 			// doesn't lose a Tab / j / Esc to the prompt).
+			//
+			// Exception: Esc alone should NOT also close the bottom
+			// panel (#87) — a single Esc dismisses the offer; a
+			// second Esc closes the panel.
 			m.LastInfo = "generalize prompt dismissed"
+			if e.Key == KeyEsc {
+				return m, CmdNone{}
+			}
 		}
+	}
+	// Esc closes the bottom panel when one is open; never quits the
+	// app (#87). Quit is `q` or Ctrl-C only.
+	if e.Key == KeyEsc {
+		if m.BottomPanelOpen {
+			m.BottomPanelOpen = false
+			m.DigestExpanded = false
+			m.Focused = PaneApprovals
+			m.URLsPendingReturn = false
+			return m, CmdNone{}
+		}
+		return m, CmdNone{}
 	}
 	if e.Key == KeyTab || e.Key == KeyShiftTab {
 		// Tab cycles focus to the bottom pane only when something is
@@ -854,7 +873,7 @@ func isAllUpperASCII(s string) bool {
 }
 
 func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
-	if e.Key == KeyEsc || e.Rune == 'q' {
+	if e.Rune == 'q' {
 		m.Quit = true
 		return m, CmdQuit{}
 	}

@@ -156,22 +156,22 @@ func TestApplyKeyLLM_NavigateCollapsesExpansion(t *testing.T) {
 	}
 }
 
-// TestApplyKeyLLM_EscCollapsesThenDefocuses: first Esc collapses
-// expansion; second Esc defocuses back to approvals.
-func TestApplyKeyLLM_EscCollapsesThenDefocuses(t *testing.T) {
+// TestApplyKeyLLM_EscClosesPanel: under #87, Esc on the LLM panel
+// closes the panel entirely (even when an expanded detail is
+// showing). Enter remains the verb for collapse-but-keep-open.
+func TestApplyKeyLLM_EscClosesPanel(t *testing.T) {
 	m := modelWithDigests([]advisor.Digest{digestAt(0)})
 	m.DigestSelected = "req-a"
 	m.DigestExpanded = true
 	got, _ := Apply(m, KeyEvent{Key: KeyEsc})
+	if got.BottomPanelOpen {
+		t.Errorf("Esc did not close the LLM panel; BottomPanelOpen still true")
+	}
 	if got.DigestExpanded {
-		t.Errorf("first Esc did not collapse; DigestExpanded still true")
+		t.Errorf("Esc did not clear DigestExpanded")
 	}
-	if got.Focused != PaneConsole {
-		t.Errorf("first Esc moved focus prematurely; want PaneConsole still, got %v", got.Focused)
-	}
-	got, _ = Apply(got, KeyEvent{Key: KeyEsc})
 	if got.Focused != PaneApprovals {
-		t.Errorf("second Esc did not defocus; want PaneApprovals, got %v", got.Focused)
+		t.Errorf("Esc did not defocus; want PaneApprovals, got %v", got.Focused)
 	}
 }
 
