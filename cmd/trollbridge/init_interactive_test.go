@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -561,14 +562,14 @@ func TestInit_DaemonMode_LLM_DoesNotWriteKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read yaml: %v", err)
 	}
-	if !strings.Contains(string(body), "api_key_path: /etc/trollbridge/llm.key") {
-		t.Errorf("daemon-mode YAML should record /etc/trollbridge/llm.key; got:\n%s", body)
+	if !strings.Contains(string(body), "api_key_path: "+DefaultDaemonLLMKeyPath) {
+		t.Errorf("daemon-mode YAML should record %s; got:\n%s", DefaultDaemonLLMKeyPath, body)
 	}
 	if !strings.Contains(string(body), "  enabled: true\n  provider: anthropic") {
 		t.Errorf("YAML should reflect llm.enabled=true; got:\n%s", body)
 	}
 	for _, want := range []string{
-		"/etc/trollbridge/llm.key",
+		DefaultDaemonLLMKeyPath,
 		"sudo -u trollbridge",
 	} {
 		if !strings.Contains(out.String(), want) {
@@ -630,8 +631,10 @@ func TestInit_UserMode_LLM_WritesKeyInline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("user-mode init should write llm.key at %s: %v", wantKeyPath, err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("llm.key mode = %o, want 0600", mode)
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Errorf("llm.key mode = %o, want 0600", mode)
+		}
 	}
 	got, err := os.ReadFile(wantKeyPath)
 	if err != nil {
@@ -700,11 +703,11 @@ func TestInit_InteractiveAOAIWritesEndpointInYaml(t *testing.T) {
 	if !strings.Contains(string(body), "  enabled: true\n  provider: aoai") {
 		t.Errorf("YAML should reflect provider=aoai; got:\n%s", body)
 	}
-	// Per #21: yaml records the canonical /etc/trollbridge/llm.key path;
+	// Per #21: yaml records the canonical daemon-mode llm.key path;
 	// init does not write the key file (operator handles that on the
 	// proxy host as root).
-	if !strings.Contains(string(body), "api_key_path: /etc/trollbridge/llm.key") {
-		t.Errorf("AOAI flow should record canonical /etc/trollbridge/llm.key path; got:\n%s", body)
+	if !strings.Contains(string(body), "api_key_path: "+DefaultDaemonLLMKeyPath) {
+		t.Errorf("AOAI flow should record canonical %s path; got:\n%s", DefaultDaemonLLMKeyPath, body)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "llm.key")); err == nil {
 		t.Errorf("init must not write llm.key into the init dir (issue #21)")

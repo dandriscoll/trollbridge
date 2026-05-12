@@ -88,8 +88,8 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 		// failure, and carry the recorded ClientHello so the
 		// operator can see what the client actually offered.
 		requestID := uuid.NewString()
-		category := ClassifyClientHandshakeError(err)
 		hello := helloRec.snapshot()
+		category := ClassifyClientHandshakeErrorAfter(err, helloRec.got)
 		opURL := fmt.Sprintf("https://%s:%d", host, port)
 		s.ops.Begin(requestID, "TLS", opURL)
 		s.opLog.Warn("intercept TLS handshake failure",

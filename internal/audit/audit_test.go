@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -56,6 +57,9 @@ func TestLogger_WritesEntry(t *testing.T) {
 }
 
 func TestLogger_FileMode0640(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX mode bits are not enforceable on Windows; protection is via NTFS ACLs, see internal/ca/keymode_windows.go")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "audit.jsonl")
 	l, err := New(path, 4, OverflowDeny)

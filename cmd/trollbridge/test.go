@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/approvals"
@@ -456,7 +457,10 @@ func onOff(b bool) string {
 func annotateRequestErr(err error, proxyAddr string, interceptionOn bool, scheme string) error {
 	s := err.Error()
 	switch {
-	case strings.Contains(s, "connection refused"), strings.Contains(s, "no such host"):
+	case errors.Is(err, syscall.ECONNREFUSED),
+		strings.Contains(s, "connection refused"),
+		strings.Contains(s, "no such host"),
+		strings.Contains(s, "actively refused"): // Windows wording
 		return fmt.Errorf("cannot reach proxy at %s: %w; is `trollbridge run` running?", proxyAddr, err)
 	case strings.Contains(s, "x509"), strings.Contains(s, "certificate"):
 		if scheme == "https" && !interceptionOn {

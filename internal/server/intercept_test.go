@@ -33,6 +33,7 @@ type interceptHarness struct {
 	srv         *Server
 	addr        string
 	auditPath   string
+	auditLog    *audit.Logger
 	dbCA        *ca.CA
 	cancel      context.CancelFunc
 	done        chan struct{}
@@ -167,6 +168,7 @@ policy:
 		srv:        srv,
 		addr:       ln.Addr().String(),
 		auditPath:  auditPath,
+		auditLog:   auditLog,
 		dbCA:       dbCA,
 		cancel:     cancel,
 		done:       done,
@@ -182,6 +184,12 @@ func (h *interceptHarness) close() {
 	case <-h.done:
 	case <-time.After(5 * time.Second):
 		h.t.Fatal("intercept harness shutdown timeout")
+	}
+	// Release the audit file handle so t.TempDir cleanup can unlink it
+	// on Windows. On unix this is also correct hygiene but cleanup
+	// works either way because unlink-on-open is allowed.
+	if h.auditLog != nil {
+		_ = h.auditLog.Close()
 	}
 }
 

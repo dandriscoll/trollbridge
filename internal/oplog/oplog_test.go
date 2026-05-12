@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -65,6 +66,14 @@ func TestNew_StderrSinkSentinel(t *testing.T) {
 }
 
 func TestNew_FileSinkOpensWithDirAndMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// POSIX 0o640/0o750 are not enforceable on Windows (NTFS ACLs
+		// gate access instead) and the logger holds the file open with
+		// no Close hook, so t.TempDir cleanup also fails on the held
+		// handle. See internal/ca/keymode_windows.go for the equivalent
+		// CA-side skip.
+		t.Skip("file mode and parent mode not enforceable on Windows")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "op.log")
 	lv := new(slog.LevelVar)
@@ -90,6 +99,9 @@ func TestNew_FileSinkOpensWithDirAndMode(t *testing.T) {
 }
 
 func TestNew_FailsClosedOnUnwritableParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0500 does not block writes on Windows; ACLs would be the equivalent")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses perm check")
 	}

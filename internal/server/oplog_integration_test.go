@@ -76,6 +76,7 @@ func bootHTTPProxyWithOpLog(t *testing.T, level slog.Level) (proxyAddr, originUR
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = auditLog.Close() })
 	opLog, opBuf := captureOpLog(level)
 	auditLog.SetOpLog(opLog)
 	srv, err := NewWithLoggers(cfg, engine, auditLog, opLog)
@@ -165,6 +166,7 @@ func bootInterceptProxyWithOpLog(t *testing.T, rules string, level slog.Level) (
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = auditLog.Close() })
 	opLog, opBuf := captureOpLog(level)
 	auditLog.SetOpLog(opLog)
 	srv, err := NewWithLoggers(cfg, engine, auditLog, opLog)
@@ -423,6 +425,7 @@ func TestOpLog_InfoCarriesAskCaseLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = auditLog.Close() })
 	opLog, opBuf := captureOpLog(slog.LevelInfo)
 	auditLog.SetOpLog(opLog)
 	srv, err := NewWithLoggers(cfg, engine, auditLog, opLog)
@@ -527,6 +530,7 @@ func TestServer_HoldQueueFull_WarnsAndRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = auditLog.Close() })
 	opLog, opBuf := captureOpLog(slog.LevelInfo)
 	auditLog.SetOpLog(opLog)
 	srv, err := NewWithLoggers(cfg, engine, auditLog, opLog)

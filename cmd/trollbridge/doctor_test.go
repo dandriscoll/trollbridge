@@ -67,7 +67,7 @@ func TestDoctor_LlmDisabled_ReportsSkip(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "config:") || !strings.Contains(out, "OK (/") {
+	if !strings.Contains(out, "config:") || !strings.Contains(out, "OK ("+cfgPath) {
 		t.Errorf("config line missing or not OK in:\n%s", out)
 	}
 	for _, want := range []string{"rules:", "lists:", "llm:", "skipped"} {

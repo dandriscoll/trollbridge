@@ -65,6 +65,7 @@ func bootApprovalProxy(t *testing.T, rules string, timeoutSec int, onTimeout str
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = auditLog.Close() })
 	srv, err := NewWithAudit(cfg, engine, auditLog)
 	if err != nil {
 		t.Fatal(err)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,24 +27,25 @@ func TestQuickstartConfigYAML_DisablesControllerToAvoidCAReq(t *testing.T) {
 
 // TestQuickstartConfigYAML_AnchorsPathsAtInitDir asserts the
 // user-mode invariant: every proxy-host path in the rendered yaml
-// is anchored at the absolute init dir, not at /etc/trollbridge or
-// /var/log/trollbridge.
+// is anchored at the absolute init dir, not at the daemon-mode
+// canonical paths.
 func TestQuickstartConfigYAML_AnchorsPathsAtInitDir(t *testing.T) {
-	body := quickstartConfigYAML("/tmp/work")
+	dir := filepath.Join(t.TempDir(), "work")
+	body := quickstartConfigYAML(dir)
 	for _, want := range []string{
-		"cert_path: /tmp/work/trollbridge-ca.crt",
-		"key_path:  /tmp/work/trollbridge-ca.key",
-		"audit_path:        /tmp/work/trollbridge.audit.jsonl",
-		"api_key_path: /tmp/work/llm.key",
+		"cert_path: " + filepath.Join(dir, "trollbridge-ca.crt"),
+		"key_path:  " + filepath.Join(dir, "trollbridge-ca.key"),
+		"audit_path:        " + filepath.Join(dir, "trollbridge.audit.jsonl"),
+		"api_key_path: " + filepath.Join(dir, "llm.key"),
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in quickstart yaml:\n%s", want, body)
 		}
 	}
 	for _, banned := range []string{
-		"/etc/trollbridge/trollbridge-ca.crt",
-		"/etc/trollbridge/llm.key",
-		"/var/log/trollbridge/audit.jsonl",
+		DefaultCACertPath,
+		DefaultDaemonLLMKeyPath,
+		DefaultDaemonAuditPath,
 	} {
 		if strings.Contains(body, banned) {
 			t.Errorf("quickstart user-mode yaml should not reference daemon path %q:\n%s", banned, body)

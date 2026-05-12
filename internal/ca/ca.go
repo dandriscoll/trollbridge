@@ -133,10 +133,8 @@ func Load(certPath, keyPath string, leafKeyType KeyType, leafTTL time.Duration) 
 	if err != nil {
 		return nil, fmt.Errorf("ca load key: %w", err)
 	}
-	if info, _ := os.Stat(keyPath); info != nil {
-		if mode := info.Mode().Perm(); mode > 0o600 {
-			return nil, fmt.Errorf("ca load: key %s has mode %o; refuse to load (must be 0600)", keyPath, mode)
-		}
+	if err := checkKeyMode(keyPath); err != nil {
+		return nil, err
 	}
 	cBlock, _ := pem.Decode(cBytes)
 	if cBlock == nil {

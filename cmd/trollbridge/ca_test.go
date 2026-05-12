@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -90,8 +91,10 @@ func TestCAInit_CreatesFilesAndPrintsFingerprint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("key file missing: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("key file mode = %o, want 0600", mode)
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Errorf("key file mode = %o, want 0600", mode)
+		}
 	}
 	if !strings.Contains(out, "fingerprint (sha-256):") {
 		t.Errorf("output missing fingerprint line:\n%s", out)
@@ -400,8 +403,10 @@ func TestCAClientCert_DefaultPathsAndKeyMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default key path agent.key missing: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("client-cert key file mode = %o, want 0600", mode)
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Errorf("client-cert key file mode = %o, want 0600", mode)
+		}
 	}
 }
 
@@ -493,8 +498,10 @@ func TestCAClientCert_CertOutAndKeyOutOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--key-out override not honored: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("client-cert key file mode = %o, want 0600", mode)
+	if runtime.GOOS != "windows" {
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Errorf("client-cert key file mode = %o, want 0600", mode)
+		}
 	}
 }
 

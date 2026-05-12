@@ -111,8 +111,8 @@ func quickstartConfigYAML(absDir string) string {
 	// Anchor proxy-host paths at the operator's init dir.
 	body = strings.Replace(body, "    cert_path: "+DefaultCACertPath, "    cert_path: "+filepath.Join(absDir, "trollbridge-ca.crt"), 1)
 	body = strings.Replace(body, "    key_path:  "+DefaultCAKeyPath, "    key_path:  "+filepath.Join(absDir, "trollbridge-ca.key"), 1)
-	body = strings.Replace(body, "  audit_path:        /var/log/trollbridge/audit.jsonl", "  audit_path:        "+filepath.Join(absDir, "trollbridge.audit.jsonl"), 1)
-	body = strings.Replace(body, "  api_key_path: /etc/trollbridge/llm.key", "  api_key_path: "+filepath.Join(absDir, "llm.key"), 1)
+	body = strings.Replace(body, "  audit_path:        "+DefaultDaemonAuditPath, "  audit_path:        "+filepath.Join(absDir, "trollbridge.audit.jsonl"), 1)
+	body = strings.Replace(body, "  api_key_path: "+DefaultDaemonLLMKeyPath, "  api_key_path: "+filepath.Join(absDir, "llm.key"), 1)
 	return body
 }
 

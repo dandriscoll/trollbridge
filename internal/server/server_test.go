@@ -26,12 +26,13 @@ import (
 // returns a client wired to use it as proxy, and a function to
 // stop everything.
 type proxyHarness struct {
-	t        *testing.T
-	srv      *Server
-	addr     string
+	t         *testing.T
+	srv       *Server
+	addr      string
 	auditPath string
-	cancel   context.CancelFunc
-	done     chan struct{}
+	auditLog  *audit.Logger
+	cancel    context.CancelFunc
+	done      chan struct{}
 }
 
 func bootProxy(t *testing.T, mode string, rules string) *proxyHarness {
@@ -83,7 +84,7 @@ func bootProxy(t *testing.T, mode string, rules string) *proxyHarness {
 	}()
 	return &proxyHarness{
 		t: t, srv: srv, addr: ln.Addr().String(),
-		auditPath: auditPath, cancel: cancel, done: done,
+		auditPath: auditPath, auditLog: auditLogger, cancel: cancel, done: done,
 	}
 }
 
@@ -93,6 +94,9 @@ func (h *proxyHarness) close() {
 	case <-h.done:
 	case <-time.After(5 * time.Second):
 		h.t.Fatal("proxy shutdown timed out")
+	}
+	if h.auditLog != nil {
+		_ = h.auditLog.Close()
 	}
 }
 
@@ -413,6 +417,7 @@ func TestProxy_RuleReload_VersionChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = auditLog.Close() })
 	srv, err := NewWithAudit(cfg, engine, auditLog)
 	if err != nil {
 		t.Fatal(err)

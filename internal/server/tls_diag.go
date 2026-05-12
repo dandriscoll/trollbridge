@@ -184,7 +184,7 @@ func tlsVersionName(v uint16) string {
 	return fmt.Sprintf("0x%04x", v)
 }
 
-// classifyClientHandshakeError maps an error returned by
+// ClassifyClientHandshakeError maps an error returned by
 // tls.Conn.Handshake (server side) to a TLSErrorCategory.
 //
 // The mapping is intentionally string-driven: crypto/tls reports
@@ -193,7 +193,25 @@ func tlsVersionName(v uint16) string {
 // not changed across recent Go releases) for this taxonomy to be
 // useful; if a future Go release renames one, classify falls back to
 // TLSErrUnknown and the raw text remains in audit.Error.
+//
+// Use ClassifyClientHandshakeErrorAfter when the caller knows whether
+// the ClientHello reached the server before the failure — that signal
+// disambiguates EOF/ECONNRESET into TLSErrClientRejectedCA (cert
+// verification failed client-side, close followed) vs the bare
+// TLSErrClientClosed mid-handshake case. The Go runtime on darwin
+// surfaces post-cert client close as io.EOF rather than a `remote
+// error: tls: bad certificate` alert, so without that signal the
+// classifier degrades to TLSErrClientClosed on macOS.
 func ClassifyClientHandshakeError(err error) TLSErrorCategory {
+	return ClassifyClientHandshakeErrorAfter(err, false)
+}
+
+// ClassifyClientHandshakeErrorAfter is the context-aware variant of
+// ClassifyClientHandshakeError. helloReceived true means the server's
+// GetConfigForClient callback fired before the failure — i.e., the
+// client did present a ClientHello — so an EOF/ECONNRESET after that
+// point implies the client received our cert and chose to close.
+func ClassifyClientHandshakeErrorAfter(err error, helloReceived bool) TLSErrorCategory {
 	if err == nil {
 		return ""
 	}
@@ -201,13 +219,21 @@ func ClassifyClientHandshakeError(err error) TLSErrorCategory {
 		return TLSErrHandshakeTimeout
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-		// Client closed mid-handshake. A common shape:
-		//   "remote error: tls: bad certificate" → client rejected
-		//   our cert THEN closed. We classify those upstream of this
-		//   check via the substring match below; bare EOF falls here.
+		// Client closed mid-handshake. On darwin (and at times under
+		// TLS 1.3 elsewhere) the client closes the connection before
+		// the server reads its `tls: bad certificate` alert, so the
+		// surface error is bare EOF. If the ClientHello was already
+		// captured, attribute the close to a CA-rejection rather than
+		// a connectionless drop.
+		if helloReceived {
+			return TLSErrClientRejectedCA
+		}
 		return TLSErrClientClosed
 	}
 	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		if helloReceived {
+			return TLSErrClientRejectedCA
+		}
 		return TLSErrClientClosed
 	}
 	s := err.Error()

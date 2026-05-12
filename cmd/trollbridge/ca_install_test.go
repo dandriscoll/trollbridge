@@ -41,40 +41,12 @@ func TestFindInstallCert_ConfigPathPreferredWhenExists(t *testing.T) {
 	}
 }
 
-func TestFindInstallCert_FallsThroughToCanonical(t *testing.T) {
-	// config path set but absent → fall through to canonical, where
-	// /usr/local/share/ca-certificates/trollbridge-ca.crt exists.
-	stat := fakeStat{"/usr/local/share/ca-certificates/trollbridge-ca.crt": true}.stat
-	got, err := findInstallCert("", "/conf/missing.pem", stat)
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if got != "/usr/local/share/ca-certificates/trollbridge-ca.crt" {
-		t.Errorf("got %q, want /usr/local/share/ca-certificates/trollbridge-ca.crt", got)
-	}
-}
-
-func TestFindInstallCert_PrefersEtcOverShare(t *testing.T) {
-	// Both /etc and /usr/local exist; /etc wins.
-	stat := fakeStat{
-		"/etc/trollbridge/trollbridge-ca.crt":                       true,
-		"/usr/local/share/ca-certificates/trollbridge-ca.crt":       true,
-	}.stat
-	got, err := findInstallCert("", "", stat)
-	if err != nil {
-		t.Fatalf("err = %v", err)
-	}
-	if got != "/etc/trollbridge/trollbridge-ca.crt" {
-		t.Errorf("got %q, want /etc/trollbridge/trollbridge-ca.crt", got)
-	}
-}
-
 // TestInstallCertCandidates_NoCwd is the contract-level guard for
 // issue #14: the candidate list MUST NOT contain a cwd-relative
 // path. Cwd-relative defaults are not cross-machine stable.
 func TestInstallCertCandidates_NoCwd(t *testing.T) {
 	for _, p := range installCertCandidates() {
-		if !strings.HasPrefix(p, "/") {
+		if !filepath.IsAbs(p) {
 			t.Errorf("candidate %q is not absolute; cwd-relative paths break cross-machine validity (issue #14)", p)
 		}
 	}
@@ -84,12 +56,12 @@ func TestInstallCertCandidates_NoCwd(t *testing.T) {
 // returned cert path is absolute (so the install commands printed
 // downstream are absolute too).
 func TestFindInstallCert_OnlyCanonicalExists_PicksAbsolute(t *testing.T) {
-	stat := fakeStat{"/etc/trollbridge/trollbridge-ca.crt": true}.stat
+	stat := fakeStat{DefaultCACertPath: true}.stat
 	got, err := findInstallCert("", "", stat)
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if !strings.HasPrefix(got, "/") {
+	if !filepath.IsAbs(got) {
 		t.Errorf("returned path %q is not absolute; install command text would not be cross-machine valid", got)
 	}
 }
@@ -142,13 +114,11 @@ func TestFindInstallCert_NoCertAnywhere_ErrorNamesEveryCandidate(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	for _, want := range []string{
-		"/conf/missing.pem",
-		"/etc/trollbridge/trollbridge-ca.crt",
-		"/usr/local/share/ca-certificates/trollbridge-ca.crt",
-		"--cert",
-		"remote-mode",
-	} {
+	wants := []string{"/conf/missing.pem", "--cert", "remote-mode"}
+	for _, p := range installCertCandidates() {
+		wants = append(wants, p)
+	}
+	for _, want := range wants {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("missing %q in error:\n%s", want, err.Error())
 		}

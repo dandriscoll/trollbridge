@@ -5,11 +5,25 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
-const defaultConfigYAML = `# 1. Per-surface bind. Each value is "<host>:<port>". Use:
+// defaultConfigYAML is the static yaml `trollbridge init` writes. The
+// authoring template (defaultConfigYAMLTemplate, below) uses unix
+// canonical paths; on Windows we substitute the %ProgramData%
+// equivalents at startup so the rendered yaml is cross-machine valid
+// on the host the operator is on.
+var defaultConfigYAML = strings.NewReplacer(
+	"/etc/trollbridge/llm.key", DefaultDaemonLLMKeyPath,
+	"/etc/trollbridge/trollbridge-ca.crt", DefaultCACertPath,
+	"/etc/trollbridge/trollbridge-ca.key", DefaultCAKeyPath,
+	"/var/log/trollbridge/audit.jsonl", DefaultDaemonAuditPath,
+	"/etc/trollbridge/", DefaultCADir+string(filepath.Separator),
+).Replace(defaultConfigYAMLTemplate)
+
+const defaultConfigYAMLTemplate = `# 1. Per-surface bind. Each value is "<host>:<port>". Use:
 #      lo   = 127.0.0.1
 #      all  = 0.0.0.0
 #      a literal IP or hostname (e.g. 10.1.2.3, trollbridge.internal)

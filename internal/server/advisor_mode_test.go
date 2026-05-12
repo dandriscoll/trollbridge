@@ -41,6 +41,7 @@ func TestAdvisor_AOAIResearchModeFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = auditLogger.Close() })
 
 	// Capture opLog into a buffer so we can assert the warning fired.
 	var logBuf bytes.Buffer
