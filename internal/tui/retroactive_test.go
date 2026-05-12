@@ -24,8 +24,10 @@ func TestApplyKey_RetroactiveAllowOnCompletedRow(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd = %T, want CmdConsoleExec for retroactive add", cmd)
 	}
-	if exec.Line != "allow https://api.example.com/v1" {
-		t.Errorf("CmdConsoleExec.Line = %q, want %q", exec.Line, "allow https://api.example.com/v1")
+	// Pattern now carries the method prefix so subsequent
+	// generalisation can swap the method axis (#85).
+	if exec.Line != "allow GET https://api.example.com/v1" {
+		t.Errorf("CmdConsoleExec.Line = %q, want %q", exec.Line, "allow GET https://api.example.com/v1")
 	}
 	if !strings.Contains(got.LastInfo, "allow") {
 		t.Errorf("LastInfo = %q, want it to mention allow", got.LastInfo)
@@ -46,8 +48,9 @@ func TestApplyKey_RetroactiveDenyOnCompletedRow(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd = %T, want CmdConsoleExec", cmd)
 	}
-	if exec.Line != "deny evil.example.com" {
-		t.Errorf("Line = %q, want %q", exec.Line, "deny evil.example.com")
+	// Pattern carries the method prefix (#85).
+	if exec.Line != "deny GET evil.example.com" {
+		t.Errorf("Line = %q, want %q", exec.Line, "deny GET evil.example.com")
 	}
 }
 

@@ -460,7 +460,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Fast path: evaluate flat allow/deny lists BEFORE the rule
 	// engine and BEFORE the advisor. A match here short-circuits.
-	decision, fastHit := s.fastPathDecide("http", host, port, req.Path)
+	decision, fastHit := s.fastPathDecide(req.Method, "http", host, port, req.Path)
 	if fastHit {
 		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval,
 			"hit", true, "decision", string(decision.Effect),
@@ -741,7 +741,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// path for fast-path matching; only patterns with no path or
 	// path "/" or path-prefix can fire here. Scheme is unknown at
 	// CONNECT time; only patterns with no scheme constraint match.
-	decision, fastHit := s.fastPathDecide("", host, port, "/")
+	decision, fastHit := s.fastPathDecide("CONNECT", "", host, port, "/")
 	if fastHit {
 		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval,
 			"hit", true, "decision", string(decision.Effect),
@@ -1354,10 +1354,12 @@ func (s *Server) ReloadListsFromConfig(cfg *config.Config) error {
 // matches the deny list (deny wins) or the allow list. Returns
 // (zero Decision, false) when no list matches and the engine
 // should run. Pass scheme="" for CONNECT (pre-intercept), "http"
-// for plaintext, "https" for intercepted HTTPS.
-func (s *Server) fastPathDecide(scheme, host string, port int, path string) (types.Decision, bool) {
+// for plaintext, "https" for intercepted HTTPS. The method axis
+// gates patterns that name a method (#85); patterns without a
+// method prefix continue to match any method.
+func (s *Server) fastPathDecide(method, scheme, host string, port int, path string) (types.Decision, bool) {
 	allow, deny := s.AllowList(), s.DenyList()
-	if pat, ok := deny.Match(scheme, host, port, path); ok {
+	if pat, ok := deny.Match(method, scheme, host, port, path); ok {
 		return types.Decision{
 			Effect: types.EffectDeny,
 			Source: types.SourceDenyList,
@@ -1365,7 +1367,7 @@ func (s *Server) fastPathDecide(scheme, host string, port int, path string) (typ
 			Reason: "matched deny list: " + pat.Raw,
 		}, true
 	}
-	if pat, ok := allow.Match(scheme, host, port, path); ok {
+	if pat, ok := allow.Match(method, scheme, host, port, path); ok {
 		return types.Decision{
 			Effect: types.EffectAllow,
 			Source: types.SourceAllowList,

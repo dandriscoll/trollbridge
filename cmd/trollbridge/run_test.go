@@ -19,27 +19,27 @@ func TestDerivePersistPattern(t *testing.T) {
 		{
 			name: "CONNECT https tunneled",
 			req:  &types.RequestEvent{Method: "CONNECT", Scheme: "https-tunneled", Host: "api.github.com", Port: 443},
-			want: "api.github.com:443",
+			want: "CONNECT api.github.com:443",
 		},
 		{
 			name: "CONNECT no port",
 			req:  &types.RequestEvent{Method: "CONNECT", Scheme: "https-tunneled", Host: "api.github.com"},
-			want: "api.github.com",
+			want: "CONNECT api.github.com",
 		},
 		{
 			name: "intercepted https with path",
 			req:  &types.RequestEvent{Method: "GET", Scheme: "https-intercepted", Host: "api.github.com", Port: 443, Path: "/v1/foo"},
-			want: "https://api.github.com:443/v1/foo",
+			want: "GET https://api.github.com:443/v1/foo",
 		},
 		{
 			name: "plain http with path",
 			req:  &types.RequestEvent{Method: "POST", Scheme: "http", Host: "api.example.com", Port: 80, Path: "/v2/bar"},
-			want: "http://api.example.com:80/v2/bar",
+			want: "POST http://api.example.com:80/v2/bar",
 		},
 		{
 			name: "missing scheme defaults to http",
 			req:  &types.RequestEvent{Method: "GET", Host: "api.example.com", Port: 8080, Path: "/baz"},
-			want: "http://api.example.com:8080/baz",
+			want: "GET http://api.example.com:8080/baz",
 		},
 		{
 			name: "nil request",

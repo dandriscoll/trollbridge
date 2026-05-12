@@ -21,6 +21,12 @@ type Pattern struct {
 	Source string // "<file>:<line>" for diagnostics
 	Raw    string // original line, trimmed
 
+	// Method matching (closes #85):
+	//   anyMethod: pattern had no method prefix or used `*`
+	//   method:    uppercase HTTP verb when explicit (e.g., "GET")
+	anyMethod bool
+	method    string
+
 	// Scheme matching:
 	//   anyScheme: pattern had no `<scheme>://` prefix
 	//   scheme:    "http" or "https" when explicit; matched exactly
@@ -127,12 +133,40 @@ func LoadFiles(name string, paths []string) (*HostList, error) {
 	return out, nil
 }
 
-// parsePattern accepts a single trimmed, non-empty line.
+// parsePattern accepts a single trimmed, non-empty line. The
+// supported shape is:
+//
+//	[<METHOD>|*] [<scheme>://]<host>[:<port>][<path>]
+//
+// where the optional leading METHOD token is an uppercase HTTP
+// verb (or `*` for any). An absent prefix means "any method"
+// (anyMethod=true), preserving backward compatibility with
+// pre-#85 pattern files.
 func parsePattern(s string) (Pattern, error) {
 	p := Pattern{Raw: s}
 
-	// Optional <scheme>:// prefix.
+	// Optional leading method token. Format: first whitespace-
+	// separated token is `*` or uppercase letters. We probe before
+	// the scheme parse because methods precede `<scheme>://`.
 	rest := s
+	if sp := strings.IndexByte(rest, ' '); sp > 0 {
+		head := rest[:sp]
+		if head == "*" {
+			p.anyMethod = true
+			rest = strings.TrimSpace(rest[sp+1:])
+		} else if isUppercaseLetters(head) {
+			p.method = head
+			rest = strings.TrimSpace(rest[sp+1:])
+		} else {
+			// First token is not a method; treat the whole line as
+			// the host part and set anyMethod.
+			p.anyMethod = true
+		}
+	} else {
+		p.anyMethod = true
+	}
+
+	// Optional <scheme>:// prefix.
 	if i := strings.Index(rest, "://"); i >= 0 {
 		scheme := strings.ToLower(rest[:i])
 		switch scheme {
@@ -210,19 +244,26 @@ func parsePattern(s string) (Pattern, error) {
 }
 
 // Match returns the matching Pattern (and true) if any pattern
-// fires on the supplied (scheme, host, port, path). Pass scheme=""
-// when the request is a CONNECT and no scheme is yet known; only
-// patterns with no scheme constraint will match.
-func (h *HostList) Match(scheme, host string, port int, path string) (Pattern, bool) {
+// fires on the supplied (method, scheme, host, port, path). Pass
+// scheme="" when the request is a CONNECT and no scheme is yet
+// known; only patterns with no scheme constraint will match.
+// Method comparison is case-insensitive — request methods are
+// typically uppercase but lowercase operator typos still match.
+// Patterns without a method prefix match any method (#85).
+func (h *HostList) Match(method, scheme, host string, port int, path string) (Pattern, bool) {
 	if h == nil {
 		return Pattern{}, false
 	}
+	method = strings.ToUpper(strings.TrimSpace(method))
 	scheme = strings.ToLower(strings.TrimSpace(scheme))
 	host = strings.ToLower(strings.TrimSpace(host))
 	if path == "" {
 		path = "/"
 	}
 	for _, p := range h.Patterns {
+		if !matchMethodPattern(p, method) {
+			continue
+		}
 		if !matchSchemePattern(p, scheme) {
 			continue
 		}
@@ -238,6 +279,28 @@ func (h *HostList) Match(scheme, host string, port int, path string) (Pattern, b
 		return p, true
 	}
 	return Pattern{}, false
+}
+
+func matchMethodPattern(p Pattern, method string) bool {
+	if p.anyMethod {
+		return true
+	}
+	return method == p.method
+}
+
+// isUppercaseLetters reports whether s is non-empty and consists
+// entirely of uppercase A-Z. Used by parsePattern to recognise
+// the optional method-prefix token (#85).
+func isUppercaseLetters(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 func matchSchemePattern(p Pattern, scheme string) bool {

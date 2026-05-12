@@ -8,12 +8,16 @@
 package tui
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
 )
+
+var _ = opstream.Op{}
 
 // Pane names a top-level focusable surface.
 type Pane int
@@ -115,6 +119,27 @@ type Model struct {
 	DenyList     []string
 	URLsLocal    bool
 	URLsSelected int // index into AllowList++DenyList; -1 if empty
+
+	// GeneralizeOffer, when non-nil, surfaces the post-approve
+	// "make this more general?" prompt: a specific allow entry
+	// was just written for the named method+URL, and the operator
+	// can press 1/2/3 to append a broader pattern (or any other
+	// key to dismiss). Cleared after the next reducer step that
+	// consumes or dismisses the offer (closes #85).
+	GeneralizeOffer *GeneralizeOffer
+}
+
+// GeneralizeOffer carries the method+URL components of the
+// just-approved request so the renderer can name the candidate
+// broader patterns to the operator and the reducer can construct
+// the chosen pattern (closes #85).
+type GeneralizeOffer struct {
+	Method string // uppercase HTTP verb
+	URL    string // the specific URL just allowed
+	Scheme string // "http" / "https" / "" (CONNECT)
+	Host   string
+	Port   int
+	Path   string // including leading slash; "" for CONNECT
 }
 
 // AlertsState carries the chime toggle plus the last pending count
@@ -380,6 +405,34 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 	if e.Key == KeyCtrlC {
 		m.Quit = true
 		return m, CmdQuit{}
+	}
+	// Generalize-offer prompt (#85): when set, intercept the
+	// keystroke. 1/2/3 emit the broader pattern; any other key
+	// (Esc, Enter, j/k, navigation) dismisses without writing.
+	// The intent is "press a digit to take the offer; press
+	// anything else to skip" — operators must not be trapped.
+	if m.GeneralizeOffer != nil {
+		offer := *m.GeneralizeOffer
+		m.GeneralizeOffer = nil
+		switch e.Rune {
+		case '1':
+			pat := generalizeAllMethodsForURL(offer)
+			m.LastInfo = "appending allow: " + pat
+			return m, CmdConsoleExec{Line: "allow " + pat}
+		case '2':
+			pat := generalizeAllURLsForMethod(offer)
+			m.LastInfo = "appending allow: " + pat
+			return m, CmdConsoleExec{Line: "allow " + pat}
+		case '3':
+			pat := generalizeAnyMethodAnyURL(offer)
+			m.LastInfo = "appending allow: " + pat
+			return m, CmdConsoleExec{Line: "allow " + pat}
+		default:
+			// Dismissed; fall through to normal dispatch so the
+			// keystroke still does its usual thing (operator
+			// doesn't lose a Tab / j / Esc to the prompt).
+			m.LastInfo = "generalize prompt dismissed"
+		}
 	}
 	if e.Key == KeyTab || e.Key == KeyShiftTab {
 		// Tab cycles focus to the bottom pane only when something is
@@ -709,6 +762,9 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		// Retroactive add to allow / deny list (closes #60). Routed
 		// through the console pane so the same configwrite + oplog
 		// shape runs as if the operator had typed `allow <url>`.
+		// Pattern now carries the method prefix (#85) so subsequent
+		// generalization options can swap the method axis without
+		// ambiguity.
 		if op.URL == "" {
 			m.LastErr = "selected row has no URL to add"
 			return m, CmdNone{}
@@ -717,10 +773,116 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		if e.Rune == 'd' {
 			verb = "deny"
 		}
-		m.LastInfo = verb + "ing " + op.URL + "…"
-		return m, CmdConsoleExec{Line: verb + " " + op.URL}
+		method := strings.ToUpper(strings.TrimSpace(op.Method))
+		if method == "" {
+			method = "*"
+		}
+		specific := method + " " + op.URL
+		m.LastInfo = verb + "ing " + specific + "…"
+		// On allow, queue the generalize-offer prompt — operator
+		// can press 1/2/3 on the next keystroke to also write a
+		// broader pattern. Deny does not get the offer (denies are
+		// usually intentional and operator-narrow); revisit if
+		// requested.
+		if e.Rune == 'a' {
+			if offer, ok := buildGeneralizeOffer(op); ok {
+				m.GeneralizeOffer = offer
+			}
+		}
+		return m, CmdConsoleExec{Line: verb + " " + specific}
 	}
 	return m, CmdNone{}
+}
+
+// buildGeneralizeOffer parses the op's URL into its components so
+// the generalize-prompt renderer can name the broader patterns
+// and the reducer can construct them. Returns (nil, false) when
+// the URL is empty or unparseable — the prompt is skipped.
+func buildGeneralizeOffer(op DisplayedOp) (*GeneralizeOffer, bool) {
+	if op.URL == "" {
+		return nil, false
+	}
+	method := strings.ToUpper(strings.TrimSpace(op.Method))
+	if method == "" {
+		method = "*"
+	}
+	scheme, hostport, path := splitURL(op.URL)
+	host, port := splitHostPort(hostport)
+	return &GeneralizeOffer{
+		Method: method,
+		URL:    op.URL,
+		Scheme: scheme,
+		Host:   host,
+		Port:   port,
+		Path:   path,
+	}, true
+}
+
+// splitURL breaks "scheme://host[:port]/path" or "host[:port]"
+// (CONNECT-style) into (scheme, hostport, path). scheme is empty
+// for CONNECT-style.
+func splitURL(u string) (scheme, hostport, path string) {
+	rest := u
+	if i := strings.Index(rest, "://"); i >= 0 {
+		scheme = rest[:i]
+		rest = rest[i+3:]
+	}
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		hostport = rest[:i]
+		path = rest[i:]
+	} else {
+		hostport = rest
+	}
+	return scheme, hostport, path
+}
+
+// splitHostPort parses "host:port" or "host". Returns port=0 when
+// absent or unparseable.
+func splitHostPort(hp string) (host string, port int) {
+	host = hp
+	if i := strings.LastIndexByte(hp, ':'); i >= 0 {
+		host = hp[:i]
+		if v, err := strconv.Atoi(hp[i+1:]); err == nil {
+			port = v
+		}
+	}
+	return host, port
+}
+
+// generalizeAllMethodsForURL returns the pattern that allows any
+// method on the same URL — i.e., replaces the method prefix with
+// `*` while keeping scheme/host/port/path unchanged.
+func generalizeAllMethodsForURL(o GeneralizeOffer) string {
+	return "* " + o.URL
+}
+
+// generalizeAllURLsForMethod returns the pattern that allows any
+// URL on the same host:port (path becomes `/*`) with the original
+// method retained.
+func generalizeAllURLsForMethod(o GeneralizeOffer) string {
+	return o.Method + " " + formatHostBase(o) + "/*"
+}
+
+// generalizeAnyMethodAnyURL returns the pattern that allows any
+// method on any URL of the same host:port.
+func generalizeAnyMethodAnyURL(o GeneralizeOffer) string {
+	return "* " + formatHostBase(o) + "/*"
+}
+
+// formatHostBase returns "<scheme>://<host>:<port>" or its
+// CONNECT-style equivalent "<host>:<port>" when the original URL
+// had no scheme.
+func formatHostBase(o GeneralizeOffer) string {
+	if o.Scheme == "" {
+		if o.Port == 0 {
+			return o.Host
+		}
+		return fmt.Sprintf("%s:%d", o.Host, o.Port)
+	}
+	if o.Port == 0 {
+		return fmt.Sprintf("%s://%s", o.Scheme, o.Host)
+	}
+	return fmt.Sprintf("%s://%s:%d", o.Scheme, o.Host, o.Port)
 }
 
 func applyKeyConsole(m Model, e KeyEvent) (Model, Cmd) {

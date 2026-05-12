@@ -498,31 +498,31 @@ func printRunStartupBanner(out io.Writer, addr, mode string) {
 
 // derivePersistPattern returns the lists.allow / lists.deny pattern
 // that should be written when an operator manually approves or denies
-// the held request `req`. The user picked "full URL for now" — until
-// LLM-driven generalization lands as a follow-up, the pattern is the
-// most-specific form the request supports:
+// the held request `req`. The pattern is the most-specific form the
+// request supports, with the request's method prefixed so operators
+// can later generalise across methods through the TUI's post-approve
+// prompt (#85):
 //
-//   - CONNECT (HTTPS pass-through, no path): "<host>:<port>"
-//     matches the typed-REPL `allow api.github.com:443` precedent.
-//   - intercepted HTTPS or plain HTTP: "<scheme>://<host>:<port><path>"
+//   - CONNECT (HTTPS pass-through, no path): "CONNECT <host>:<port>"
+//   - intercepted HTTPS or plain HTTP:
+//     "<METHOD> <scheme>://<host>:<port><path>"
 //     where <scheme> is "http" or "https" (collapsing the internal
 //     "https-tunneled" / "https-intercepted" telemetry strings).
 //
-// The narrow grain means a sibling path on the same host re-prompts;
-// that is the explicit trade — operator chose "full URL" to ship now
-// and surface generalization as a follow-up enhancement (#49 comment
-// trail).
+// Pre-#85 callers wrote the bare host or URL — those patterns
+// continue to match any method (hostlist.Pattern.anyMethod=true).
 func derivePersistPattern(req *types.RequestEvent) string {
 	if req == nil || req.Host == "" {
 		return ""
 	}
+	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	host := req.Host
 	port := req.Port
-	if req.Method == "CONNECT" || req.Path == "" {
+	if method == "CONNECT" || req.Path == "" {
 		if port == 0 {
-			return host
+			return method + " " + host
 		}
-		return fmt.Sprintf("%s:%d", host, port)
+		return fmt.Sprintf("%s %s:%d", method, host, port)
 	}
 	scheme := req.Scheme
 	switch scheme {
@@ -532,7 +532,7 @@ func derivePersistPattern(req *types.RequestEvent) string {
 		scheme = "http"
 	}
 	if port != 0 {
-		return fmt.Sprintf("%s://%s:%d%s", scheme, host, port, req.Path)
+		return fmt.Sprintf("%s %s://%s:%d%s", method, scheme, host, port, req.Path)
 	}
-	return fmt.Sprintf("%s://%s%s", scheme, host, req.Path)
+	return fmt.Sprintf("%s %s://%s%s", method, scheme, host, req.Path)
 }

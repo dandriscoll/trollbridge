@@ -1116,11 +1116,20 @@ lists:
 Each entry is a pattern of the form
 
 ```
-[<scheme>://]host[:port][/path]
+[<METHOD>|*] [<scheme>://]host[:port][/path]
 ```
 
 with these wildcard semantics:
 
+- `METHOD` (optional prefix, closes #85)
+  - omitted: any method (equivalent to `*`).
+  - `*`: explicit any-method marker (interchangeable with omitting the prefix).
+  - Uppercase HTTP verb (e.g., `GET`, `POST`, `CONNECT`):
+    only matches that method. Method comparison is
+    case-insensitive against the request method.
+  - Any uppercase-letter token is accepted as a method; we do
+    not whitelist a fixed verb set so operators can wire
+    custom methods if needed.
 - `host`
   - exact label match (case-insensitive): `api.github.com`
   - bare `*`: any host (use sparingly).

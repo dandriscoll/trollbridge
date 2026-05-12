@@ -23,10 +23,13 @@ proxy:   lo:8080
 control: lo:8081
 metrics: 0
 
-# 2. Allow / deny lists. Each entry is host[:port][/path] with an
-#    optional <scheme>:// prefix and * wildcards.
+# 2. Allow / deny lists. Each entry is
+#       [<METHOD>|*] [<scheme>://]host[:port][/path]
+#    where the optional leading METHOD is an uppercase HTTP verb
+#    (or `*` for any) and the rest follows the usual host/path
+#    grammar with `*` wildcards.
 #
-#      api.github.com                    exact host
+#      api.github.com                    exact host, any method
 #      *.github.com                      strict subdomain wildcard
 #      api.github.com:443                exact port
 #      api.github.com/v3                 exact path
@@ -34,6 +37,12 @@ metrics: 0
 #      https://api.github.com/v3/*       scheme + host + path-prefix
 #      *                                 any host (use sparingly)
 #      127.0.0.1                         IP address
+#      GET https://api.github.com/v3/*   only GET on path prefix
+#      * https://api.github.com/v3/*    any method (explicit)
+#      CONNECT api.github.com:443        only the CONNECT pre-intercept
+#
+#    Entries written before the method prefix landed (pre-#85)
+#    continue to work and match any method.
 #
 #    Trollbridge writes this list back when the operator types
 #    `allow X` / `deny X` / `remove X` in the REPL — comments

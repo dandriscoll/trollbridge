@@ -194,8 +194,10 @@ endpoints are open (no auth); the CA cert is public-by-design.
    Prometheus endpoint.
 2. **`lists`** — inline `allow:` / `deny:` patterns. The console
    REPL writes back to trollbridge.yaml; comments outside `lists:`
-   survive. Each entry is `host[:port][/path]` with an optional
-   `<scheme>://` prefix and `*` wildcards.
+   survive. Each entry is `[<METHOD>|*] [<scheme>://]host[:port][/path]`
+   with an optional method prefix (e.g., `GET https://api.example.com/v1/*`)
+   and `*` wildcards on host/path. Method-less entries match any
+   method (backward-compatible with pre-method patterns).
 3. **`llm`** — provider / model / endpoint / api-key. Provider
    selects the auth header and wire shape: `anthropic` (default)
    sends `x-api-key: …` with a pinned `anthropic-version` header

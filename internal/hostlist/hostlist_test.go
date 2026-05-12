@@ -28,10 +28,10 @@ func loadOne(t *testing.T, content string) *HostList {
 
 func TestParse_BasicHost(t *testing.T) {
 	h := loadOne(t, "example.com\n")
-	if _, ok := h.Match("", "example.com", 443, "/"); !ok {
+	if _, ok := h.Match("", "", "example.com", 443, "/"); !ok {
 		t.Error("expected exact host match")
 	}
-	if _, ok := h.Match("", "other.com", 443, "/"); ok {
+	if _, ok := h.Match("", "", "other.com", 443, "/"); ok {
 		t.Error("unexpected match for unrelated host")
 	}
 }
@@ -49,7 +49,7 @@ func TestParse_WildcardSubdomain(t *testing.T) {
 		{"other.com", false},
 	}
 	for _, c := range cases {
-		_, got := h.Match("", c.host, 443, "/")
+		_, got := h.Match("", "", c.host, 443, "/")
 		if got != c.want {
 			t.Errorf("host=%s: got %v, want %v", c.host, got, c.want)
 		}
@@ -58,23 +58,23 @@ func TestParse_WildcardSubdomain(t *testing.T) {
 
 func TestParse_PortExactAndAny(t *testing.T) {
 	h := loadOne(t, "example.com:443\nexample.com:8080\n")
-	if _, ok := h.Match("", "example.com", 443, "/"); !ok {
+	if _, ok := h.Match("", "", "example.com", 443, "/"); !ok {
 		t.Error("expected match on :443")
 	}
-	if _, ok := h.Match("", "example.com", 8080, "/"); !ok {
+	if _, ok := h.Match("", "", "example.com", 8080, "/"); !ok {
 		t.Error("expected match on :8080")
 	}
-	if _, ok := h.Match("", "example.com", 1234, "/"); ok {
+	if _, ok := h.Match("", "", "example.com", 1234, "/"); ok {
 		t.Error("unexpected match on :1234")
 	}
 
 	hAny := loadOne(t, "example.com:*\n")
-	if _, ok := hAny.Match("", "example.com", 1234, "/"); !ok {
+	if _, ok := hAny.Match("", "", "example.com", 1234, "/"); !ok {
 		t.Error("wildcard port should match any")
 	}
 
 	hOmitted := loadOne(t, "example.com\n")
-	if _, ok := hOmitted.Match("", "example.com", 9999, "/"); !ok {
+	if _, ok := hOmitted.Match("", "", "example.com", 9999, "/"); !ok {
 		t.Error("omitted port should match any")
 	}
 }
@@ -92,7 +92,7 @@ func TestParse_PathExactAndPrefix(t *testing.T) {
 		{"/", false},
 	}
 	for _, c := range cases {
-		_, got := h.Match("", "api.github.com", 443, c.path)
+		_, got := h.Match("", "", "api.github.com", 443, c.path)
 		if got != c.want {
 			t.Errorf("path=%s: got %v want %v", c.path, got, c.want)
 		}
@@ -101,17 +101,17 @@ func TestParse_PathExactAndPrefix(t *testing.T) {
 
 func TestParse_AnyHost(t *testing.T) {
 	h := loadOne(t, "*\n")
-	if _, ok := h.Match("", "a.b.c", 80, "/"); !ok {
+	if _, ok := h.Match("", "", "a.b.c", 80, "/"); !ok {
 		t.Error("bare * should match any host")
 	}
 }
 
 func TestParse_AnyHostOnSpecificPort(t *testing.T) {
 	h := loadOne(t, "*:9999\n")
-	if _, ok := h.Match("", "anything", 9999, "/"); !ok {
+	if _, ok := h.Match("", "", "anything", 9999, "/"); !ok {
 		t.Error("expected match on any host with :9999")
 	}
-	if _, ok := h.Match("", "anything", 80, "/"); ok {
+	if _, ok := h.Match("", "", "anything", 80, "/"); ok {
 		t.Error("expected no match for wrong port")
 	}
 }
@@ -124,10 +124,10 @@ example.com   # trailing comment
 *.test.com
 `
 	h := loadOne(t, content)
-	if _, ok := h.Match("", "example.com", 443, "/"); !ok {
+	if _, ok := h.Match("", "", "example.com", 443, "/"); !ok {
 		t.Error("expected example.com to match")
 	}
-	if _, ok := h.Match("", "a.test.com", 443, "/"); !ok {
+	if _, ok := h.Match("", "", "a.test.com", 443, "/"); !ok {
 		t.Error("expected *.test.com to match")
 	}
 	if len(h.Patterns) != 2 {
@@ -181,14 +181,14 @@ func TestParse_PatternSourceTracksFileLine(t *testing.T) {
 
 func TestNilHostList_NeverMatches(t *testing.T) {
 	var h *HostList
-	if _, ok := h.Match("", "anything", 443, "/"); ok {
+	if _, ok := h.Match("", "", "anything", 443, "/"); ok {
 		t.Error("nil HostList should not match")
 	}
 }
 
 func TestEmptyList_NeverMatches(t *testing.T) {
 	h := loadOne(t, "# only comments\n\n")
-	if _, ok := h.Match("", "anything", 443, "/"); ok {
+	if _, ok := h.Match("", "", "anything", 443, "/"); ok {
 		t.Error("empty list should not match")
 	}
 	if len(h.Patterns) != 0 {
@@ -221,13 +221,13 @@ func TestParseScheme_RejectsUnknown(t *testing.T) {
 
 func TestMatch_SchemeRequiredWhenSpecified(t *testing.T) {
 	h := loadOne(t, "https://api.github.com\n")
-	if _, ok := h.Match("https", "api.github.com", 443, "/"); !ok {
+	if _, ok := h.Match("", "https", "api.github.com", 443, "/"); !ok {
 		t.Error("https://api.github.com should match scheme=https")
 	}
-	if _, ok := h.Match("http", "api.github.com", 443, "/"); ok {
+	if _, ok := h.Match("", "http", "api.github.com", 443, "/"); ok {
 		t.Error("https://api.github.com should NOT match scheme=http")
 	}
-	if _, ok := h.Match("", "api.github.com", 443, "/"); ok {
+	if _, ok := h.Match("", "", "api.github.com", 443, "/"); ok {
 		t.Error("https://api.github.com should NOT match scheme=\"\" (CONNECT)")
 	}
 }
@@ -235,7 +235,7 @@ func TestMatch_SchemeRequiredWhenSpecified(t *testing.T) {
 func TestMatch_NoSchemeMatchesAny(t *testing.T) {
 	h := loadOne(t, "api.github.com\n")
 	for _, scheme := range []string{"", "http", "https"} {
-		if _, ok := h.Match(scheme, "api.github.com", 443, "/"); !ok {
+		if _, ok := h.Match("", scheme, "api.github.com", 443, "/"); !ok {
 			t.Errorf("scheme=%q should match scheme-less pattern", scheme)
 		}
 	}
@@ -243,13 +243,90 @@ func TestMatch_NoSchemeMatchesAny(t *testing.T) {
 
 func TestMatch_URLWithPathPrefix(t *testing.T) {
 	h := loadOne(t, "https://api.github.com/v3/*\n")
-	if _, ok := h.Match("https", "api.github.com", 443, "/v3/repos"); !ok {
+	if _, ok := h.Match("", "https", "api.github.com", 443, "/v3/repos"); !ok {
 		t.Error("URL+path-prefix should match /v3/repos")
 	}
-	if _, ok := h.Match("https", "api.github.com", 443, "/v4/foo"); ok {
+	if _, ok := h.Match("", "https", "api.github.com", 443, "/v4/foo"); ok {
 		t.Error("URL+path-prefix should NOT match /v4/foo")
 	}
-	if _, ok := h.Match("http", "api.github.com", 443, "/v3/repos"); ok {
+	if _, ok := h.Match("", "http", "api.github.com", 443, "/v3/repos"); ok {
 		t.Error("scheme=http should NOT match https://... pattern")
+	}
+}
+
+func TestParsePattern_MethodPrefix(t *testing.T) {
+	cases := []struct {
+		name      string
+		raw       string
+		anyMethod bool
+		method    string
+	}{
+		{"no prefix", "api.github.com", true, ""},
+		{"scheme only", "https://api.github.com", true, ""},
+		{"explicit any", "* https://api.github.com", true, ""},
+		{"explicit GET", "GET https://api.github.com", false, "GET"},
+		{"explicit POST with path", "POST https://api.github.com/v1/users", false, "POST"},
+		{"CONNECT bare host:port", "CONNECT api.github.com:443", false, "CONNECT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := loadOne(t, tc.raw+"\n")
+			if len(h.Patterns) != 1 {
+				t.Fatalf("expected 1 pattern, got %d", len(h.Patterns))
+			}
+			p := h.Patterns[0]
+			if p.anyMethod != tc.anyMethod {
+				t.Errorf("anyMethod = %v, want %v", p.anyMethod, tc.anyMethod)
+			}
+			if p.method != tc.method {
+				t.Errorf("method = %q, want %q", p.method, tc.method)
+			}
+		})
+	}
+}
+
+func TestMatch_MethodGated(t *testing.T) {
+	h := loadOne(t, "GET https://api.github.com/users/*\n")
+	if _, ok := h.Match("GET", "https", "api.github.com", 443, "/users/dan"); !ok {
+		t.Error("GET pattern should match GET request")
+	}
+	if _, ok := h.Match("POST", "https", "api.github.com", 443, "/users/dan"); ok {
+		t.Error("GET pattern should NOT match POST request")
+	}
+	if _, ok := h.Match("get", "https", "api.github.com", 443, "/users/dan"); !ok {
+		t.Error("method comparison should be case-insensitive (lowercase typo)")
+	}
+}
+
+func TestMatch_AnyMethodPatternMatchesAll(t *testing.T) {
+	cases := []struct {
+		raw    string
+		scheme string
+	}{
+		{"api.github.com", ""},
+		{"https://api.github.com", "https"},
+		{"* https://api.github.com", "https"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			h := loadOne(t, tc.raw+"\n")
+			for _, m := range []string{"", "GET", "POST", "DELETE", "PATCH", "CONNECT"} {
+				if _, ok := h.Match(m, tc.scheme, "api.github.com", 443, "/"); !ok {
+					t.Errorf("pattern %q should match method %q", tc.raw, m)
+				}
+			}
+		})
+	}
+}
+
+func TestMatch_BackwardCompat_NoMethodPatternsUnchanged(t *testing.T) {
+	// Pattern files written before #85 (no method prefix) must
+	// continue to match the same requests they did before. Method
+	// arg passed by callers but pattern.anyMethod=true.
+	h := loadOne(t, "https://api.github.com/v3/*\n")
+	for _, method := range []string{"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "CONNECT"} {
+		if _, ok := h.Match(method, "https", "api.github.com", 443, "/v3/users"); !ok {
+			t.Errorf("pre-#85 pattern should match method %q", method)
+		}
 	}
 }

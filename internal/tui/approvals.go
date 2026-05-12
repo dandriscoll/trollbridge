@@ -705,19 +705,39 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	}
 
 	// Status row (lives inside the border, above the bottom border).
-	if m.LastErr != "" {
+	switch {
+	case m.GeneralizeOffer != nil:
+		// Post-approve prompt: name the specific entry just
+		// written and the three broader options (#85). Cyan so
+		// the operator notices a new-keystroke-expected state
+		// without it reading like an error.
+		text := formatGeneralizeOffer(*m.GeneralizeOffer)
+		row := "\x1b[36m" + padRight(runeTrunc(text, inner), inner) + "\x1b[0m"
+		b.WriteString(bodyLine(row, m.Cols, focused))
+	case m.LastErr != "":
 		row := "\x1b[31m" + padRight(runeTrunc("error: "+m.LastErr, inner), inner) + "\x1b[0m"
 		b.WriteString(bodyLine(row, m.Cols, focused))
-	} else if m.LastInfo != "" {
+	case m.LastInfo != "":
 		row := "\x1b[32m" + padRight(runeTrunc(m.LastInfo, inner), inner) + "\x1b[0m"
 		b.WriteString(bodyLine(row, m.Cols, focused))
-	} else {
+	default:
 		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
 	}
 
 	// Bottom border carries the keybindings on the right.
 	keys := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [q] quit"
 	b.WriteString(bottomBorder("", keys, m.Cols, focused))
+}
+
+// formatGeneralizeOffer formats the post-approve "make this more
+// general?" prompt shown in the approvals-pane status row
+// (closes #85). The prompt names the specific entry that was just
+// written, lists the three broader patterns, and reminds the
+// operator that any other keystroke dismisses.
+func formatGeneralizeOffer(o GeneralizeOffer) string {
+	return fmt.Sprintf(
+		"allowed %s %s — generalize? [1]all methods  [2]all URLs on host  [3]both  (any other key skips)",
+		o.Method, o.URL)
 }
 
 // brailleCounter returns a single-rune Braille glyph whose dot count
