@@ -1219,7 +1219,6 @@ func infoPaneLines(m Model) []string {
 		fmt.Sprintf("    count      : %d", o.Count),
 		"",
 		"  \x1b[2mmost recent\x1b[0m",
-		fmt.Sprintf("    request_id : %s", o.RequestID),
 		fmt.Sprintf("    status     : %s", o.Status),
 	}
 	if o.HoldID != "" {

@@ -1041,11 +1041,12 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		}
 		op := displayed[m.Selected]
 		if op.HoldID != "" && op.Status == opstream.StatusPending {
+			target := op.Method + " " + op.URL
 			if e.Rune == 'a' {
-				m.LastInfo = "approving " + op.HoldID + "…"
+				m.LastInfo = "approving " + target + "…"
 				return m, CmdApprove{ID: op.HoldID}
 			}
-			m.LastInfo = "denying " + op.HoldID + "…"
+			m.LastInfo = "denying " + target + "…"
 			return m, CmdDeny{ID: op.HoldID}
 		}
 		// Retroactive add to allow / deny list (closes #60). Routed
@@ -1213,8 +1214,15 @@ func applyKeyConsole(m Model, e KeyEvent) (Model, Cmd) {
 }
 
 func applyActionResult(m Model, e ActionResult) (Model, Cmd) {
+	target := resolveActionTarget(m, e.ID)
 	if e.Err != nil {
-		m.LastErr = e.Action + " " + e.ID + ": " + truncate(e.Err.Error(), 200)
+		// Surface what the operator just did — URL is more meaningful
+		// than the queue id when something goes wrong (#92).
+		idForErr := target
+		if idForErr == "" {
+			idForErr = e.ID
+		}
+		m.LastErr = e.Action + " " + idForErr + ": " + truncate(e.Err.Error(), 200)
 		m.LastInfo = ""
 		return m, CmdNone{}
 	}
@@ -1223,10 +1231,31 @@ func applyActionResult(m Model, e ActionResult) (Model, Cmd) {
 	// entry will transition to its terminal status on the next ops
 	// tick when writeAudit fires.
 	m.Holds = removeHold(m.Holds, e.ID)
-	m.LastInfo = e.Action + "d " + e.ID
+	if target != "" {
+		m.LastInfo = e.Action + "d " + target
+	} else {
+		// Ring may have rotated; fall back to the verb alone rather
+		// than surfacing a hold id the operator does not care about.
+		m.LastInfo = e.Action + "d (op no longer in ring)"
+	}
 	m.LastErr = ""
 	clampSelection(&m)
 	return m, CmdRefresh{}
+}
+
+// resolveActionTarget looks up the displayed op carrying holdID and
+// returns "<METHOD> <URL>" for use in operator-facing status messages
+// (#92). Empty string when the op is not in the ring.
+func resolveActionTarget(m Model, holdID string) string {
+	if holdID == "" {
+		return ""
+	}
+	for _, o := range DisplayedOps(m) {
+		if o.HoldID == holdID {
+			return o.Method + " " + o.URL
+		}
+	}
+	return ""
 }
 
 func applyConsoleExec(m Model, e ConsoleExecResult) (Model, Cmd) {

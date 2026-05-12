@@ -101,8 +101,10 @@ func TestApply_KeyApproveOnSelected(t *testing.T) {
 	if approve.ID != "b" {
 		t.Errorf("CmdApprove.ID = %q, want b", approve.ID)
 	}
-	if !strings.Contains(got.LastInfo, "b") {
-		t.Errorf("LastInfo = %q, want it to mention id=b", got.LastInfo)
+	// Status message names the URL, not the hold id (#92). snap("b","y")
+	// produces an op with Host "y" — the URL ends with "y".
+	if !strings.Contains(got.LastInfo, "y") {
+		t.Errorf("LastInfo = %q, want it to mention URL host=y", got.LastInfo)
 	}
 }
 

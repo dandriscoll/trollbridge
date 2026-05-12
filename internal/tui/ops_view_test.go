@@ -151,8 +151,9 @@ func TestApplyKey_ApprovesUsesHoldIDFromOp(t *testing.T) {
 	if approve.ID != "hold-XYZ" {
 		t.Errorf("approve.ID = %q, want %q", approve.ID, "hold-XYZ")
 	}
-	if !strings.Contains(got.LastInfo, "hold-XYZ") {
-		t.Errorf("LastInfo = %q, want it to mention hold-XYZ", got.LastInfo)
+	// Status message names the URL/method, not the hold id (#92).
+	if !strings.Contains(got.LastInfo, "https://x/") {
+		t.Errorf("LastInfo = %q, want it to mention https://x/", got.LastInfo)
 	}
 }
 
