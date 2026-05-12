@@ -917,7 +917,7 @@ func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, b
 			"event", oplog.EventAuditWriteFailure,
 			"request_id", req.ID, "error", err.Error())
 	}
-	s.ops.Resolve(req.ID, opStatusFromAudit(entry))
+	s.ops.Resolve(req.ID, opStatusFromAudit(entry), latency.Milliseconds(), size)
 }
 
 func inspectionStatus(hasBody, truncated bool) string {
@@ -967,7 +967,7 @@ func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryReda
 			"event", oplog.EventAuditWriteFailure,
 			"request_id", req.ID, "error", err.Error())
 	}
-	s.ops.Resolve(req.ID, opStatusFromAudit(entry))
+	s.ops.Resolve(req.ID, opStatusFromAudit(entry), latency.Milliseconds(), size)
 }
 
 // writeAuditTLSHandshakeFail emits the audit entry for a TLS
@@ -1020,7 +1020,7 @@ func (s *Server) writeAuditTLSHandshakeFail(
 			"event", oplog.EventAuditWriteFailure,
 			"request_id", req.ID, "error", err.Error())
 	}
-	s.ops.Resolve(req.ID, opstream.StatusTLSFailed)
+	s.ops.Resolve(req.ID, opstream.StatusTLSFailed, latency.Milliseconds(), 0)
 }
 
 // buildAdvisorInputs assembles the advisor's read-only context: a
@@ -1107,7 +1107,7 @@ func (s *Server) transitionOpFromEvaluating(reqID string, e types.Effect) {
 		types.EffectDeny,
 		types.EffectAskUserResolvedDeny,
 		types.EffectAskUserTimedOut:
-		s.ops.Resolve(reqID, opstream.StatusRunning)
+		s.ops.Resolve(reqID, opstream.StatusRunning, 0, 0)
 	}
 }
 

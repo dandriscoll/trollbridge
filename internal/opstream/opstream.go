@@ -62,13 +62,15 @@ const (
 // Op is one operation's view-state. JSON tags exist because /v1/ops
 // emits this directly.
 type Op struct {
-	RequestID string    `json:"request_id"`
-	Method    string    `json:"method"`
-	URL       string    `json:"url"`
-	Status    string    `json:"status"`
-	HoldID    string    `json:"hold_id,omitempty"`
-	StartedAt time.Time `json:"started_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	RequestID         string    `json:"request_id"`
+	Method            string    `json:"method"`
+	URL               string    `json:"url"`
+	Status            string    `json:"status"`
+	HoldID            string    `json:"hold_id,omitempty"`
+	StartedAt         time.Time `json:"started_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	LatencyMS         int64     `json:"latency_ms,omitempty"`
+	ResponseSizeBytes int64     `json:"response_size_bytes,omitempty"`
 }
 
 // Ring is a bounded, request-id-keyed buffer of recent operations.
@@ -189,9 +191,12 @@ func (r *Ring) Rebind(oldID, newID, method, url string) bool {
 
 // Resolve moves an operation to a terminal status. status is a free-
 // form string — typically one of the Status constants or a
-// stringified HTTP status code. Silent no-op if the operation is
-// unknown.
-func (r *Ring) Resolve(requestID, status string) {
+// stringified HTTP status code. latencyMS and sizeBytes carry the
+// most-recent-request stats the info pane renders (closes #90); pass
+// 0 when no terminal data is available (e.g., for the transient
+// "running" transition before the response completes). Silent no-op
+// if the operation is unknown.
+func (r *Ring) Resolve(requestID, status string, latencyMS int64, sizeBytes int64) {
 	if r == nil {
 		return
 	}
@@ -204,6 +209,12 @@ func (r *Ring) Resolve(requestID, status string) {
 	op.Status = status
 	op.HoldID = ""
 	op.UpdatedAt = r.now()
+	if latencyMS > 0 {
+		op.LatencyMS = latencyMS
+	}
+	if sizeBytes > 0 {
+		op.ResponseSizeBytes = sizeBytes
+	}
 }
 
 // Snapshot returns a copy of the current operations, newest-updated

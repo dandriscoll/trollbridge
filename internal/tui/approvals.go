@@ -1141,7 +1141,8 @@ func panelHeaderLine(b *strings.Builder, m Model, title string) {
 }
 
 // renderInfoPane shows the full detail of the currently selected op
-// inside a focus-colored border (closes #88).
+// inside a focus-colored border. Layout splits group-identity (top)
+// from most-recent-request stats (bottom) per #90.
 func renderInfoPane(b *strings.Builder, m Model, rows int) {
 	focused := m.Focused == PaneConsole
 	if m.Cols < borderMinThreshold {
@@ -1164,7 +1165,6 @@ func renderInfoPane(b *strings.Builder, m Model, rows int) {
 		inner = 1
 	}
 	used := 0
-	displayed := DisplayedOps(m)
 	writeRow := func(s string) {
 		if used >= bodyLines {
 			return
@@ -1172,19 +1172,8 @@ func renderInfoPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString(bodyLine(padRight(runeTrunc(s, inner), inner), m.Cols, focused))
 		used++
 	}
-	if m.Selected < 0 || m.Selected >= len(displayed) {
-		writeRow("  (no operation selected — Tab to approvals, j/k to pick)")
-	} else {
-		o := displayed[m.Selected]
-		now := time.Now()
-		writeRow(fmt.Sprintf("  request_id : %s", o.RequestID))
-		writeRow(fmt.Sprintf("  method     : %s", o.Method))
-		writeRow(fmt.Sprintf("  url        : %s", o.URL))
-		writeRow(fmt.Sprintf("  status     : %s", o.Status))
-		writeRow(fmt.Sprintf("  hold_id    : %s", o.HoldID))
-		writeRow(fmt.Sprintf("  count      : %d", o.Count))
-		writeRow(fmt.Sprintf("  started    : %s", o.StartedAt.Local().Format("2006-01-02 15:04:05")))
-		writeRow(fmt.Sprintf("  updated    : %s  (%s ago)", o.UpdatedAt.Local().Format("2006-01-02 15:04:05"), now.Sub(o.UpdatedAt).Truncate(time.Second)))
+	for _, line := range infoPaneLines(m) {
+		writeRow(line)
 	}
 	for used < bodyLines {
 		writeRow("")
@@ -1193,42 +1182,74 @@ func renderInfoPane(b *strings.Builder, m Model, rows int) {
 }
 
 // renderInfoPaneNoBorder is the cols < borderMinThreshold fallback
-// for the info pane — same shape as the old un-bordered render.
+// for the info pane — same two-section layout as the bordered
+// version, without the chrome (closes #88, #90).
 func renderInfoPaneNoBorder(b *strings.Builder, m Model, rows int) {
 	panelHeaderLine(b, m, "── info ── ")
 	used := 1
-	displayed := DisplayedOps(m)
-	if m.Selected < 0 || m.Selected >= len(displayed) {
-		b.WriteString(padRight("  (no operation selected — Tab to approvals, j/k to pick)", m.Cols))
+	for _, l := range infoPaneLines(m) {
+		if used >= rows {
+			break
+		}
+		b.WriteString(padRight(runeTrunc(l, m.Cols), m.Cols))
 		b.WriteString("\r\n")
 		used++
-	} else {
-		o := displayed[m.Selected]
-		now := time.Now()
-		lines := []string{
-			fmt.Sprintf("  request_id : %s", o.RequestID),
-			fmt.Sprintf("  method     : %s", o.Method),
-			fmt.Sprintf("  url        : %s", o.URL),
-			fmt.Sprintf("  status     : %s", o.Status),
-			fmt.Sprintf("  hold_id    : %s", o.HoldID),
-			fmt.Sprintf("  count      : %d", o.Count),
-			fmt.Sprintf("  started    : %s", o.StartedAt.Local().Format("2006-01-02 15:04:05")),
-			fmt.Sprintf("  updated    : %s  (%s ago)", o.UpdatedAt.Local().Format("2006-01-02 15:04:05"), now.Sub(o.UpdatedAt).Truncate(time.Second)),
-		}
-		for _, l := range lines {
-			if used >= rows {
-				break
-			}
-			b.WriteString(padRight(runeTrunc(l, m.Cols), m.Cols))
-			b.WriteString("\r\n")
-			used++
-		}
 	}
 	for used < rows {
 		b.WriteString(padRight("", m.Cols))
 		b.WriteString("\r\n")
 		used++
 	}
+}
+
+// infoPaneLines builds the body of the info pane as an ordered slice
+// of pre-formatted lines, factoring the two-section layout (group
+// identity + most-recent request) shared by the bordered and
+// no-border renderers (#90).
+func infoPaneLines(m Model) []string {
+	displayed := DisplayedOps(m)
+	if m.Selected < 0 || m.Selected >= len(displayed) {
+		return []string{"  (no operation selected — Tab to approvals, j/k to pick)"}
+	}
+	o := displayed[m.Selected]
+	lines := []string{
+		"  \x1b[2mrequest\x1b[0m",
+		fmt.Sprintf("    method     : %s", o.Method),
+		fmt.Sprintf("    url        : %s", o.URL),
+		fmt.Sprintf("    count      : %d", o.Count),
+		"",
+		"  \x1b[2mmost recent\x1b[0m",
+		fmt.Sprintf("    request_id : %s", o.RequestID),
+		fmt.Sprintf("    status     : %s", o.Status),
+	}
+	if o.HoldID != "" {
+		lines = append(lines, fmt.Sprintf("    hold_id    : %s", o.HoldID))
+	}
+	lines = append(lines,
+		fmt.Sprintf("    started    : %s", o.StartedAt.Local().Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("    latency    : %s", formatInfoLatency(o.LatencyMS)),
+		fmt.Sprintf("    response   : %s", formatInfoBytes(o.ResponseSizeBytes)),
+	)
+	return lines
+}
+
+// formatInfoLatency renders the latency cell of the info pane: "Nms"
+// when known, "—" when 0 (in-flight or not yet resolved).
+func formatInfoLatency(ms int64) string {
+	if ms <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%dms", ms)
+}
+
+// formatInfoBytes renders the response-size cell of the info pane:
+// raw byte count when known, "—" when 0 (in-flight or no-body case
+// such as TLS handshake failure).
+func formatInfoBytes(n int64) string {
+	if n <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%d bytes", n)
 }
 
 // panelSwitcherHint is the global bottom-panel switcher reminder

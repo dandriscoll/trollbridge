@@ -50,7 +50,7 @@ func TestRing_Resolve_ClearsHoldID(t *testing.T) {
 	r := New(10)
 	r.Begin("req-1", "GET", "https://example.com:443/")
 	r.HoldPending("req-1", "hold-abc")
-	r.Resolve("req-1", "200")
+	r.Resolve("req-1", "200", 0, 0)
 
 	snap := r.Snapshot()
 	if got, want := snap[0].Status, "200"; got != want {
@@ -71,7 +71,7 @@ func TestRing_HoldPending_UnknownIDIsNoOp(t *testing.T) {
 
 func TestRing_Resolve_UnknownIDIsNoOp(t *testing.T) {
 	r := New(10)
-	r.Resolve("never-began", "200")
+	r.Resolve("never-began", "200", 0, 0)
 	if got := r.Snapshot(); len(got) != 0 {
 		t.Errorf("snapshot len = %d, want 0", len(got))
 	}
@@ -134,7 +134,7 @@ func TestRing_StatusUpdate_SamePositionAfterResolve(t *testing.T) {
 	r.Begin("req-C", "GET", "https://c.example/")
 
 	// Resolve req-B; it bumps to newest by UpdatedAt.
-	r.Resolve("req-B", "200")
+	r.Resolve("req-B", "200", 0, 0)
 	snap := r.Snapshot()
 
 	// Find req-B in the snapshot — its Status must be "200" and there
@@ -165,7 +165,7 @@ func TestRing_ConcurrentBeginsAreSafe(t *testing.T) {
 			id := "req-" + itoa(i)
 			r.Begin(id, "GET", "https://example.com/"+id)
 			r.HoldPending(id, "hold-"+itoa(i))
-			r.Resolve(id, "200")
+			r.Resolve(id, "200", 0, 0)
 		}(i)
 	}
 	wg.Wait()
@@ -179,7 +179,7 @@ func TestRing_NilSafe(t *testing.T) {
 	var r *Ring
 	r.Begin("x", "GET", "/")
 	r.HoldPending("x", "h")
-	r.Resolve("x", "200")
+	r.Resolve("x", "200", 0, 0)
 	if got := r.Snapshot(); got != nil {
 		t.Errorf("nil ring snapshot = %v, want nil", got)
 	}
@@ -191,7 +191,7 @@ func TestRing_NilSafe(t *testing.T) {
 func TestRing_Rebind_RelabelsExistingEntry(t *testing.T) {
 	r := New(10)
 	r.Begin("connect-1", "CONNECT", "api.example.com")
-	r.Resolve("connect-1", "200")
+	r.Resolve("connect-1", "200", 0, 0)
 
 	ok := r.Rebind("connect-1", "inner-1", "GET", "https://api.example.com/path")
 	if !ok {
