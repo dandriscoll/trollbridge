@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -15,11 +16,21 @@ import (
 // shape made install.sh's `exec bash "$0" "$@"` line abort with exit
 // 126 on dash hosts. The test asserts the stub runs end-to-end.
 func TestRun_AcceptsInstallShBashBootstrap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// `update` short-circuits to the manual-download branch on
+		// Windows before Run is invoked (see cmd/trollbridge/update.go);
+		// the pipeline is unix-only by design and `sh` is not on PATH
+		// on default windows-latest runners.
+		t.Skip("update path is not used on Windows; pipeline is unix-only")
+	}
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not on PATH; cannot exercise install.sh's bash-bootstrap branch")
 	}
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl not on PATH; pipeline cannot run")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not on PATH; pipeline cannot run")
 	}
 
 	stub := []byte(`#!/usr/bin/env bash
