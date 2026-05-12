@@ -90,9 +90,9 @@ func TestRenderURLsPane_HeaderAlwaysOnFirstRow(t *testing.T) {
 	if err := render(&b, m); err != nil {
 		t.Fatalf("render: %v", err)
 	}
-	// The panel header carries the urls legend; it must appear in
-	// the rendered output regardless of cursor position.
-	if !strings.Contains(b.String(), "── urls ──") {
+	// The panel chrome carries the "urls" label in the top border
+	// (#88). It must appear regardless of cursor position.
+	if !strings.Contains(b.String(), "urls") {
 		t.Errorf("panel header missing after scroll; first 600: %q", first(b.String(), 600))
 	}
 }

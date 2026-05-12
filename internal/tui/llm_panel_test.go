@@ -308,9 +308,10 @@ func TestRenderLLMPane_ExpandedInline(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	out := b.String()
-	// Inline mode renders peer rows AND detail fields. The "── llm"
-	// header should appear (panel header, not modal header).
-	if !strings.Contains(out, "── llm ──") {
+	// Inline mode renders peer rows AND detail fields. The "llm"
+	// pane label (now embedded in the bordered top row, #88) should
+	// appear.
+	if !strings.Contains(out, "llm") {
 		t.Errorf("inline expand did not draw panel header; first 600: %q", first(out, 600))
 	}
 	if strings.Contains(out, "── llm detail ──") {
@@ -348,11 +349,11 @@ func TestRenderLLMPane_ExpandedPromotesToModal(t *testing.T) {
 			t.Errorf("modal missing detail field label %q", want)
 		}
 	}
-	// Modal suppresses the normal split — the approvals-pane border
-	// label ("ops") and the "── llm ──" (non-modal) header should be
-	// absent.
-	if strings.Contains(out, "── llm ──") {
-		t.Errorf("modal wrongly drew the non-modal panel header (── llm ──) alongside the modal")
+	// Modal suppresses the normal split — the non-modal LLM panel
+	// chrome (top-border "llm" label, bottom-border [Enter] detail
+	// hint) should be absent.
+	if strings.Contains(out, "── llm ──") || strings.Contains(out, "[Enter] detail") {
+		t.Errorf("modal wrongly drew the non-modal panel chrome alongside the modal")
 	}
 }
 
@@ -379,18 +380,20 @@ func TestRenderLLMPane_ModalEscReturnsToList(t *testing.T) {
 }
 
 // TestShouldRenderLLMModal_DecisionBoundary pins the modal-promotion
-// rule: panelRows >= 10 stays inline; below promotes to modal.
+// rule: with the panel chrome now consuming a top + bottom border
+// row (#88), inline needs panelRows >= 11 (2 borders + 8 detail + 1
+// peer).
 func TestShouldRenderLLMModal_DecisionBoundary(t *testing.T) {
 	m := modelWithDigests([]advisor.Digest{digestAt(0)})
 	m.DigestSelected = "req-a"
 	m.DigestExpanded = true
-	// bodyRows=20 → topRows=10 → bottomRows=10 → exactly fits (1+8+1).
-	if shouldRenderLLMModal(m, 20) {
-		t.Errorf("modal-promotion fired at bodyRows=20; bottom should fit 10 rows")
+	// bodyRows=22 → topRows=11 → bottomRows=11 → exactly fits (2+8+1).
+	if shouldRenderLLMModal(m, 22) {
+		t.Errorf("modal-promotion fired at bodyRows=22; bottom should fit 11 rows")
 	}
-	// bodyRows=18 → topRows=9 → bottomRows=9 → does NOT fit.
-	if !shouldRenderLLMModal(m, 18) {
-		t.Errorf("modal-promotion did not fire at bodyRows=18; bottom is 9 rows")
+	// bodyRows=20 → topRows=10 → bottomRows=10 → does NOT fit.
+	if !shouldRenderLLMModal(m, 20) {
+		t.Errorf("modal-promotion did not fire at bodyRows=20; bottom is 10 rows")
 	}
 }
 

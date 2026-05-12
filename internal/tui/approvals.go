@@ -1140,8 +1140,61 @@ func panelHeaderLine(b *strings.Builder, m Model, title string) {
 	b.WriteString("\r\n")
 }
 
-// renderInfoPane shows the full detail of the currently selected op.
+// renderInfoPane shows the full detail of the currently selected op
+// inside a focus-colored border (closes #88).
 func renderInfoPane(b *strings.Builder, m Model, rows int) {
+	focused := m.Focused == PaneConsole
+	if m.Cols < borderMinThreshold {
+		renderInfoPaneNoBorder(b, m, rows)
+		return
+	}
+	label := formatPaneLabel("info", focused)
+	rightHint := ""
+	if focused {
+		rightHint = formatTabHint(m.Focused)
+	}
+	b.WriteString(topBorder(label, rightHint, m.Cols, focused))
+
+	bodyLines := rows - 2
+	if bodyLines < 1 {
+		bodyLines = 1
+	}
+	inner := m.Cols - 2
+	if inner < 1 {
+		inner = 1
+	}
+	used := 0
+	displayed := DisplayedOps(m)
+	writeRow := func(s string) {
+		if used >= bodyLines {
+			return
+		}
+		b.WriteString(bodyLine(padRight(runeTrunc(s, inner), inner), m.Cols, focused))
+		used++
+	}
+	if m.Selected < 0 || m.Selected >= len(displayed) {
+		writeRow("  (no operation selected — Tab to approvals, j/k to pick)")
+	} else {
+		o := displayed[m.Selected]
+		now := time.Now()
+		writeRow(fmt.Sprintf("  request_id : %s", o.RequestID))
+		writeRow(fmt.Sprintf("  method     : %s", o.Method))
+		writeRow(fmt.Sprintf("  url        : %s", o.URL))
+		writeRow(fmt.Sprintf("  status     : %s", o.Status))
+		writeRow(fmt.Sprintf("  hold_id    : %s", o.HoldID))
+		writeRow(fmt.Sprintf("  count      : %d", o.Count))
+		writeRow(fmt.Sprintf("  started    : %s", o.StartedAt.Local().Format("2006-01-02 15:04:05")))
+		writeRow(fmt.Sprintf("  updated    : %s  (%s ago)", o.UpdatedAt.Local().Format("2006-01-02 15:04:05"), now.Sub(o.UpdatedAt).Truncate(time.Second)))
+	}
+	for used < bodyLines {
+		writeRow("")
+	}
+	b.WriteString(bottomBorder(panelSwitcherHint, "", m.Cols, focused))
+}
+
+// renderInfoPaneNoBorder is the cols < borderMinThreshold fallback
+// for the info pane — same shape as the old un-bordered render.
+func renderInfoPaneNoBorder(b *strings.Builder, m Model, rows int) {
 	panelHeaderLine(b, m, "── info ── ")
 	used := 1
 	displayed := DisplayedOps(m)
@@ -1178,6 +1231,10 @@ func renderInfoPane(b *strings.Builder, m Model, rows int) {
 	}
 }
 
+// panelSwitcherHint is the global bottom-panel switcher reminder
+// shared across info/llm/urls panels' bottom borders (closes #88).
+const panelSwitcherHint = "[0]hide  [1]console  [2]info  [3]llm  [4]urls"
+
 // llmDetailLineCount is the number of labelled fields the LLM detail
 // view renders for a selected digest. Used by both the inline expand
 // path (renderLLMPane) and the modal-promotion decision in render
@@ -1186,12 +1243,13 @@ const llmDetailLineCount = 8
 
 // llmDetailFitsInline reports whether the LLM panel's inline-expand
 // layout has enough room to render the detail block plus the panel
-// header plus at least one peer digest row. When false, render
-// promotes the detail view to a full-body modal instead.
+// chrome (top + bottom border) plus at least one peer digest row.
+// When false, render promotes the detail view to a full-body modal
+// instead.
 func llmDetailFitsInline(panelRows int) bool {
-	// header (1) + detail block (llmDetailLineCount) + at least 1
+	// 2 border rows + detail block (llmDetailLineCount) + at least 1
 	// peer row.
-	return panelRows >= 1+llmDetailLineCount+1
+	return panelRows >= 2+llmDetailLineCount+1
 }
 
 // shouldRenderLLMModal reports whether the top-level render must
@@ -1240,14 +1298,79 @@ func digestDetailLines(d advisor.Digest) []string {
 	}
 }
 
-// renderLLMPane shows the rolling advisor-classify digest. With the
-// new selection cursor and inline expansion (#81), the panel
-// supports up/down navigation and an Enter-to-expand detail view
-// for the highlighted digest. When the expanded detail would not
-// fit in the panel's available rows, render() promotes the view to
-// a modal; this function only handles the inline-fit and collapsed
-// cases.
+// renderLLMPane shows the rolling advisor-classify digest inside a
+// focus-colored border (closes #88). Navigation and Enter-to-expand
+// semantics (#81) are unchanged; only the chrome around the body
+// changed.
 func renderLLMPane(b *strings.Builder, m Model, rows int) {
+	focused := m.Focused == PaneConsole
+	if m.Cols < borderMinThreshold {
+		renderLLMPaneNoBorder(b, m, rows)
+		return
+	}
+	label := formatPaneLabel("llm", focused)
+	rightHint := ""
+	if focused {
+		rightHint = formatTabHint(m.Focused)
+	}
+	b.WriteString(topBorder(label, rightHint, m.Cols, focused))
+
+	bodyLines := rows - 2
+	if bodyLines < 1 {
+		bodyLines = 1
+	}
+	inner := m.Cols - 2
+	if inner < 1 {
+		inner = 1
+	}
+	used := 0
+	writeLine := func(s string, selected bool) {
+		if used >= bodyLines {
+			return
+		}
+		text := padRight(runeTrunc(s, inner), inner)
+		if selected {
+			text = "\x1b[7m" + text + "\x1b[0m"
+		}
+		b.WriteString(bodyLine(text, m.Cols, focused))
+		used++
+	}
+	if len(m.Digests) == 0 {
+		writeLine("  (no LLM evaluations yet — advisor disabled or no traffic)", false)
+	} else {
+		for i := len(m.Digests) - 1; i >= 0 && used < bodyLines; i-- {
+			d := m.Digests[i]
+			selected := d.RequestID == m.DigestSelected
+			if selected && m.DigestExpanded {
+				for _, line := range digestDetailLines(d) {
+					if used >= bodyLines {
+						break
+					}
+					writeLine(line, true)
+				}
+				continue
+			}
+			ts := d.Timestamp.Local().Format("15:04:05")
+			line := fmt.Sprintf("  %s  %-7s %-7s %s  — %s",
+				ts,
+				d.Effect,
+				d.Confidence,
+				d.Host,
+				d.Reason,
+			)
+			writeLine(line, selected)
+		}
+	}
+	for used < bodyLines {
+		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
+		used++
+	}
+	b.WriteString(bottomBorder("[↑↓/jk] nav  [Enter] detail  [Esc] close", panelSwitcherHint, m.Cols, focused))
+}
+
+// renderLLMPaneNoBorder is the narrow-terminal fallback for the LLM
+// pane — preserves the previous flat layout when cols < borderMinThreshold.
+func renderLLMPaneNoBorder(b *strings.Builder, m Model, rows int) {
 	panelHeaderLine(b, m, "── llm ── [↑↓/jk] nav  [Enter] detail  [Esc] close ")
 	used := 1
 	if len(m.Digests) == 0 {
@@ -1276,15 +1399,10 @@ func renderLLMPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString("\r\n")
 		used++
 	}
-	// Newest first display order.
 	for i := len(m.Digests) - 1; i >= 0 && used < rows; i-- {
 		d := m.Digests[i]
 		selected := d.RequestID == m.DigestSelected
 		if selected && m.DigestExpanded {
-			// Inline expansion: replace the digest's compact row with
-			// the labelled detail block. The modal-promotion decision
-			// already happened in render(); reaching this branch
-			// means the inline layout fits.
 			for _, line := range digestDetailLines(d) {
 				if used >= rows {
 					break
@@ -1295,12 +1413,7 @@ func renderLLMPane(b *strings.Builder, m Model, rows int) {
 		}
 		ts := d.Timestamp.Local().Format("15:04:05")
 		line := fmt.Sprintf("  %s  %-7s %-7s %s  — %s",
-			ts,
-			d.Effect,
-			d.Confidence,
-			d.Host,
-			d.Reason,
-		)
+			ts, d.Effect, d.Confidence, d.Host, d.Reason)
 		writeLine(line, selected)
 	}
 	for used < rows {
@@ -1403,16 +1516,76 @@ func urlsScrollOffset(cursorRow, bodyRows, total int) int {
 }
 
 // renderURLsPane shows the allow/deny lists from trollbridge.yaml
-// with a navigable selection bar (closes #79). The pane is the
-// operator's list editor: j/k navigate, x removes the selected
-// entry (routed through Backend.Execute so configwrite + reload
-// run unchanged); inline add is via the console pane. When the
-// combined list is longer than the visible body, the body
-// scrolls to keep the cursor visible (closes #84).
-//
-// In attach mode (no proxy-host file access) the pane shows a
-// one-line hint pointing the operator at the proxy host.
+// inside a focus-colored border (closes #88). The list editor
+// semantics (#79/#86), cursor-tracking scroll (#84), and attach-mode
+// hint are unchanged; only the chrome around the body changed.
 func renderURLsPane(b *strings.Builder, m Model, rows int) {
+	focused := m.Focused == PaneConsole
+	if m.Cols < borderMinThreshold {
+		renderURLsPaneNoBorder(b, m, rows)
+		return
+	}
+	label := formatPaneLabel("urls", focused)
+	rightHint := ""
+	if focused {
+		rightHint = formatTabHint(m.Focused)
+	}
+	b.WriteString(topBorder(label, rightHint, m.Cols, focused))
+
+	bodyLines := rows - 2
+	if bodyLines < 1 {
+		bodyLines = 1
+	}
+	inner := m.Cols - 2
+	if inner < 1 {
+		inner = 1
+	}
+	used := 0
+	writeRow := func(text string, selected bool) {
+		if used >= bodyLines {
+			return
+		}
+		cell := padRight(runeTrunc(text, inner), inner)
+		if selected {
+			cell = "\x1b[7m" + cell + "\x1b[0m"
+		}
+		b.WriteString(bodyLine(cell, m.Cols, focused))
+		used++
+	}
+
+	if !m.URLsLocal {
+		writeRow("  (allow/deny editing runs on the proxy host — open `trollbridge run` there)", false)
+	} else {
+		lines := buildURLsLines(m)
+		cursorRow := -1
+		for i, ln := range lines {
+			if ln.selected {
+				cursorRow = i
+				break
+			}
+		}
+		first := 0
+		if cursorRow >= 0 {
+			first = urlsScrollOffset(cursorRow, bodyLines, len(lines))
+		}
+		end := first + bodyLines
+		if end > len(lines) {
+			end = len(lines)
+		}
+		for i := first; i < end; i++ {
+			writeRow(lines[i].text, lines[i].selected)
+		}
+	}
+	for used < bodyLines {
+		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
+		used++
+	}
+	urlsHint := "[jk] nav  [a/d] approve/deny  [+] add  [e] edit  [g] generalize  [del] rm  [^z] undo"
+	b.WriteString(bottomBorder(urlsHint, panelSwitcherHint, m.Cols, focused))
+}
+
+// renderURLsPaneNoBorder is the narrow-terminal fallback.
+func renderURLsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 	panelHeaderLine(b, m, "── urls ── [jk] nav  [a/d] approve/deny  [+] add  [e] edit  [g] generalize  [del] rm  [^z] undo ")
 	used := 1
 	if !m.URLsLocal {
@@ -1426,7 +1599,6 @@ func renderURLsPane(b *strings.Builder, m Model, rows int) {
 		}
 		return
 	}
-
 	lines := buildURLsLines(m)
 	bodyRows := rows - used
 	if bodyRows < 0 {
@@ -1443,11 +1615,13 @@ func renderURLsPane(b *strings.Builder, m Model, rows int) {
 	if cursorRow >= 0 {
 		first = urlsScrollOffset(cursorRow, bodyRows, len(lines))
 	}
-
-	writeRow := func(text string, selected bool) {
-		if selected {
-			// Inverse-video selection bar — same visual signal the
-			// approvals pane uses for its highlighted row.
+	end := first + bodyRows
+	if end > len(lines) {
+		end = len(lines)
+	}
+	for i := first; i < end; i++ {
+		text := lines[i].text
+		if lines[i].selected {
 			b.WriteString("\x1b[7m")
 			b.WriteString(padRight(runeTrunc(text, m.Cols), m.Cols))
 			b.WriteString("\x1b[0m")
@@ -1456,14 +1630,6 @@ func renderURLsPane(b *strings.Builder, m Model, rows int) {
 		}
 		b.WriteString("\r\n")
 		used++
-	}
-
-	end := first + bodyRows
-	if end > len(lines) {
-		end = len(lines)
-	}
-	for i := first; i < end; i++ {
-		writeRow(lines[i].text, lines[i].selected)
 	}
 	for used < rows {
 		b.WriteString(padRight("", m.Cols))
