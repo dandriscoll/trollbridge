@@ -13,13 +13,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 
 	"github.com/dandriscoll/trollbridge/internal/config"
 	"github.com/dandriscoll/trollbridge/internal/configwrite"
 	"github.com/dandriscoll/trollbridge/internal/hostlist"
+	"github.com/dandriscoll/trollbridge/internal/updater"
 )
 
 // updateGOOS is read in place of runtime.GOOS so tests can pick the
@@ -27,17 +27,6 @@ import (
 // callers leave it at runtime.GOOS. Mirrors the CLI plumbing in
 // cmd/trollbridge/update.go.
 var updateGOOS = runtime.GOOS
-
-// updateRunner shells out to the install.sh pipeline and streams
-// installer output. Replaced in tests with a recorder so the
-// shell-out path can be exercised without touching the network.
-// Mirrors the CLI plumbing in cmd/trollbridge/update.go (closes #78).
-var updateRunner = func(stdout, stderr io.Writer) error {
-	c := exec.Command("sh", "-c", "curl -fsSL https://trollbridge.dev/install.sh | sh")
-	c.Stdout = stdout
-	c.Stderr = stderr
-	return c.Run()
-}
 
 // Backend executes one operator command line at a time. The TUI's
 // console pane creates a Backend per session and calls Execute on
@@ -183,13 +172,13 @@ func (b *Backend) runUpdate(out io.Writer) {
 		fmt.Fprintln(out, "Download the latest release from https://github.com/dandriscoll/trollbridge/releases/latest")
 		return
 	}
-	fmt.Fprintln(out, "running: curl -fsSL https://trollbridge.dev/install.sh | sh")
+	fmt.Fprintln(out, "running: "+updater.Pipeline())
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(out, "update: panic: %v\n", r)
 		}
 	}()
-	if err := updateRunner(out, out); err != nil {
+	if err := updater.Run(out, out); err != nil {
 		fmt.Fprintf(out, "update: %s\n", err)
 		return
 	}

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/dandriscoll/trollbridge/internal/updater"
 )
 
 // minimalV2Yaml writes a v2 trollbridge.yaml in dir with the given
@@ -331,12 +333,12 @@ func TestBackend_Update_Windows_PrintsManualHint(t *testing.T) {
 	updateGOOS = "windows"
 	defer func() { updateGOOS = prev }()
 
-	prevRunner := updateRunner
-	updateRunner = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.Run
+	updater.Run = func(stdout, stderr io.Writer) error {
 		t.Fatalf("installer must not be invoked on windows; got call")
 		return nil
 	}
-	defer func() { updateRunner = prevRunner }()
+	defer func() { updater.Run = prevRunner }()
 
 	b := &Backend{LocalOnly: true}
 	out, _ := runLines(t, b, "update")
@@ -357,13 +359,13 @@ func TestBackend_Update_NonWindows_InvokesInstaller(t *testing.T) {
 	defer func() { updateGOOS = prev }()
 
 	called := false
-	prevRunner := updateRunner
-	updateRunner = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.Run
+	updater.Run = func(stdout, stderr io.Writer) error {
 		called = true
 		_, _ = stdout.Write([]byte("installer ran\n"))
 		return nil
 	}
-	defer func() { updateRunner = prevRunner }()
+	defer func() { updater.Run = prevRunner }()
 
 	b := &Backend{LocalOnly: true}
 	out, _ := runLines(t, b, "update")
@@ -385,11 +387,11 @@ func TestBackend_Update_InstallerFailureSurfaces(t *testing.T) {
 	updateGOOS = "linux"
 	defer func() { updateGOOS = prev }()
 
-	prevRunner := updateRunner
-	updateRunner = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.Run
+	updater.Run = func(stdout, stderr io.Writer) error {
 		return errors.New("curl: network unreachable")
 	}
-	defer func() { updateRunner = prevRunner }()
+	defer func() { updater.Run = prevRunner }()
 
 	b := &Backend{LocalOnly: true}
 	out, _ := runLines(t, b, "update")
@@ -410,12 +412,12 @@ func TestBackend_Update_AvailableInAttachMode(t *testing.T) {
 	defer func() { updateGOOS = prev }()
 
 	called := false
-	prevRunner := updateRunner
-	updateRunner = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.Run
+	updater.Run = func(stdout, stderr io.Writer) error {
 		called = true
 		return nil
 	}
-	defer func() { updateRunner = prevRunner }()
+	defer func() { updater.Run = prevRunner }()
 
 	b := &Backend{LocalOnly: false}
 	out, _ := runLines(t, b, "update")

@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/dandriscoll/trollbridge/internal/updater"
 )
 
 func TestUpdateCmd_Windows_PrintsManualInstructions(t *testing.T) {
@@ -13,12 +15,12 @@ func TestUpdateCmd_Windows_PrintsManualInstructions(t *testing.T) {
 	updateGOOS = "windows"
 	defer func() { updateGOOS = prev }()
 
-	prevRunner := updateRunner
-	updateRunner = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.Run
+	updater.Run = func(stdout, stderr io.Writer) error {
 		t.Fatalf("installer must not be invoked on windows; got call")
 		return nil
 	}
-	defer func() { updateRunner = prevRunner }()
+	defer func() { updater.Run = prevRunner }()
 
 	cmd := newUpdateCmd()
 	var out bytes.Buffer
@@ -42,13 +44,13 @@ func TestUpdateCmd_NonWindows_InvokesInstaller(t *testing.T) {
 	defer func() { updateGOOS = prev }()
 
 	called := false
-	prevRunner := updateRunner
-	updateRunner = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.Run
+	updater.Run = func(stdout, stderr io.Writer) error {
 		called = true
 		_, _ = stdout.Write([]byte("installer ran\n"))
 		return nil
 	}
-	defer func() { updateRunner = prevRunner }()
+	defer func() { updater.Run = prevRunner }()
 
 	cmd := newUpdateCmd()
 	var out bytes.Buffer
@@ -70,11 +72,11 @@ func TestUpdateCmd_InstallerFailure_SurfacesAsRuntimeErr(t *testing.T) {
 	updateGOOS = "linux"
 	defer func() { updateGOOS = prev }()
 
-	prevRunner := updateRunner
-	updateRunner = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.Run
+	updater.Run = func(stdout, stderr io.Writer) error {
 		return errors.New("curl: network unreachable")
 	}
-	defer func() { updateRunner = prevRunner }()
+	defer func() { updater.Run = prevRunner }()
 
 	cmd := newUpdateCmd()
 	var out bytes.Buffer
