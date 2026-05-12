@@ -248,15 +248,27 @@ review the first time it shows up.
 
 ## Step 5 — Configure the LLM advisor (optional)
 
-Skip this step if the user said the advisor should be off. Otherwise
-edit the `llm:` block in `trollbridge.yaml`:
+Skip this step if the user said the advisor should be off.
+
+**For provider-specific setup** — including how to allocate a
+key, choose a model, and pick the right endpoint URL — read the
+per-provider files:
+
+- `ANTHROPIC-LLM-SETUP-AGENT.md` for Anthropic Claude.
+- `AZURE-OPENAI-LLM-SETUP-AGENT.md` for Azure OpenAI.
+
+The rest of this step covers what's common across providers: the
+shape of the `llm:` block, how the API key file is written, and
+how to verify with `trollbridge doctor`.
+
+Edit the `llm:` block in `trollbridge.yaml`:
 
 ```yaml
 llm:
   enabled: true
   provider: anthropic                      # named provider, or any HTTP endpoint
   model: claude-opus-4-7                   # or another model the provider serves
-  endpoint: https://api.anthropic.com
+  endpoint: https://api.anthropic.com/v1/messages
   api_key_path: /etc/trollbridge/llm.key    # FILE path, not the key
   timeout_seconds: 8
   cache_ttl_seconds: 300
@@ -276,14 +288,15 @@ chmod 600 /etc/trollbridge/llm.key
 Do not echo the key into your chat history.
 
 **Provider choice.** Two named providers control the auth header:
-- `anthropic` (default) → `Authorization: Bearer <api_key>`
+- `anthropic` (default) → `x-api-key: <api_key>` (plus the pinned
+  `anthropic-version` header)
 - `aoai` (Azure OpenAI) → `api-key: <api_key>`
 
 Other strings fall back to generic Bearer with a startup warning.
-The wire payload (DESIGN.md §9 — a JSON object with `effect`,
-`confidence`, `reason`, optional `modifiers`, `scope`,
-`suggested_rule`) is fixed across providers; point `endpoint:` at a
-wrapper that speaks it.
+trollbridge speaks each provider's native API directly — Anthropic
+Messages API for `provider: anthropic`, Azure OpenAI
+chat-completions or Responses for `provider: aoai` (selected
+automatically from the endpoint URL shape).
 
 **Verify the LLM connection** with `trollbridge doctor -c <path>`
 before the first `trollbridge run`: it loads the YAML, parses the
@@ -291,6 +304,16 @@ rules and lists, and dispatches a synthetic classification call
 against the configured provider. Any mismatched endpoint, bad key,
 or misnamed provider surfaces as a `FAIL: …` line with a non-zero
 exit, instead of being a silent degradation at runtime.
+
+To verify the wiring **before** flipping `enabled: true` in
+production, add `--check-llm`:
+
+```sh
+trollbridge doctor -c /etc/trollbridge/trollbridge.yaml --check-llm
+```
+
+`--check-llm` runs the LLM step regardless of `llm.enabled` in
+the YAML.
 
 **Failure modes the user should know:**
 

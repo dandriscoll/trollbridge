@@ -197,9 +197,11 @@ endpoints are open (no auth); the CA cert is public-by-design.
    survive. Each entry is `host[:port][/path]` with an optional
    `<scheme>://` prefix and `*` wildcards.
 3. **`llm`** — provider / model / endpoint / api-key. Provider
-   selects the auth header: `anthropic` (default) sends
-   `Authorization: Bearer …`; `aoai` (Azure OpenAI) sends
-   `api-key: …`.
+   selects the auth header and wire shape: `anthropic` (default)
+   sends `x-api-key: …` with a pinned `anthropic-version` header
+   (Anthropic Messages API); `aoai` (Azure OpenAI) sends
+   `api-key: …` (chat-completions or Responses API, auto-selected
+   from the endpoint URL).
 4. **`llm.directives`** — inline multi-line system prompt for the
    advisor.
 

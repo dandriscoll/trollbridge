@@ -26,6 +26,7 @@ var doctorAdvisor advisor.Provider
 func newDoctorCmd() *cobra.Command {
 	var configPath string
 	var verbose bool
+	var checkLLM bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check the YAML and test the LLM connection.",
@@ -37,7 +38,12 @@ input. Each check prints a status line; non-zero exit on any FAIL.
 With --verbose, doctor emits connection-level events (DNS lookup,
 TCP connect, TLS handshake) around the LLM call so an operator
 chasing a timeout can attribute the cost to network setup vs.
-provider response time.`,
+provider response time.
+
+With --check-llm, doctor runs the LLM classification step even when
+llm.enabled is false in the YAML. Useful when wiring up a new
+provider: verify the key, endpoint, and model are correct before
+flipping the production switch (closes #82).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if configPath == "" {
 				configPath = defaultConfigPath()
@@ -77,9 +83,38 @@ provider response time.`,
 			printDoctorLine(out, "lists",
 				fmt.Sprintf("OK (%d allow / %d deny)", len(allow.Patterns), len(deny.Patterns)))
 
-			if !cfg.LLM.Enabled {
+			if !cfg.LLM.Enabled && !checkLLM {
 				printDoctorLine(out, "llm", "skipped (llm.enabled: false)")
 				return nil
+			}
+
+			// Pre-validate that the operator actually populated the
+			// llm block. Catches the case where --check-llm is used
+			// against a yaml that has no provider/endpoint set yet —
+			// without this check, doctor would warn about an unknown
+			// provider, attempt a POST to an empty endpoint, and fail
+			// at wire level with a misleading "no such host" error.
+			// Sibling of the api_key_path silent-empty-key class
+			// closed below (#82).
+			if cfg.LLM.Provider == "" || cfg.LLM.Endpoint == "" {
+				printDoctorLine(out, "llm",
+					"FAIL: llm.provider and llm.endpoint must both be set in trollbridge.yaml; see ANTHROPIC-LLM-SETUP-AGENT.md or AZURE-OPENAI-LLM-SETUP-AGENT.md")
+				return &configErr{errors.New("llm config incomplete: provider or endpoint not set")}
+			}
+
+			// Pre-check the api_key_path before any wire call so a
+			// missing or unreadable key file fails the doctor with a
+			// specific, actionable message — not a misleading 401
+			// from the provider (closes #82). An empty api_key_path is
+			// operator intent for unauthenticated endpoints and is
+			// passed through unchanged.
+			if cfg.LLM.APIKeyPath != "" {
+				if _, err := os.ReadFile(cfg.LLM.APIKeyPath); err != nil {
+					printDoctorLine(out, "llm",
+						fmt.Sprintf("FAIL: api_key_path %q does not exist or is unreadable: %s",
+							cfg.LLM.APIKeyPath, err.Error()))
+					return &configErr{err}
+				}
 			}
 
 			endpoint := cfg.LLM.Endpoint
@@ -149,6 +184,7 @@ provider response time.`,
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print connection-level events around the LLM Classify call")
+	cmd.Flags().BoolVar(&checkLLM, "check-llm", false, "run the LLM classification step even when llm.enabled is false")
 	return cmd
 }
 
