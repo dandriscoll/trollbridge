@@ -484,6 +484,9 @@ func readKeys(ctx context.Context, in io.Reader, events chan<- Event) {
 						sendKey(ctx, events, KeyEvent{Key: KeyUp})
 					case 'B':
 						sendKey(ctx, events, KeyEvent{Key: KeyDown})
+					case 'Z':
+						// Shift-Tab as emitted by xterm/screen/tmux.
+						sendKey(ctx, events, KeyEvent{Key: KeyShiftTab})
 					}
 					i += 3
 				} else {

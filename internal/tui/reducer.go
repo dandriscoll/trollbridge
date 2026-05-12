@@ -177,6 +177,12 @@ const (
 	KeyEnter
 	KeyBackspace
 	KeyCtrlU
+	// KeyShiftTab is xterm's CSI Z ("cursor backward tab"). With
+	// today's two-pane focus model Tab and Shift-Tab are visually
+	// identical (toggle); the distinct KeyCode lets a future
+	// multi-pane focus cycle give Shift-Tab a "previous" direction
+	// without re-wiring input parsing (closes #83).
+	KeyShiftTab
 )
 
 // ActionResult arrives after an approve or deny POST completes.
@@ -375,11 +381,18 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 		m.Quit = true
 		return m, CmdQuit{}
 	}
-	if e.Key == KeyTab {
+	if e.Key == KeyTab || e.Key == KeyShiftTab {
 		// Tab cycles focus to the bottom pane only when something is
 		// down there to focus on. Pre-#66-reactivation, Tab toggled
 		// unconditionally; the new default has no bottom pane to focus
 		// when BottomPanelOpen is false, so Tab is a no-op then.
+		//
+		// Shift-Tab is the reverse direction (#83). Today there are
+		// only two focus targets (PaneApprovals, PaneConsole), so
+		// forward and backward converge on the same toggle. When a
+		// future job introduces a third pane, the cycle becomes
+		// `(idx + 1) mod n` for Tab and `(idx - 1 + n) mod n` for
+		// Shift-Tab — both reading from the same dispatch.
 		if !m.BottomPanelOpen {
 			return m, CmdNone{}
 		}
