@@ -86,6 +86,8 @@ func (b *Backend) Execute(out io.Writer, line string) (quit bool) {
 		b.runLocal(out, "deny", func() { b.addPattern(out, "deny", arg) })
 	case "remove", "rm":
 		b.runLocal(out, "remove", func() { b.removePattern(out, arg) })
+	case "move", "mv":
+		b.runLocal(out, "move", func() { b.movePattern(out, arg) })
 	case "list", "ls":
 		b.runLocal(out, "list", func() { b.listEntries(out, arg) })
 	case "reload":
@@ -265,6 +267,68 @@ func (b *Backend) removePattern(out io.Writer, pattern string) {
 	b.triggerReload()
 }
 
+// movePattern moves a pattern from one list to the other atomically:
+// if the operator wrote `move allow <pat>` the pattern is removed
+// from the deny list (if present) and added to the allow list. This
+// is the verb behind the URLs panel's `a` (approve) and `d` (deny)
+// keystrokes (#86), and matches the operator's mental model that
+// approve/deny migrates an entry between sides.
+func (b *Backend) movePattern(out io.Writer, arg string) {
+	side, pattern := splitCmd(arg)
+	side = strings.ToLower(strings.TrimSpace(side))
+	pattern = strings.TrimSpace(pattern)
+	if side != "allow" && side != "deny" {
+		fmt.Fprintln(out, "usage: move allow|deny <pattern>")
+		return
+	}
+	if pattern == "" {
+		fmt.Fprintln(out, "usage: move allow|deny <pattern>")
+		return
+	}
+	if err := hostlist.ValidatePattern(pattern); err != nil {
+		fmt.Fprintf(out, "invalid pattern: %s\n", err)
+		return
+	}
+	if b.ConfigPath == "" {
+		fmt.Fprintln(out, "no config path configured (cannot persist mutation)")
+		return
+	}
+	var (
+		otherRemoved bool
+		err          error
+	)
+	if side == "allow" {
+		otherRemoved, err = configwrite.RemoveDeny(b.ConfigPath, pattern)
+	} else {
+		otherRemoved, err = configwrite.RemoveAllow(b.ConfigPath, pattern)
+	}
+	if err != nil {
+		fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, err)
+		return
+	}
+	var added bool
+	if side == "allow" {
+		added, err = configwrite.AddAllow(b.ConfigPath, pattern)
+	} else {
+		added, err = configwrite.AddDeny(b.ConfigPath, pattern)
+	}
+	if err != nil {
+		fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, err)
+		return
+	}
+	switch {
+	case otherRemoved && added:
+		fmt.Fprintf(out, "moved %s to %s\n", pattern, side)
+	case added:
+		fmt.Fprintf(out, "added %s to %s (%d entries total)\n", pattern, side, b.countList(side))
+	case otherRemoved:
+		fmt.Fprintf(out, "%s already in %s; removed from other list\n", pattern, side)
+	default:
+		fmt.Fprintf(out, "%s already in %s\n", pattern, side)
+	}
+	b.triggerReload()
+}
+
 func (b *Backend) listEntries(out io.Writer, arg string) {
 	arg = strings.ToLower(strings.TrimSpace(arg))
 	cfg, err := config.Load(b.ConfigPath)
@@ -333,6 +397,7 @@ func (b *Backend) printHelp(out io.Writer) {
 		fmt.Fprint(out, `commands:
   allow <pattern>    add to lists.allow in trollbridge.yaml
   deny <pattern>     add to lists.deny in trollbridge.yaml
+  move allow|deny <pattern>  move a pattern between lists atomically
   remove <pattern>   remove from either list
   list [allow|deny]  show current entries
   reload             re-parse trollbridge.yaml into the running matcher

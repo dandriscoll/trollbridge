@@ -1581,6 +1581,10 @@ Layout:
   - `remove <pattern>` — remove the matching line (case-insensitive
     on the pattern field) from any configured allow/deny file.
     Removes from BOTH if the pattern appears in both.
+  - `move allow|deny <pattern>` — atomically move a pattern between
+    lists: removes from the other side (if present) and adds to the
+    chosen side. The URLs panel's `a` (approve) and `d` (deny) keys
+    drive this verb (closes #86).
   - `list [allow|deny|all]` — print the current patterns.
   - `reload` — re-parse the config into the running matcher.
   - `test [METHOD] <url>` — send one request through the proxy and

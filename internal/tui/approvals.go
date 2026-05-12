@@ -477,8 +477,18 @@ func readKeys(ctx context.Context, in io.Reader, events chan<- Event) {
 			case b == 0x15: // Ctrl-U
 				sendKey(ctx, events, KeyEvent{Key: KeyCtrlU})
 				i++
+			case b == 0x1a: // Ctrl-Z (undo, #86)
+				sendKey(ctx, events, KeyEvent{Key: KeyCtrlZ})
+				i++
 			case b == 0x1b: // ESC, possibly start of a CSI sequence
-				if i+2 < n && buf[i+1] == '[' {
+				// 4-byte forms (`ESC [ <n> ~`) must be matched before the
+				// 3-byte form, otherwise `ESC [ 3` would dispatch as a
+				// 3-byte CSI and the trailing `~` would leak in as a
+				// printable rune.
+				if i+3 < n && buf[i+1] == '[' && buf[i+2] == '3' && buf[i+3] == '~' {
+					sendKey(ctx, events, KeyEvent{Key: KeyDelete})
+					i += 4
+				} else if i+2 < n && buf[i+1] == '[' {
 					switch buf[i+2] {
 					case 'A':
 						sendKey(ctx, events, KeyEvent{Key: KeyUp})
@@ -1403,7 +1413,7 @@ func urlsScrollOffset(cursorRow, bodyRows, total int) int {
 // In attach mode (no proxy-host file access) the pane shows a
 // one-line hint pointing the operator at the proxy host.
 func renderURLsPane(b *strings.Builder, m Model, rows int) {
-	panelHeaderLine(b, m, "── urls ── [j/k] nav  [x] remove  [1] console to add ")
+	panelHeaderLine(b, m, "── urls ── [jk] nav  [a/d] approve/deny  [+] add  [e] edit  [g] generalize  [del] rm  [^z] undo ")
 	used := 1
 	if !m.URLsLocal {
 		b.WriteString(padRight("  (allow/deny editing runs on the proxy host — open `trollbridge run` there)", m.Cols))

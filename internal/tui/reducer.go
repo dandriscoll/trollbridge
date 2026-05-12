@@ -120,6 +120,21 @@ type Model struct {
 	URLsLocal    bool
 	URLsSelected int // index into AllowList++DenyList; -1 if empty
 
+	// URLsUndo carries the most-recently-deleted URL pattern so the
+	// operator can press Ctrl-Z to restore it. Single level — the
+	// second delete overwrites the first. Cleared after a successful
+	// restore exec or when the operator leaves the URLs panel
+	// (closes #86).
+	URLsUndo *URLsUndoEntry
+
+	// URLsPendingReturn is set true by 'a'/'e' on the URLs pane: it
+	// switches the bottom panel to the console for typing and the
+	// next applyConsoleExec result snaps it back to the URLs panel
+	// so the operator's flow is "press a/e → type → Enter → see new
+	// list" without an extra hotkey. Cleared on panel-switch keys
+	// (closes #86).
+	URLsPendingReturn bool
+
 	// GeneralizeOffer, when non-nil, surfaces the post-approve
 	// "make this more general?" prompt: a specific allow entry
 	// was just written for the named method+URL, and the operator
@@ -127,6 +142,13 @@ type Model struct {
 	// key to dismiss). Cleared after the next reducer step that
 	// consumes or dismisses the offer (closes #85).
 	GeneralizeOffer *GeneralizeOffer
+}
+
+// URLsUndoEntry carries the pattern + side (allow/deny) needed to
+// reconstruct the most recent delete on the URLs panel (#86).
+type URLsUndoEntry struct {
+	Pattern string // raw pattern as stored in trollbridge.yaml (no leading verb)
+	Side    string // "allow" or "deny"
 }
 
 // GeneralizeOffer carries the method+URL components of the
@@ -208,6 +230,13 @@ const (
 	// multi-pane focus cycle give Shift-Tab a "previous" direction
 	// without re-wiring input parsing (closes #83).
 	KeyShiftTab
+	// KeyDelete is the Delete key (xterm CSI 3~). Distinct from
+	// KeyBackspace, which covers the backspace+DEL pair (0x08/0x7f).
+	// Used by the URLs pane to remove the selected entry (#86).
+	KeyDelete
+	// KeyCtrlZ is 0x1A. Used by the URLs pane to undo the most
+	// recent delete (#86).
+	KeyCtrlZ
 )
 
 // ActionResult arrives after an approve or deny POST completes.
@@ -613,30 +642,215 @@ func applyKeyURLs(m Model, e KeyEvent) (Model, Cmd) {
 		}
 		return m, CmdNone{}
 	}
-	if e.Rune == 'x' {
-		if !m.URLsLocal {
-			m.LastErr = "allow/deny editing runs on the proxy host"
-			return m, CmdNone{}
-		}
-		if m.URLsSelected < 0 || m.URLsSelected >= combinedLen {
-			m.LastErr = "no entry selected"
-			return m, CmdNone{}
-		}
-		var pattern string
-		if m.URLsSelected < len(m.AllowList) {
-			pattern = m.AllowList[m.URLsSelected]
-		} else {
-			pattern = m.DenyList[m.URLsSelected-len(m.AllowList)]
-		}
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" || strings.HasPrefix(pattern, "#") {
-			m.LastErr = "selected row is not an entry"
-			return m, CmdNone{}
-		}
-		m.LastInfo = "removing " + pattern + "…"
-		return m, CmdConsoleExec{Line: "remove " + pattern}
+	if e.Rune == 'x' || e.Key == KeyDelete {
+		return urlsRemoveSelected(m)
+	}
+	if e.Key == KeyCtrlZ {
+		return urlsUndo(m)
+	}
+	if e.Rune == 'a' {
+		return urlsMoveTo(m, "allow")
+	}
+	if e.Rune == 'd' {
+		return urlsMoveTo(m, "deny")
+	}
+	if e.Rune == '+' {
+		return urlsEnterAddMode(m)
+	}
+	if e.Rune == 'e' {
+		return urlsEnterEditMode(m)
+	}
+	if e.Rune == 'g' {
+		return urlsGeneralize(m)
 	}
 	return m, CmdNone{}
+}
+
+// urlsMoveTo implements the URLs-panel 'a' (approve, move to allow)
+// and 'd' (deny, move to deny) verbs. When the selected entry is
+// already on the destination side the call surfaces an info-row
+// message and emits no console command (#86).
+func urlsMoveTo(m Model, side string) (Model, Cmd) {
+	if !m.URLsLocal {
+		m.LastErr = "allow/deny editing runs on the proxy host"
+		return m, CmdNone{}
+	}
+	pattern, currentSide, ok := urlsSelectedPattern(m)
+	if !ok {
+		m.LastErr = "no entry selected"
+		return m, CmdNone{}
+	}
+	if currentSide == side {
+		m.LastInfo = pattern + " already in " + side
+		return m, CmdNone{}
+	}
+	m.LastInfo = "moving " + pattern + " to " + side + "…"
+	return m, CmdConsoleExec{Line: "move " + side + " " + pattern}
+}
+
+// urlsSelectedPattern returns the pattern + side of the currently
+// selected URLs-panel row, or ("", "", false) if the selection is
+// out of range or points at a non-entry (blank/comment, defensively
+// — m.AllowList/DenyList are pre-filtered).
+func urlsSelectedPattern(m Model) (pattern, side string, ok bool) {
+	combinedLen := len(m.AllowList) + len(m.DenyList)
+	if m.URLsSelected < 0 || m.URLsSelected >= combinedLen {
+		return "", "", false
+	}
+	if m.URLsSelected < len(m.AllowList) {
+		pattern = m.AllowList[m.URLsSelected]
+		side = "allow"
+	} else {
+		pattern = m.DenyList[m.URLsSelected-len(m.AllowList)]
+		side = "deny"
+	}
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" || strings.HasPrefix(pattern, "#") {
+		return "", "", false
+	}
+	return pattern, side, true
+}
+
+func urlsRemoveSelected(m Model) (Model, Cmd) {
+	if !m.URLsLocal {
+		m.LastErr = "allow/deny editing runs on the proxy host"
+		return m, CmdNone{}
+	}
+	pattern, side, ok := urlsSelectedPattern(m)
+	if !ok {
+		m.LastErr = "no entry selected"
+		return m, CmdNone{}
+	}
+	m.URLsUndo = &URLsUndoEntry{Pattern: pattern, Side: side}
+	m.LastInfo = "removing " + pattern + "… (^z undoes)"
+	return m, CmdConsoleExec{Line: "remove " + pattern}
+}
+
+func urlsUndo(m Model) (Model, Cmd) {
+	if !m.URLsLocal {
+		m.LastErr = "allow/deny editing runs on the proxy host"
+		return m, CmdNone{}
+	}
+	if m.URLsUndo == nil {
+		m.LastErr = "nothing to undo"
+		return m, CmdNone{}
+	}
+	u := *m.URLsUndo
+	m.URLsUndo = nil
+	m.LastInfo = "restoring " + u.Pattern + "…"
+	return m, CmdConsoleExec{Line: u.Side + " " + u.Pattern}
+}
+
+func urlsEnterAddMode(m Model) (Model, Cmd) {
+	if !m.URLsLocal {
+		m.LastErr = "allow/deny editing runs on the proxy host"
+		return m, CmdNone{}
+	}
+	prefill := []rune("allow ")
+	m.BottomPanel = BottomPanelConsole
+	m.URLsPendingReturn = true
+	m.Console.Input = prefill
+	m.Console.Cursor = len(prefill)
+	m.LastInfo = "add: type a URL pattern and press Enter (Esc to cancel)"
+	return m, CmdNone{}
+}
+
+func urlsEnterEditMode(m Model) (Model, Cmd) {
+	if !m.URLsLocal {
+		m.LastErr = "allow/deny editing runs on the proxy host"
+		return m, CmdNone{}
+	}
+	pattern, side, ok := urlsSelectedPattern(m)
+	if !ok {
+		m.LastErr = "no entry selected"
+		return m, CmdNone{}
+	}
+	// Remove the original now so the operator sees the slot empty
+	// while they type the replacement; Ctrl-Z restores if they Esc
+	// out without committing.
+	m.URLsUndo = &URLsUndoEntry{Pattern: pattern, Side: side}
+	prefill := []rune(side + " " + pattern)
+	m.BottomPanel = BottomPanelConsole
+	m.URLsPendingReturn = true
+	m.Console.Input = prefill
+	m.Console.Cursor = len(prefill)
+	m.LastInfo = "edit: change and Enter, or Esc + ^z to recover"
+	// The remove fires now; the operator's typed line fires on Enter.
+	return m, CmdConsoleExec{Line: "remove " + pattern}
+}
+
+func urlsGeneralize(m Model) (Model, Cmd) {
+	pattern, _, ok := urlsSelectedPattern(m)
+	if !ok {
+		m.LastErr = "no entry selected"
+		return m, CmdNone{}
+	}
+	offer, ok := buildGeneralizeOfferFromPattern(pattern)
+	if !ok {
+		m.LastErr = "generalize requires a concrete method+URL entry"
+		return m, CmdNone{}
+	}
+	m.GeneralizeOffer = offer
+	return m, CmdNone{}
+}
+
+// buildGeneralizeOfferFromPattern parses a stored URL-list pattern
+// of the form `[METHOD ]URL` (with `*` allowed in the METHOD slot)
+// into a GeneralizeOffer the existing approve-flow generalize code
+// can consume. Patterns containing wildcards in the URL are
+// rejected — the three generalize axes are only well-defined for
+// concrete URLs.
+func buildGeneralizeOfferFromPattern(pat string) (*GeneralizeOffer, bool) {
+	pat = strings.TrimSpace(pat)
+	if pat == "" {
+		return nil, false
+	}
+	method := "*"
+	url := pat
+	if i := strings.IndexByte(pat, ' '); i > 0 {
+		head := pat[:i]
+		if head == "*" || isAllUpperASCII(head) {
+			method = head
+			url = strings.TrimSpace(pat[i+1:])
+		}
+	}
+	if url == "" {
+		return nil, false
+	}
+	// Require a scheme — CONNECT-style host:port patterns don't have
+	// a path axis to generalize.
+	if !strings.Contains(url, "://") {
+		return nil, false
+	}
+	// Reject wildcards in the URL — generalize is for concrete entries.
+	if strings.Contains(url, "*") {
+		return nil, false
+	}
+	scheme, hostport, path := splitURL(url)
+	host, port := splitHostPort(hostport)
+	if host == "" {
+		return nil, false
+	}
+	return &GeneralizeOffer{
+		Method: method,
+		URL:    url,
+		Scheme: scheme,
+		Host:   host,
+		Port:   port,
+		Path:   path,
+	}, true
+}
+
+func isAllUpperASCII(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
@@ -667,6 +881,13 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	// (closes #76). The approvals key set already consumes
 	// a/d/j/k/r/q/Tab so the numeric row was free; '0' is the
 	// natural "nothing selected" member of that row.
+	//
+	// Any explicit panel choice cancels a URLs-pending-return: if
+	// the operator opened a/e mode and then manually picked another
+	// panel, the next exec must not yank them back to URLs (#86).
+	if e.Rune >= '0' && e.Rune <= '4' {
+		m.URLsPendingReturn = false
+	}
 	switch e.Rune {
 	case '0':
 		m.BottomPanelOpen = false
@@ -674,6 +895,9 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		// hiding it, snap focus back to approvals — there is no
 		// visible pane to keep focus on.
 		m.Focused = PaneApprovals
+		// Cancel any URLs-pending-return so the next exec does not
+		// surprise the operator by re-opening URLs (#86).
+		m.URLsPendingReturn = false
 		return m, CmdNone{}
 	case '1':
 		if m.BottomPanelOpen && m.BottomPanel == BottomPanelConsole {
@@ -947,6 +1171,14 @@ func applyConsoleExec(m Model, e ConsoleExecResult) (Model, Cmd) {
 	if e.Quit {
 		m.Quit = true
 		return m, CmdQuit{}
+	}
+	// If the operator entered a/e mode from the URLs panel, snap the
+	// bottom panel back to URLs on exec completion — they expect to
+	// see the new list, not stay on the console. The refresh below
+	// then fires because BottomPanel is URLs again (#86).
+	if m.URLsPendingReturn {
+		m.URLsPendingReturn = false
+		m.BottomPanel = BottomPanelURLs
 	}
 	// After any console exec, refresh the URLs pane if it's open —
 	// allow/deny/remove and #79's x-removes-selected all touch the
