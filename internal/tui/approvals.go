@@ -1317,11 +1317,68 @@ func renderLLMModal(b *strings.Builder, m Model, rows int) {
 	}
 }
 
+// urlsLine is one rendered row of the URLs panel: a header
+// (ALLOW/DENY) or an entry. Used by the renderer to compute a
+// scroll window stateless from the cursor position (closes #84).
+type urlsLine struct {
+	text     string
+	selected bool
+}
+
+// buildURLsLines flattens the allow/deny lists into the logical
+// row sequence the renderer draws: ALLOW header, allow entries
+// (or (empty)), DENY header, deny entries (or (empty)). The
+// selected flag is set on the entry whose combined-list index
+// matches m.URLsSelected.
+func buildURLsLines(m Model) []urlsLine {
+	lines := make([]urlsLine, 0, 2+len(m.AllowList)+len(m.DenyList)+2)
+	lines = append(lines, urlsLine{text: fmt.Sprintf("  ALLOW (%d)", len(m.AllowList))})
+	if len(m.AllowList) == 0 {
+		lines = append(lines, urlsLine{text: "    (empty)"})
+	} else {
+		for i, p := range m.AllowList {
+			lines = append(lines, urlsLine{text: "    " + p, selected: m.URLsSelected == i})
+		}
+	}
+	lines = append(lines, urlsLine{text: fmt.Sprintf("  DENY (%d)", len(m.DenyList))})
+	if len(m.DenyList) == 0 {
+		lines = append(lines, urlsLine{text: "    (empty)"})
+	} else {
+		allowLen := len(m.AllowList)
+		for i, p := range m.DenyList {
+			lines = append(lines, urlsLine{text: "    " + p, selected: m.URLsSelected == allowLen+i})
+		}
+	}
+	return lines
+}
+
+// urlsScrollOffset computes the index of the first visible
+// logical row given the cursor row, the body rows available, and
+// the total number of logical rows. Centred-cursor rule: try to
+// place the cursor in the middle of the visible window, clamped
+// at the start and end of the list. Stateless — no Model field
+// (closes #84).
+func urlsScrollOffset(cursorRow, bodyRows, total int) int {
+	if bodyRows <= 0 || total <= bodyRows {
+		return 0
+	}
+	first := cursorRow - bodyRows/2
+	if first < 0 {
+		first = 0
+	}
+	if maxFirst := total - bodyRows; first > maxFirst {
+		first = maxFirst
+	}
+	return first
+}
+
 // renderURLsPane shows the allow/deny lists from trollbridge.yaml
 // with a navigable selection bar (closes #79). The pane is the
 // operator's list editor: j/k navigate, x removes the selected
 // entry (routed through Backend.Execute so configwrite + reload
-// run unchanged); inline add is via the console pane.
+// run unchanged); inline add is via the console pane. When the
+// combined list is longer than the visible body, the body
+// scrolls to keep the cursor visible (closes #84).
 //
 // In attach mode (no proxy-host file access) the pane shows a
 // one-line hint pointing the operator at the proxy host.
@@ -1339,7 +1396,24 @@ func renderURLsPane(b *strings.Builder, m Model, rows int) {
 		}
 		return
 	}
-	rowsLeft := func() int { return rows - used }
+
+	lines := buildURLsLines(m)
+	bodyRows := rows - used
+	if bodyRows < 0 {
+		bodyRows = 0
+	}
+	cursorRow := -1
+	for i, ln := range lines {
+		if ln.selected {
+			cursorRow = i
+			break
+		}
+	}
+	first := 0
+	if cursorRow >= 0 {
+		first = urlsScrollOffset(cursorRow, bodyRows, len(lines))
+	}
+
 	writeRow := func(text string, selected bool) {
 		if selected {
 			// Inverse-video selection bar — same visual signal the
@@ -1353,30 +1427,13 @@ func renderURLsPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString("\r\n")
 		used++
 	}
-	if rowsLeft() > 0 {
-		writeRow(fmt.Sprintf("  ALLOW (%d)", len(m.AllowList)), false)
+
+	end := first + bodyRows
+	if end > len(lines) {
+		end = len(lines)
 	}
-	for i, p := range m.AllowList {
-		if rowsLeft() <= 0 {
-			break
-		}
-		writeRow("    "+p, m.URLsSelected == i)
-	}
-	if len(m.AllowList) == 0 && rowsLeft() > 0 {
-		writeRow("    (empty)", false)
-	}
-	if rowsLeft() > 0 {
-		writeRow(fmt.Sprintf("  DENY (%d)", len(m.DenyList)), false)
-	}
-	allowLen := len(m.AllowList)
-	for i, p := range m.DenyList {
-		if rowsLeft() <= 0 {
-			break
-		}
-		writeRow("    "+p, m.URLsSelected == allowLen+i)
-	}
-	if len(m.DenyList) == 0 && rowsLeft() > 0 {
-		writeRow("    (empty)", false)
+	for i := first; i < end; i++ {
+		writeRow(lines[i].text, lines[i].selected)
 	}
 	for used < rows {
 		b.WriteString(padRight("", m.Cols))
