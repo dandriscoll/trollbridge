@@ -62,6 +62,15 @@ type Entry struct {
 	TLSALPNOffered         []string `json:"tls_alpn_offered,omitempty"`
 	TLSVersionsOffered     []string `json:"tls_versions_offered,omitempty"`
 	TLSCipherSuitesOffered []string `json:"tls_cipher_suites_offered,omitempty"`
+
+	// Post-signal resolution fields (closes #97). Set only on the
+	// follow-up audit entry written when a held request's eventual
+	// resolution arrives after the consumer was signaled (471) by
+	// approvals.signal_after_seconds. The matching original entry
+	// (with `decision: ask_user_signaled`) carries the same
+	// request_id, so an operator can correlate by grep.
+	PostSignalResolution bool `json:"post_signal_resolution,omitempty"`
+	SignalAfterSeconds   int  `json:"signal_after_seconds,omitempty"`
 }
 
 // OverflowMode controls how the logger reacts when its buffer is

@@ -616,6 +616,22 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 			"port", req.Port,
 			"signal_after_seconds", s.cfg.Approvals.SignalAfterSeconds,
 		)
+		// Closes #97: spawn an audit-writer goroutine to record
+		// the eventual resolution. Without this, signal_after
+		// requests have only the 471-signaled audit entry; the
+		// approve/deny/timeout that resolves the hold lands only
+		// in the oplog. Forensic gap.
+		signalCfg := s.cfg.Approvals.SignalAfterSeconds
+		go func(start time.Time) {
+			select {
+			case d := <-resolved:
+				s.writePostSignalAudit(req, d, signalCfg, time.Since(start))
+			case <-ctx.Done():
+				// Shutdown — abandon. The held request's eventual
+				// resolution is lost from the audit; the original
+				// 471-signaled entry already records the held state.
+			}
+		}(req.Timestamp)
 		return types.Decision{
 			Effect: types.EffectAskUserSignaled,
 			Source: types.SourceApprovalQueue,
@@ -968,6 +984,49 @@ func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryReda
 			"request_id", req.ID, "error", err.Error())
 	}
 	s.ops.Resolve(req.ID, opStatusFromAudit(entry), latency.Milliseconds(), size)
+}
+
+// writePostSignalAudit emits the follow-up audit entry written when
+// the eventual resolution of a held request arrives after the
+// consumer was signaled (471) by approvals.signal_after_seconds.
+// Closes #97: brings audit parity with the oplog, which already
+// records the eventual resolution via EventHoldApproved /
+// EventHoldDenied / EventHoldTimedOut.
+//
+// The entry shares the original request's request_id so an operator
+// can grep for both. ResponseStatus is 0 (the consumer disconnected
+// at the 471; there is no second wire response). LatencyMS is the
+// total wall-clock from request start to eventual resolution.
+func (s *Server) writePostSignalAudit(req *types.RequestEvent, d types.Decision, signalAfterSec int, latency time.Duration) {
+	entry := audit.Entry{
+		TrollbridgeVersion:   Version,
+		AuditSchemaVersion:   1,
+		RequestID:            req.ID,
+		SessionID:            req.SessionID,
+		IdentityID:           req.IdentityID,
+		ClientAddr:           req.ClientAddr,
+		Method:               req.Method,
+		Scheme:               req.Scheme,
+		Host:                 req.Host,
+		Port:                 req.Port,
+		Path:                 req.Path,
+		Decision:             string(d.Effect),
+		DecisionSource:       string(d.Source),
+		RuleID:               d.RuleID,
+		RuleSetVersion:       s.engine.RuleSetVersion(),
+		LLMConfidence:        "n/a",
+		Reason:               d.Reason,
+		BodyInspectionStatus: "not_required",
+		ResponseStatus:       0,
+		LatencyMS:            latency.Milliseconds(),
+		PostSignalResolution: true,
+		SignalAfterSeconds:   signalAfterSec,
+	}
+	if err := s.audit.Write(entry); err != nil {
+		s.opLog.Warn("audit write failure",
+			"event", oplog.EventAuditWriteFailure,
+			"request_id", req.ID, "error", err.Error())
+	}
 }
 
 // writeAuditTLSHandshakeFail emits the audit entry for a TLS
