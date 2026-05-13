@@ -68,6 +68,16 @@ The full set of commits between any two tags is on GitHub at
   applies a cutoff; `--config -c` overrides the default config
   path.
 
+### Docs
+
+- `CLIENT-SETUP-AGENT.md` Step 1 now documents two scopes for the
+  proxy env vars (#116). Shell-wide (existing `export …` pattern)
+  for the convenient case; per-process / agent-scoped (the
+  `VAR=val … <command>` shell prefix and a PowerShell equivalent)
+  for agents that should not pollute the operator's interactive
+  shell. The trade-off is named in one line so the reader can pick
+  the right scope.
+
 ## v0.7.1 — wire-format changes operator scripts may notice
 
 The following changes shipped in v0.7.1 and may affect operator

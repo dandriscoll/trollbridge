@@ -19,6 +19,13 @@ the wire-contract prompt, you want `PROXIED-AGENT.md`.)
 
 ## Step 1 — Set the proxy environment variables
 
+Pick the scope that matches your use case. **Shell-wide** routes
+every later command in this shell through trollbridge — convenient
+but persistent. **Per-process** routes only the agent and its
+children — precise but must be repeated for each invocation.
+
+### Option A — Shell-wide (every process in this shell)
+
 For most HTTP clients on Linux/macOS/Windows-WSL:
 
 ```sh
@@ -31,6 +38,51 @@ unset NO_PROXY no_proxy
 
 `trollbridge env -c <config>` (run on the proxy host) prints the
 exact lines for the configured listen address.
+
+### Option B — Per-process / agent-scoped (only the agent and its children)
+
+When you don't want to pollute the operator's interactive shell —
+for example, an LLM agent, a CI step, or a sandboxed automation
+that should route its own egress through trollbridge but leave
+unrelated commands untouched — prefix the agent's launch command
+with the env vars instead of exporting them:
+
+```sh
+HTTPS_PROXY=http://127.0.0.1:8080 \
+HTTP_PROXY=http://127.0.0.1:8080 \
+https_proxy=http://127.0.0.1:8080 \
+http_proxy=http://127.0.0.1:8080 \
+NO_PROXY="" no_proxy="" \
+  <agent-binary> <args…>
+```
+
+Equivalent using `env(1)` (clearer when the command line is long):
+
+```sh
+env HTTPS_PROXY=http://127.0.0.1:8080 \
+    HTTP_PROXY=http://127.0.0.1:8080 \
+    https_proxy=http://127.0.0.1:8080 \
+    http_proxy=http://127.0.0.1:8080 \
+    NO_PROXY="" no_proxy="" \
+    <agent-binary> <args…>
+```
+
+Windows PowerShell — set `$env:…` in a child scope so the change
+does not survive the spawned process tree:
+
+```powershell
+& {
+  $env:HTTPS_PROXY = "http://127.0.0.1:8080"
+  $env:HTTP_PROXY  = "http://127.0.0.1:8080"
+  $env:NO_PROXY    = ""
+  & <agent-binary> <args…>
+}
+```
+
+The agent and every child it spawns inherit `HTTPS_PROXY` /
+`HTTP_PROXY`. Once the agent exits, the operator's shell is
+unchanged — no later `curl`, `git`, or `apt` call goes through
+trollbridge unless that invocation is itself prefixed.
 
 ## Step 2 — Fetch the proxy's self-description (recommended)
 
