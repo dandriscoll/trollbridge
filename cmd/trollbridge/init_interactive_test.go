@@ -401,6 +401,9 @@ func TestInit_NonInteractiveFlagForcesStaticPath(t *testing.T) {
 // which is the point), and (c) the next-steps output names the
 // proxy host and the deferred `sudo trollbridge ca init` step.
 func TestInit_InteractiveInterception_DoesNotBootstrapCA(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("daemon-mode transcript is sudo/unix-shaped (see printDaemonNextSteps); Windows daemon flow is not yet implemented (#107)")
+	}
 	dir := t.TempDir()
 
 	prev := isTerminal
@@ -471,6 +474,9 @@ func TestInit_InteractiveInterception_DoesNotBootstrapCA(t *testing.T) {
 // install steps. Tested under daemon-mode (the more common shape
 // for remote topology).
 func TestInit_NextSteps_RemoteTopology_NamesCertDistribution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("daemon-mode transcript is sudo/unix-shaped (see printDaemonNextSteps); Windows daemon flow is not yet implemented (#107)")
+	}
 	dir := t.TempDir()
 
 	prev := isTerminal
