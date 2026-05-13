@@ -116,3 +116,101 @@ type cobraCmdRef struct {
 	name    string
 	groupID string
 }
+
+// TestUpdateCmd_CheckFlag_PrintsLatestAndCurrent closes #102 part 2:
+// `trollbridge update --check` HEAD-fetches LatestReleaseURL, parses
+// the redirect's tag, and prints current vs latest WITHOUT invoking
+// the installer.
+func TestUpdateCmd_CheckFlag_PrintsLatestAndCurrent(t *testing.T) {
+	prevRunner := updater.Run
+	updater.Run = func(stdout, stderr io.Writer) error {
+		t.Fatalf("--check must not invoke the installer")
+		return nil
+	}
+	defer func() { updater.Run = prevRunner }()
+
+	prevCheck := updater.CheckLatest
+	updater.CheckLatest = func() (string, error) {
+		return "v9.9.9", nil
+	}
+	defer func() { updater.CheckLatest = prevCheck }()
+
+	cmd := newUpdateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--check"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"current:", "latest:", "v9.9.9"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in --check output:\n%s", want, got)
+		}
+	}
+}
+
+// TestUpdateCmd_CheckFlag_FailureSurfaces: when CheckLatest returns
+// an error (network down, GitHub layout changed), --check fails with
+// a runtimeErr that name the cause.
+func TestUpdateCmd_CheckFlag_FailureSurfaces(t *testing.T) {
+	prevCheck := updater.CheckLatest
+	updater.CheckLatest = func() (string, error) {
+		return "", errors.New("dial tcp: connection refused")
+	}
+	defer func() { updater.CheckLatest = prevCheck }()
+
+	cmd := newUpdateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--check"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error; got nil")
+	}
+	var re *runtimeErr
+	if !errors.As(err, &re) {
+		t.Errorf("expected runtimeErr; got %T", err)
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("error must preserve underlying cause; got: %v", err)
+	}
+}
+
+// TestUpdateCmd_FailureClassifiedHintAppears: when the installer
+// returns an updater.Error, the CLI surfaces the class + hint above
+// the wrapped error so the operator's first read names the next
+// action. Closes #102 part 1's CLI wiring.
+func TestUpdateCmd_FailureClassifiedHintAppears(t *testing.T) {
+	prev := updateGOOS
+	updateGOOS = "linux"
+	defer func() { updateGOOS = prev }()
+
+	prevRunner := updater.Run
+	updater.Run = func(stdout, stderr io.Writer) error {
+		return &updater.Error{
+			Underlying: errors.New("exit status 6"),
+			Class:      updater.FailureNetwork,
+			Hint:       "run `curl -v https://trollbridge.dev/install.sh` to debug network",
+		}
+	}
+	defer func() { updater.Run = prevRunner }()
+
+	cmd := newUpdateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	err := cmd.RunE(cmd, nil)
+	if err == nil {
+		t.Fatal("expected error; got nil")
+	}
+	got := out.String()
+	if !strings.Contains(got, "trollbridge update failed (network)") {
+		t.Errorf("missing classification line; got: %s", got)
+	}
+	if !strings.Contains(got, "hint:") {
+		t.Errorf("missing hint line; got: %s", got)
+	}
+}

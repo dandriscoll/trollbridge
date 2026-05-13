@@ -72,3 +72,87 @@ func TestPipeline_PipesToBash(t *testing.T) {
 		t.Errorf("Pipeline() must not pipe to `sh`: install.sh's bash bootstrap aborts under dash with exit 126; got: %q", got)
 	}
 }
+
+// TestClassifyError_Cases covers each FailureClass branch with
+// representative captured-stderr substrings. Closes #102 part 1.
+func TestClassifyError_Cases(t *testing.T) {
+	cases := []struct {
+		name      string
+		stderr    string
+		wantClass FailureClass
+		hintHas   string
+	}{
+		{"bash missing", "bash_required", FailureBashMissing, "install `bash`"},
+		{"sha mismatch", "sha256_mismatch on …", FailureSignatureMismatch, "github.com/dandriscoll/trollbridge/issues"},
+		{"permission denied", "/usr/local/bin: Permission denied", FailurePermissionDenied, "TROLLBRIDGE_INSTALL_DIR"},
+		{"curl resolve", "curl: (6) Could not resolve host: trollbridge.dev", FailureNetwork, "curl -v"},
+		{"curl timeout", "curl: (28) Operation timed out after …", FailureNetwork, "curl -v"},
+		{"curl http error", "curl: (22) The requested URL returned 404", FailureNetwork, "curl -v"},
+		{"unknown", "something weird happened", FailureUnknown, "report at"},
+		{"empty stderr", "", FailureUnknown, "report at"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			class, hint := ClassifyError(nil, tc.stderr)
+			if class != tc.wantClass {
+				t.Errorf("class = %q, want %q", class, tc.wantClass)
+			}
+			if !strings.Contains(hint, tc.hintHas) {
+				t.Errorf("hint = %q, want substring %q", hint, tc.hintHas)
+			}
+		})
+	}
+}
+
+// TestCheckLatest_ParsesTagFromRedirect drives CheckLatest against a
+// local httptest server that mimics the GitHub `/releases/latest` →
+// `/releases/tag/<TAG>` redirect chain. Closes #102 part 2.
+func TestCheckLatest_ParsesTagFromRedirect(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/releases/tag/v9.9.9", http.StatusFound)
+	})
+	mux.HandleFunc("/releases/tag/v9.9.9", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	prev := LatestReleaseURL
+	LatestReleaseURL = srv.URL + "/releases/latest"
+	defer func() { LatestReleaseURL = prev }()
+
+	got, err := CheckLatest()
+	if err != nil {
+		t.Fatalf("CheckLatest: %v", err)
+	}
+	if got != "v9.9.9" {
+		t.Errorf("got tag = %q, want %q", got, "v9.9.9")
+	}
+}
+
+// TestCheckLatest_NoTagInRedirect surfaces the failure mode when
+// the upstream stops following the /releases/tag/<TAG> shape.
+func TestCheckLatest_NoTagInRedirect(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/somewhere/else", http.StatusFound)
+	})
+	mux.HandleFunc("/somewhere/else", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	prev := LatestReleaseURL
+	LatestReleaseURL = srv.URL + "/releases/latest"
+	defer func() { LatestReleaseURL = prev }()
+
+	_, err := CheckLatest()
+	if err == nil {
+		t.Fatal("expected error for non-/releases/tag/ redirect; got nil")
+	}
+	if !strings.Contains(err.Error(), "/releases/tag/") {
+		t.Errorf("error message should name the missing /releases/tag/ shape; got: %v", err)
+	}
+}
