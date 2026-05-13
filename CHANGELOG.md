@@ -59,6 +59,14 @@ The full set of commits between any two tags is on GitHub at
   `none` (drop every entry). Omitting the key preserves the
   pre-#113 behavior; existing deployments are unaffected on
   upgrade. Invalid values fail config validation at startup.
+- `trollbridge logs review` subcommand (#114). Lists audit entries
+  from human or LLM decisions in chronological order, with
+  reasoning and (for LLM entries) model / confidence / input-hash
+  trace. Static-policy auto-decisions filtered out. Shares the
+  `(DecisionSource).IsHumanOrLLM()` categorization with the new
+  `audit_level: decisions` filter (#113). `--since <duration>`
+  applies a cutoff; `--config -c` overrides the default config
+  path.
 
 ## v0.7.1 — wire-format changes operator scripts may notice
 

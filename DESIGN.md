@@ -1405,6 +1405,7 @@ A single binary, Cobra-style subcommands.
 | `trollbridge rules reload` | Re-read rule files (equivalent to SIGHUP). |
 | `trollbridge logs tail` | Tail the structured audit log, formatted for humans. |
 | `trollbridge logs replay --rules <file> --since <duration>` | Replay past decisions against a new rule set; report differences. |
+| `trollbridge logs review --since <duration>` | List audit entries from human or LLM decisions, ordered by time. Static-policy auto-decisions filtered out. (#114) |
 | `trollbridge sessions` | Show active client sessions with identity and decision counts. |
 | `trollbridge selftest --from-vm` | Phase 5+ helper. Run from inside the agent VM. Attempts a small set of direct connections to non-proxy destinations and reports whether the egress firewall blocked them; reports whether the proxy is reachable and whether the CA is trusted by the system. Used to confirm the deployment topology before trusting it. |
 | `trollbridge version` | Print version and build info. |
@@ -1858,6 +1859,21 @@ question that operators ask after an incident.
 `trollbridge logs tail` formats the JSONL as a single line per
 decision: `<timestamp> <decision> <method> <host>:<port><path>
 [reason]`. Color-coded by effect.
+
+### 15.8 Review listing
+
+`trollbridge logs review` (#114) reads the same JSONL and lists,
+in chronological order, every entry whose `decision_source` is the
+LLM advisor (`llm_advisor`) or a human (`approval_queue`, including
+`approval_timeout`). Static-policy auto-decisions (`rule`,
+`default`, `allowlist`, `denylist`) are filtered out so the
+operator sees only the entries where active judgment occurred.
+Per entry: a header line with `<timestamp>  <source-tag>  <effect>
+<method> <host>:<port><path>  (<identity>)`; a `reason: …` line
+(when present); and an `llm: model=… confidence=… input_hash=…`
+trace line for LLM entries. Shares the categorization with the
+`logging.audit_level: decisions` filter (§15.4) — both call
+`(DecisionSource).IsHumanOrLLM()` on the entry's source.
 
 ---
 
