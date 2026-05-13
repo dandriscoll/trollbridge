@@ -411,3 +411,33 @@ fi
 build_matrix "$NEW"
 
 push_and_publish "$NEW"
+
+# ---------- post-publish smoke check (#106) ----------
+# Confirm install.sh is actually fetchable (catches a broken
+# trollbridge.dev deploy) and that the GitHub release page
+# reads back (catches a botched gh release create where the
+# upload silently 401-d). Both checks fail soft — they print
+# a warning rather than aborting the release flow, since the
+# release commit + tag have already shipped.
+
+post_publish_smoke() {
+    local v="$1"
+    if [[ $DRY_RUN -ne 0 ]]; then
+        return 0
+    fi
+    echo "smoke: verifying install.sh resolves..." >&2
+    local sh_first
+    if sh_first="$(curl -fsSL --max-time 10 https://trollbridge.dev/install.sh | head -1 2>/dev/null)"; then
+        echo "smoke: install.sh first line: ${sh_first}" >&2
+    else
+        echo "smoke: WARN — could not fetch trollbridge.dev/install.sh; check the deploy" >&2
+    fi
+    echo "smoke: verifying gh release reads back..." >&2
+    if gh release view "v${v}" >/dev/null 2>&1; then
+        echo "smoke: gh release view v${v} OK" >&2
+    else
+        echo "smoke: WARN — gh release view v${v} did not resolve" >&2
+    fi
+}
+
+post_publish_smoke "$NEW"

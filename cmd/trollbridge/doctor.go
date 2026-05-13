@@ -23,10 +23,15 @@ import (
 // doctorAdvisor lets tests inject a fake advisor.Provider.
 var doctorAdvisor advisor.Provider
 
+// doctorLogFilePath is set by the --log-file flag handler; nil when
+// the flag was not used. Read by doctorOpLog to wire a tee writer.
+var doctorLogFilePath string
+
 func newDoctorCmd() *cobra.Command {
 	var configPath string
 	var verbose bool
 	var checkLLM bool
+	var logFile string
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check the YAML and test the LLM connection.",
@@ -185,6 +190,9 @@ flipping the production switch (closes #82).`,
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to trollbridge.yaml")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "print connection-level events around the LLM Classify call")
 	cmd.Flags().BoolVar(&checkLLM, "check-llm", false, "run the LLM classification step even when llm.enabled is false")
+	cmd.Flags().StringVar(&logFile, "log-file", "", "path to write the operational log to (in addition to stderr); useful for snippet-verification runs (#106)")
+	cmd.PreRun = func(*cobra.Command, []string) { doctorLogFilePath = logFile }
+	cmd.PostRun = func(*cobra.Command, []string) { doctorLogFilePath = "" }
 	return cmd
 }
 
@@ -247,11 +255,31 @@ func buildDoctorProvider(llm config.LLM, t advisor.Translator, endpoint string, 
 // log level so that running `trollbridge doctor --log-level=debug`
 // surfaces the new HTTPClassifier `event=advisor_wire_response`
 // records to the operator. Closes #36 wire-detail closure.
+//
+// When --log-file is set (doctorLogFilePath non-empty), the logger
+// also tees to that file so a snippet-verification run can capture
+// the lines without piping. Closes the doctor --log-file bullet of
+// #106.
 func doctorOpLog() *slog.Logger {
 	levelVar := new(slog.LevelVar)
 	levelVar.Set(slog.LevelInfo)
 	if resolvedLogLevel != nil {
 		levelVar.Set(*resolvedLogLevel)
+	}
+	if doctorLogFilePath != "" {
+		f, err := os.OpenFile(doctorLogFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o640)
+		if err == nil {
+			// Tee writer: stderr always; file in addition. This
+			// matches the spirit of the existing oplog StderrSink
+			// while letting `--log-file path.log` capture the same
+			// stream for later inspection.
+			h := slog.NewTextHandler(io.MultiWriter(os.Stderr, f), &slog.HandlerOptions{Level: levelVar})
+			return slog.New(h)
+		}
+		// Fall through to stderr-only on file-open failure (the
+		// operator can re-try with a writable path; doctor's other
+		// output still names the failure context).
+		fmt.Fprintf(os.Stderr, "doctor: cannot open --log-file %s: %v; continuing with stderr only\n", doctorLogFilePath, err)
 	}
 	lg, err := oplog.New(oplog.StderrSink, levelVar)
 	if err != nil {
