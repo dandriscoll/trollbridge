@@ -195,6 +195,14 @@ func TestQueue_ApproveEmitsInfoEvent(t *testing.T) {
 	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	go q.Approve(id, "session", "test")
 	_ = q.Wait(context.Background(), id, ch)
+	// Approve pushes to the resolve channel BEFORE it emits the
+	// Info log; Wait can return before the log call lands. Poll
+	// briefly so this test is not racy on slow CI runners
+	// (Windows lane in particular).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(log.calls) < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(log.calls) != 1 {
 		t.Fatalf("want 1 Info call, got %d (%v)", len(log.calls), log.calls)
 	}
@@ -217,6 +225,12 @@ func TestQueue_DenyEmitsInfoEvent(t *testing.T) {
 	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	go q.Deny(id, "manual block", "test")
 	_ = q.Wait(context.Background(), id, ch)
+	// Same race as TestQueue_ApproveEmitsInfoEvent — Deny pushes to
+	// the resolve channel before emitting Info; poll briefly.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(log.calls) < 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(log.calls) != 1 || !hasArg(log.calls[0].args, "event", "hold_denied") {
 		t.Errorf("expected one hold_denied Info; got %v", log.calls)
 	}
