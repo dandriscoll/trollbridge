@@ -5,6 +5,7 @@ package updater
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -81,6 +82,7 @@ const (
 	FailureBashMissing       FailureClass = "bash_missing"
 	FailurePermissionDenied  FailureClass = "permission_denied"
 	FailureSignatureMismatch FailureClass = "signature_mismatch"
+	FailureCannotExecute     FailureClass = "cannot_execute"
 	FailureUnknown           FailureClass = "unknown"
 )
 
@@ -105,7 +107,16 @@ func (e *Error) Unwrap() error { return e.Underlying }
 
 // ClassifyError inspects the pipeline error and captured stderr to
 // pick a class + hint. Pure: no I/O. Closes #102 part 1.
-func ClassifyError(_ error, capturedStderr string) (FailureClass, string) {
+//
+// Substring branches come first because they carry the most specific
+// diagnostic. The exit-code-126 branch follows as a fallback for the
+// "command found but cannot be executed" class (closes #94 reactivation,
+// job 163) — the original #94 fix addressed one specific 126 cause
+// (dash-bootstrap interpreting the dash binary as a bash script);
+// recurrence surfaced that 126 has several plausible shapes, and the
+// classifier needs to give the operator a useful triage hint for any
+// of them when no stderr substring matches.
+func ClassifyError(err error, capturedStderr string) (FailureClass, string) {
 	se := strings.ToLower(capturedStderr)
 	if strings.Contains(se, "bash_required") || strings.Contains(se, "bash: not found") {
 		return FailureBashMissing, "install `bash` (apt/brew/dnf) and re-run `trollbridge update`"
@@ -125,6 +136,15 @@ func ClassifyError(_ error, capturedStderr string) (FailureClass, string) {
 		strings.Contains(se, "curl: (22)") ||
 		strings.Contains(se, "curl: (28)") {
 		return FailureNetwork, "run `curl -v " + URL + "` to debug network reachability, then re-run `trollbridge update`"
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 126 {
+		return FailureCannotExecute, "exit 126 means a command in the install pipeline could not be executed. " +
+			"Common causes: (1) the installed trollbridge binary is for the wrong CPU — " +
+			"run `file $(command -v trollbridge)` and compare to `uname -m`; " +
+			"(2) /tmp is mounted noexec — re-run with `TMPDIR=$HOME/.cache trollbridge update`; " +
+			"(3) `bash` is on PATH but not executable — `ls -l $(command -v bash)`. " +
+			"If none apply, report at https://github.com/dandriscoll/trollbridge/issues with the full output."
 	}
 	return FailureUnknown, "re-run with `-v` for more output, or report at https://github.com/dandriscoll/trollbridge/issues"
 }
