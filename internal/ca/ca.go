@@ -381,8 +381,23 @@ func writePEM(path, blockType string, der []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	return pem.Encode(out, &pem.Block{Type: blockType, Bytes: der})
+	if err := pem.Encode(out, &pem.Block{Type: blockType, Bytes: der}); err != nil {
+		out.Close()
+		return err
+	}
+	if cerr := out.Close(); cerr != nil {
+		return cerr
+	}
+	// Lock down the on-disk DACL when this is a key file (mode
+	// 0o600). On unix this is a no-op (POSIX bits already enforce
+	// owner-only); on Windows applyKeyMode sets a PROTECTED DACL
+	// granting only the current user. Closes #107.
+	if mode == 0o600 {
+		if err := applyKeyMode(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func leafExpired(c *tls.Certificate) bool {

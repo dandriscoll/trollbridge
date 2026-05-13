@@ -21,3 +21,9 @@ func checkKeyMode(keyPath string) error {
 	}
 	return nil
 }
+
+// applyKeyMode is a no-op on unix because writePEM already passes
+// 0o600 through os.OpenFile. The Windows variant sets a restrictive
+// NTFS DACL after write — POSIX bits are not the protection
+// mechanism there.
+func applyKeyMode(_ string) error { return nil }
