@@ -542,17 +542,94 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 		m.OpsPausedTicks = 0
 		return m, CmdNone{}
 	}
-	// Pane-specific dispatch.
+	// Pane-specific dispatch via a map (closes #98 part 1).
+	// Adding a new bottom panel is a one-line registration here
+	// instead of another conditional in this chain.
 	if m.Focused == PaneConsole {
-		if m.BottomPanel == BottomPanelURLs {
-			return applyKeyURLs(m, e)
-		}
-		if m.BottomPanel == BottomPanelLLM {
-			return applyKeyLLM(m, e)
+		if h, ok := bottomPanelKeyHandlers[m.BottomPanel]; ok {
+			return h(m, e)
 		}
 		return applyKeyConsole(m, e)
 	}
 	return applyKeyApprovals(m, e)
+}
+
+// bottomPanelKeyHandlers dispatches keystrokes to the per-panel
+// reducer when the console pane is focused. Read-only panels
+// (BottomPanelInfo) fall through to the default applyKeyConsole
+// handler — there's nothing pane-specific to react to. Closes #98
+// part 1 (replaces the prior if/else-if chain in applyKey).
+var bottomPanelKeyHandlers = map[BottomPanel]func(Model, KeyEvent) (Model, Cmd){
+	BottomPanelURLs: applyKeyURLs,
+	BottomPanelLLM:  applyKeyLLM,
+}
+
+// applyMetaPanelDigitKey handles the '0'-'4' panel-switch keys
+// shared between approvals focus and any panel handler that wants
+// to forward them (#98 part 4: meta-key passthrough). Returns
+// handled=true when the key was a digit '0'-'4' and the model has
+// been mutated; false otherwise. Centralizes the prior switch
+// statement in applyKeyApprovals so the URLs and LLM panels can
+// pass digits through to the same logic.
+func applyMetaPanelDigitKey(m Model, e KeyEvent) (Model, Cmd, bool) {
+	if e.Rune < '0' || e.Rune > '4' {
+		return m, CmdNone{}, false
+	}
+	// Any explicit panel choice cancels a URLs-pending-return and
+	// releases the nav-pause (#86, #89).
+	m.URLsPendingReturn = false
+	m.OpsPausedTicks = 0
+	switch e.Rune {
+	case '0':
+		m.BottomPanelOpen = false
+		m.Focused = PaneApprovals
+		return m, CmdNone{}, true
+	case '1':
+		if m.BottomPanelOpen && m.BottomPanel == BottomPanelConsole {
+			m.BottomPanelOpen = false
+			m.Focused = PaneApprovals
+			return m, CmdNone{}, true
+		}
+		m.BottomPanel = BottomPanelConsole
+		m.BottomPanelOpen = true
+		m.Focused = PaneConsole
+		return m, CmdNone{}, true
+	case '2':
+		if m.BottomPanelOpen && m.BottomPanel == BottomPanelInfo {
+			m.BottomPanelOpen = false
+			m.Focused = PaneApprovals
+			return m, CmdNone{}, true
+		}
+		m.BottomPanel = BottomPanelInfo
+		m.BottomPanelOpen = true
+		return m, CmdNone{}, true
+	case '3':
+		if m.BottomPanelOpen && m.BottomPanel == BottomPanelLLM {
+			m.BottomPanelOpen = false
+			m.DigestExpanded = false
+			m.Focused = PaneApprovals
+			return m, CmdNone{}, true
+		}
+		m.BottomPanel = BottomPanelLLM
+		m.BottomPanelOpen = true
+		m.Focused = PaneConsole
+		if m.DigestSelected == "" && len(m.Digests) > 0 {
+			m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
+		}
+		m.DigestExpanded = true
+		return m, CmdDigestRefresh{}, true
+	case '4':
+		if m.BottomPanelOpen && m.BottomPanel == BottomPanelURLs {
+			m.BottomPanelOpen = false
+			m.Focused = PaneApprovals
+			return m, CmdNone{}, true
+		}
+		m.BottomPanel = BottomPanelURLs
+		m.BottomPanelOpen = true
+		m.Focused = PaneConsole
+		return m, CmdURLsRefresh{}, true
+	}
+	return m, CmdNone{}, false
 }
 
 // reconcileDigestSelection keeps the operator's LLM-panel selection
@@ -630,14 +707,13 @@ func applyKeyLLM(m Model, e KeyEvent) (Model, Cmd) {
 		m.Focused = PaneApprovals
 		return m, CmdNone{}
 	}
-	// Hotkey toggle: `0` closes the panel, `3` toggles it closed.
-	// Mirrors applyKeyURLs' digit handling so the operator can close
-	// the panel without first defocusing.
-	if e.Rune == '0' || e.Rune == '3' {
-		m.BottomPanelOpen = false
-		m.DigestExpanded = false
-		m.Focused = PaneApprovals
-		return m, CmdNone{}
+	// Meta-key passthrough (#98 part 4): '0'-'4' switch panels even
+	// from the LLM handler so the operator can hop between panels
+	// without first defocusing back to approvals. The shared helper
+	// also handles the LLM-specific cleanup (DigestExpanded reset)
+	// when '3' toggles the LLM panel closed.
+	if mNew, cmd, handled := applyMetaPanelDigitKey(m, e); handled {
+		return mNew, cmd
 	}
 	if e.Key == KeyEnter {
 		// Enter toggles the per-digest detail view. Inline vs modal
@@ -688,6 +764,12 @@ func applyKeyURLs(m Model, e KeyEvent) (Model, Cmd) {
 	if e.Key == KeyEsc {
 		m.Focused = PaneApprovals
 		return m, CmdNone{}
+	}
+	// Meta-key passthrough (#98 part 4): '0'-'4' switch panels even
+	// from the URLs handler, so an operator browsing URLs can hop to
+	// the LLM panel without first defocusing back to approvals.
+	if mNew, cmd, handled := applyMetaPanelDigitKey(m, e); handled {
+		return mNew, cmd
 	}
 	combinedLen := len(m.AllowList) + len(m.DenyList)
 	if e.Key == KeyUp || e.Rune == 'k' {
@@ -952,84 +1034,8 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	// panel, the next exec must not yank them back to URLs (#86).
 	// It also releases the nav-pause (#89): explicit panel choice
 	// means the operator is done reading the approvals list.
-	if e.Rune >= '0' && e.Rune <= '4' {
-		m.URLsPendingReturn = false
-		m.OpsPausedTicks = 0
-	}
-	switch e.Rune {
-	case '0':
-		m.BottomPanelOpen = false
-		// If the operator had Tabbed into the bottom pane before
-		// hiding it, snap focus back to approvals — there is no
-		// visible pane to keep focus on.
-		m.Focused = PaneApprovals
-		// Cancel any URLs-pending-return so the next exec does not
-		// surprise the operator by re-opening URLs (#86).
-		m.URLsPendingReturn = false
-		return m, CmdNone{}
-	case '1':
-		if m.BottomPanelOpen && m.BottomPanel == BottomPanelConsole {
-			m.BottomPanelOpen = false
-			m.Focused = PaneApprovals
-			return m, CmdNone{}
-		}
-		m.BottomPanel = BottomPanelConsole
-		m.BottomPanelOpen = true
-		// Auto-focus the console panel so the operator can begin
-		// typing without an explicit Tab press (closes #77). Info /
-		// LLM panels are read-only displays and keep approvals focus
-		// so single-keystroke actions (q, 0) still work; URLs panel
-		// will join this auto-focus set when #79 makes it editable.
-		m.Focused = PaneConsole
-		return m, CmdNone{}
-	case '2':
-		if m.BottomPanelOpen && m.BottomPanel == BottomPanelInfo {
-			m.BottomPanelOpen = false
-			m.Focused = PaneApprovals
-			return m, CmdNone{}
-		}
-		m.BottomPanel = BottomPanelInfo
-		m.BottomPanelOpen = true
-		return m, CmdNone{}
-	case '3':
-		if m.BottomPanelOpen && m.BottomPanel == BottomPanelLLM {
-			m.BottomPanelOpen = false
-			m.DigestExpanded = false
-			m.Focused = PaneApprovals
-			return m, CmdNone{}
-		}
-		m.BottomPanel = BottomPanelLLM
-		m.BottomPanelOpen = true
-		// Auto-focus the LLM pane so j/k/Up/Down/Enter reach
-		// applyKeyLLM without an explicit Tab. Matches the URLs
-		// auto-focus precedent (#79); the LLM panel is now
-		// interactively browseable (closes #81).
-		m.Focused = PaneConsole
-		// Initialize the selection to the newest digest if the
-		// existing selection has been evicted or is empty. The
-		// refresh below will reconcile against the freshly-fetched
-		// list.
-		if m.DigestSelected == "" && len(m.Digests) > 0 {
-			m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID
-		}
-		// Default to expanded so the operator sees the detail block
-		// immediately, without an Enter dance (#91).
-		m.DigestExpanded = true
-		return m, CmdDigestRefresh{}
-	case '4':
-		if m.BottomPanelOpen && m.BottomPanel == BottomPanelURLs {
-			m.BottomPanelOpen = false
-			m.Focused = PaneApprovals
-			return m, CmdNone{}
-		}
-		m.BottomPanel = BottomPanelURLs
-		m.BottomPanelOpen = true
-		// Auto-focus the URLs pane so j/k/x reach applyKeyURLs
-		// without an explicit Tab — the pane is editable (closes
-		// #79). Lifts the narrowed reading from #77 (which had
-		// kept '4' on approvals focus).
-		m.Focused = PaneConsole
-		return m, CmdURLsRefresh{}
+	if mNew, cmd, handled := applyMetaPanelDigitKey(m, e); handled {
+		return mNew, cmd
 	}
 	if e.Rune == 'b' {
 		m.Alerts.ChimeEnabled = !m.Alerts.ChimeEnabled

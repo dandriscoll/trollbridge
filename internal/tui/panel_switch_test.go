@@ -560,3 +560,65 @@ func TestApplyConsoleExec_RefreshesURLsWhenURLsPaneOpen(t *testing.T) {
 		t.Errorf("Cmd = %T; want CmdURLsRefresh after console exec with URLs pane open", cmd)
 	}
 }
+
+// TestApplyKey_DigitPassthroughFromURLs closes #98 part 4: the
+// URLs-panel handler must let '0'-'4' meta-keys switch panels.
+// Pre-fix, those digits fell through to the URLs handler's
+// default-no-op return.
+func TestApplyKey_DigitPassthroughFromURLs(t *testing.T) {
+	m := Model{
+		BottomPanelOpen: true,
+		BottomPanel:     BottomPanelURLs,
+		Focused:         PaneConsole,
+		URLsLocal:       true,
+	}
+	// '3' from URLs focus must switch to LLM.
+	got, _ := Apply(m, KeyEvent{Rune: '3'})
+	if got.BottomPanel != BottomPanelLLM {
+		t.Errorf("BottomPanel after '3' from URLs: got %v, want LLM", got.BottomPanel)
+	}
+	// '0' from URLs focus must close the panel.
+	got2, _ := Apply(m, KeyEvent{Rune: '0'})
+	if got2.BottomPanelOpen {
+		t.Errorf("BottomPanelOpen after '0' from URLs: got true, want false")
+	}
+}
+
+// TestApplyKey_DigitPassthroughFromLLM is the sibling assertion for
+// the LLM-panel handler.
+func TestApplyKey_DigitPassthroughFromLLM(t *testing.T) {
+	m := Model{
+		BottomPanelOpen: true,
+		BottomPanel:     BottomPanelLLM,
+		Focused:         PaneConsole,
+	}
+	// '4' from LLM focus must switch to URLs.
+	got, _ := Apply(m, KeyEvent{Rune: '4'})
+	if got.BottomPanel != BottomPanelURLs {
+		t.Errorf("BottomPanel after '4' from LLM: got %v, want URLs", got.BottomPanel)
+	}
+	// '1' from LLM focus must switch to Console.
+	got2, _ := Apply(m, KeyEvent{Rune: '1'})
+	if got2.BottomPanel != BottomPanelConsole {
+		t.Errorf("BottomPanel after '1' from LLM: got %v, want Console", got2.BottomPanel)
+	}
+}
+
+// TestApplyKey_DispatchTableRoutesPerPanel closes #98 part 1: the
+// new map-based dispatch routes URLs and LLM keys to their
+// per-panel handlers. We assert by issuing a key the per-panel
+// handler interprets distinctly (j cursor-down on URLs, j cursor-
+// down on LLM).
+func TestApplyKey_DispatchTableRoutesPerPanel(t *testing.T) {
+	m := Model{
+		BottomPanelOpen: true,
+		BottomPanel:     BottomPanelURLs,
+		Focused:         PaneConsole,
+		AllowList:       []string{"a", "b"},
+		URLsSelected:    0,
+	}
+	got, _ := Apply(m, KeyEvent{Rune: 'j'})
+	if got.URLsSelected != 1 {
+		t.Errorf("URLs handler did not receive 'j': URLsSelected=%d, want 1", got.URLsSelected)
+	}
+}
