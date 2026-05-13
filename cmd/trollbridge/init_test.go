@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,5 +241,66 @@ func TestInit_NextStepsIncludesAbsCWhenExplicitDir(t *testing.T) {
 	wantC := "-c " + filepath.Join(other, "trollbridge.yaml")
 	if !strings.Contains(out.String(), wantC) {
 		t.Errorf("explicit -d should produce %q in the next-steps; got:\n%s", wantC, out.String())
+	}
+}
+
+// TestPrintDaemonNextSteps_WindowsRefuses closes #101 part 2: when
+// the host is Windows, daemon-mode init must NOT emit POSIX commands
+// (sudo, systemctl, install -m). Refuse with a clear next-action
+// pointing the operator at user-mode + the daemon-mode-Windows
+// follow-up.
+func TestPrintDaemonNextSteps_WindowsRefuses(t *testing.T) {
+	prev := initGOOS
+	initGOOS = "windows"
+	defer func() { initGOOS = prev }()
+
+	var out bytes.Buffer
+	w := func(format string, args ...any) {
+		fmt.Fprintf(&out, format, args...)
+	}
+	printDaemonNextSteps(w, initAnswers{installMode: "daemon", interception: true}, "")
+
+	got := out.String()
+	for _, want := range []string{
+		"daemon-mode is not yet supported on Windows",
+		"trollbridge init",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Windows refusal output missing %q; got:\n%s", want, got)
+		}
+	}
+	for _, mustNotContain := range []string{
+		"sudo -u trollbridge",
+		"systemctl",
+		"install -m 600",
+	} {
+		if strings.Contains(got, mustNotContain) {
+			t.Errorf("Windows refusal output leaks POSIX command %q; got:\n%s", mustNotContain, got)
+		}
+	}
+}
+
+// TestPrintDaemonNextSteps_NonWindowsEmitsPOSIXFlow is the negative
+// control: on a non-Windows host the POSIX commands must still be
+// emitted (the Windows branch must not unconditionally swallow them).
+func TestPrintDaemonNextSteps_NonWindowsEmitsPOSIXFlow(t *testing.T) {
+	prev := initGOOS
+	initGOOS = "linux"
+	defer func() { initGOOS = prev }()
+
+	var out bytes.Buffer
+	w := func(format string, args ...any) {
+		fmt.Fprintf(&out, format, args...)
+	}
+	printDaemonNextSteps(w, initAnswers{installMode: "daemon", interception: true}, "")
+
+	got := out.String()
+	for _, want := range []string{
+		"sudo -u trollbridge trollbridge ca init",
+		"sudo systemctl start trollbridge",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("non-Windows daemon-mode output missing %q; got:\n%s", want, got)
+		}
 	}
 }

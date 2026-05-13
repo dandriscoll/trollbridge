@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -282,11 +283,33 @@ func printUserNextSteps(w func(string, ...any), ans initAnswers, cFlag string) {
 	w("  trollbridge test https://example.com%s\n", cFlag)
 }
 
+// initGOOS is read in place of runtime.GOOS so tests can pick the
+// Windows branch without cross-compiling. Production callers leave it
+// at runtime.GOOS. Mirrors `updateGOOS` in update.go.
+var initGOOS = runtime.GOOS
+
 // printDaemonNextSteps renders the daemon-mode flow. Setup steps
 // run via `sudo -u trollbridge` (after package install creates the
 // user/group/dirs); the daemon process itself runs as the
 // `trollbridge` user, never as root.
+//
+// On Windows, daemon-mode is not yet supported (no Windows-service
+// integration, no NTFS ACL enforcement on CA keys — see issue #101
+// and its tracked Windows-daemon follow-up). Refuse with a clear
+// next-action instead of emitting POSIX commands the operator
+// cannot execute. Closes #101 part 2.
 func printDaemonNextSteps(w func(string, ...any), ans initAnswers, cFlag string) {
+	if initGOOS == "windows" {
+		w("  # daemon-mode is not yet supported on Windows.\n")
+		w("  # Trollbridge user-mode runs under your account and uses\n")
+		w("  # per-user filesystem ACLs to protect the CA key. Re-run\n")
+		w("  # `trollbridge init` and choose user-mode at the install-mode\n")
+		w("  # prompt, or watch\n")
+		w("  #   https://github.com/dandriscoll/trollbridge/issues\n")
+		w("  # for daemon-mode-on-Windows support (Windows-service\n")
+		w("  # integration + NTFS ACL enforcement on CA keys).\n")
+		return
+	}
 	w("  # daemon-mode: trollbridge runs as the `trollbridge` system user (not root).\n")
 	w("  # The package install creates the user/group and pre-creates /etc/trollbridge\n")
 	w("  # and /var/log/trollbridge owned by it. Setup steps run via `sudo -u trollbridge`.\n")
