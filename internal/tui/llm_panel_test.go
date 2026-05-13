@@ -429,3 +429,141 @@ func TestShouldRenderLLMModal_OnlyWhenLLMPanelOpenAndExpanded(t *testing.T) {
 		}
 	}
 }
+
+// digestsN builds N digests, oldest at index 0, newest at N-1, so
+// digest "req-<rune('a'+i)>" maps to display index (N-1)-i.
+func digestsN(n int) []advisor.Digest {
+	out := make([]advisor.Digest, n)
+	for i := 0; i < n; i++ {
+		out[i] = digestAt(i)
+	}
+	return out
+}
+
+// TestLLMDigestStartIndex_NewestSelectedReturnsHead pins that when
+// the selection is the newest digest (display index 0), iteration
+// starts from the slice tail — no shift needed (#117).
+func TestLLMDigestStartIndex_NewestSelectedReturnsHead(t *testing.T) {
+	m := modelWithDigests(digestsN(20))
+	m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID // newest
+	got := llmDigestStartIndex(m, 5)
+	if got != len(m.Digests)-1 {
+		t.Errorf("start = %d, want %d (no shift when selection is newest)", got, len(m.Digests)-1)
+	}
+}
+
+// TestLLMDigestStartIndex_NoSelectionReturnsHead pins that an empty
+// DigestSelected leaves the iteration starting from newest.
+func TestLLMDigestStartIndex_NoSelectionReturnsHead(t *testing.T) {
+	m := modelWithDigests(digestsN(20))
+	m.DigestSelected = ""
+	got := llmDigestStartIndex(m, 5)
+	if got != len(m.Digests)-1 {
+		t.Errorf("start = %d, want %d (no selection)", got, len(m.Digests)-1)
+	}
+}
+
+// TestLLMDigestStartIndex_EmptyDigestsReturnsMinusOne pins the
+// boundary case — an empty digest slice. The caller's `i >= 0`
+// loop guard immediately exits.
+func TestLLMDigestStartIndex_EmptyDigestsReturnsMinusOne(t *testing.T) {
+	m := modelWithDigests(nil)
+	if got := llmDigestStartIndex(m, 5); got != -1 {
+		t.Errorf("start = %d, want -1 for empty digest slice", got)
+	}
+}
+
+// TestLLMDigestStartIndex_SelectionWithinWindowReturnsHead pins
+// that when the selection is within the newest-first bodyLines
+// window, iteration still starts from the newest — no shift.
+func TestLLMDigestStartIndex_SelectionWithinWindowReturnsHead(t *testing.T) {
+	digests := digestsN(20)
+	m := modelWithDigests(digests)
+	// Display index 3 is digests[len-1-3] = digests[16].
+	m.DigestSelected = digests[16].RequestID
+	got := llmDigestStartIndex(m, 5) // budget 5; display idx 3 fits.
+	if got != len(digests)-1 {
+		t.Errorf("start = %d, want %d (selection at display idx 3 fits in budget 5)", got, len(digests)-1)
+	}
+}
+
+// TestLLMDigestStartIndex_SelectionBelowWindowShifts pins the core
+// fix: when the selection sits below the visible newest-first
+// window, the start shifts so the selection is the last visible
+// row (anchor-at-bottom).
+func TestLLMDigestStartIndex_SelectionBelowWindowShifts(t *testing.T) {
+	digests := digestsN(20)
+	m := modelWithDigests(digests)
+	// Pick display index 10 (i.e., digests[len-1-10] = digests[9]).
+	m.DigestSelected = digests[9].RequestID
+	// With bodyLines=5 and no expanded extra, budget=5.
+	// shift = 10 - 5 + 1 = 6.
+	// start = (len-1) - shift = 19 - 6 = 13.
+	got := llmDigestStartIndex(m, 5)
+	want := 13
+	if got != want {
+		t.Errorf("start = %d, want %d (display idx 10, budget 5 → shift 6)", got, want)
+	}
+}
+
+// TestLLMDigestStartIndex_ExpandedReducesBudget pins that the
+// expanded-detail extra rows reduce the digest budget — and that
+// the start shifts further so the selection still lands within the
+// reduced window.
+func TestLLMDigestStartIndex_ExpandedReducesBudget(t *testing.T) {
+	digests := digestsN(20)
+	m := modelWithDigests(digests)
+	m.DigestSelected = digests[9].RequestID // display idx 10
+	m.DigestExpanded = true
+	// llmDetailLineCountFor falls back to llmDetailLineCount=10 when
+	// the panel width hasn't been set for wrapping; with m.Cols=100
+	// the detail wraps differently — call the helper to capture the
+	// exact value the production code sees.
+	extra := llmDetailLineCountFor(m) - 1
+	if extra < 0 {
+		extra = 0
+	}
+	bodyLines := 10
+	digestBudget := bodyLines - extra
+	if digestBudget < 1 {
+		digestBudget = 1
+	}
+	shift := 10 - digestBudget + 1
+	if shift < 0 {
+		shift = 0
+	}
+	want := (len(digests) - 1) - shift
+	if got := llmDigestStartIndex(m, bodyLines); got != want {
+		t.Errorf("start = %d, want %d (expanded extra=%d budget=%d)", got, want, extra, digestBudget)
+	}
+}
+
+// TestRenderLLMPane_SelectionOutsideWindowStaysVisible is the
+// render-level integration test for #117. Build a model with 20
+// digests, select one outside the natural newest-first window, and
+// assert the selected digest's identifier appears in the rendered
+// output. Before the scroll fix this test would fail because the
+// renderer's hardcoded "start from newest" stopped before reaching
+// the selection.
+func TestRenderLLMPane_SelectionOutsideWindowStaysVisible(t *testing.T) {
+	digests := digestsN(20)
+	m := modelWithDigests(digests)
+	m.Cols = 100
+	// Pick display index 10 — well outside any reasonable bodyLines.
+	selected := digests[9]
+	m.DigestSelected = selected.RequestID
+	m.DigestExpanded = false // inline summaries; one row per digest.
+
+	var b strings.Builder
+	renderLLMPane(&b, m, 7) // 7 rows for the panel; 5 rows body after borders.
+	out := b.String()
+	if !strings.Contains(out, selected.RequestID) {
+		// One-line summary may omit the RequestID entirely (timestamp +
+		// host shown); assert the timestamp instead.
+		ts := selected.Timestamp.Local().Format("15:04:05")
+		if !strings.Contains(out, ts) {
+			t.Errorf("selected digest (req=%q ts=%q) not in rendered output:\n%s",
+				selected.RequestID, ts, out)
+		}
+	}
+}

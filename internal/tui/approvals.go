@@ -1517,6 +1517,57 @@ func leadingMark(selected, focused bool) string {
 	return color + llmSelectionBar + colorReset
 }
 
+// llmDigestStartIndex returns the source-slice index from which the
+// LLM panel renderers begin iterating (in newest-first display
+// order). The default is len(m.Digests)-1 (newest first); when the
+// selected digest sits below the visible newest-first window, the
+// start index shifts so the selection stays on screen — anchor-at-
+// bottom (#117).
+//
+// bodyLines is the panel's body row budget; the rough digest budget
+// subtracts the extra rows the expanded selection consumes
+// (DigestExpanded ⇒ multi-line detail block).
+//
+// Stateless: recomputed on every render from
+// (DigestSelected, m.Digests, bodyLines). No Model field tracks
+// scroll position. Both renderLLMPane and renderLLMPaneNoBorder
+// use this helper — kept in lockstep by virtue of the shared call.
+func llmDigestStartIndex(m Model, bodyLines int) int {
+	if len(m.Digests) == 0 {
+		return -1
+	}
+	displayIdx := digestSelectedIndex(m)
+	if displayIdx <= 0 {
+		// No selection (-1), or selection is the newest digest (0).
+		// Either way, start from the newest.
+		return len(m.Digests) - 1
+	}
+	// Approximate the digest budget given the expanded-detail rows.
+	// The expanded selection still counts as one "digest slot" — the
+	// extra rows beyond the first eat into the budget for peer
+	// digests.
+	extraExpandedRows := 0
+	if m.DigestExpanded {
+		extraExpandedRows = llmDetailLineCountFor(m) - 1
+		if extraExpandedRows < 0 {
+			extraExpandedRows = 0
+		}
+	}
+	digestBudget := bodyLines - extraExpandedRows
+	if digestBudget < 1 {
+		digestBudget = 1
+	}
+	shift := displayIdx - digestBudget + 1
+	if shift < 0 {
+		shift = 0
+	}
+	start := (len(m.Digests) - 1) - shift
+	if start < 0 {
+		start = 0
+	}
+	return start
+}
+
 // renderLLMPane shows the rolling advisor-classify digest inside a
 // focus-colored border (closes #88). Navigation and Enter-to-expand
 // semantics (#81) are unchanged; only the chrome around the body
@@ -1561,7 +1612,7 @@ func renderLLMPane(b *strings.Builder, m Model, rows int) {
 	if len(m.Digests) == 0 {
 		writeLine("(no LLM evaluations yet — advisor disabled or no traffic)", false)
 	} else {
-		for i := len(m.Digests) - 1; i >= 0 && used < bodyLines; i-- {
+		for i := llmDigestStartIndex(m, bodyLines); i >= 0 && used < bodyLines; i-- {
 			d := m.Digests[i]
 			selected := d.RequestID == m.DigestSelected
 			if selected && m.DigestExpanded {
@@ -1616,7 +1667,10 @@ func renderLLMPaneNoBorder(b *strings.Builder, m Model, rows int) {
 		}
 		return
 	}
-	for i := len(m.Digests) - 1; i >= 0 && used < rows; i-- {
+	// No-border path uses the full row budget for the body (no
+	// chrome border rows to subtract). The same scroll-offset rule
+	// applies (#117).
+	for i := llmDigestStartIndex(m, rows); i >= 0 && used < rows; i-- {
 		d := m.Digests[i]
 		selected := d.RequestID == m.DigestSelected
 		if selected && m.DigestExpanded {

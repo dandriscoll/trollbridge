@@ -78,6 +78,17 @@ The full set of commits between any two tags is on GitHub at
   shell. The trade-off is named in one line so the reader can pick
   the right scope.
 
+### TUI
+
+- LLM panel now scrolls correctly when the selection moves below
+  the visible newest-first window (#117). The selection
+  (DigestSelected) was always moving on Up/Down/j/k — the
+  renderer just iterated strictly from the newest digest and
+  stopped at the body row budget, so past that point the operator
+  saw no change. Anchor-at-bottom scroll keeps the selected
+  digest visible; the modal-mode render (Enter-expanded, detail
+  doesn't fit inline) was already correct and is unaffected.
+
 ## v0.7.1 — wire-format changes operator scripts may notice
 
 The following changes shipped in v0.7.1 and may affect operator
