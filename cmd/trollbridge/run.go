@@ -97,6 +97,14 @@ func newRunCmd() *cobra.Command {
 				return &runtimeErr{err}
 			}
 			auditLogger.SetOpLog(opLog)
+			// Config validator already ensured the level string is
+			// legal; a parse error here would be a programmer
+			// mistake, not an operator one.
+			lvl, err := audit.ParseLevel(cfg.Logging.AuditLevel)
+			if err != nil {
+				return &runtimeErr{err}
+			}
+			auditLogger.SetLevel(lvl)
 			srv, err := server.NewWithLoggers(cfg, engine, auditLogger, opLog)
 			if err != nil {
 				return &runtimeErr{err}

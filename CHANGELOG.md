@@ -53,6 +53,12 @@ The full set of commits between any two tags is on GitHub at
   The entry carries `post_signal_resolution: true` and
   `signal_after_seconds: <N>` (new omitempty fields on
   `audit.Entry`; `audit_schema_version` stays at 1).
+- `logging.audit_level` knob (#113). Three levels: `all` (default;
+  current behavior), `decisions` (only entries from a human or the
+  LLM advisor — static-policy auto-decisions dropped at enqueue),
+  `none` (drop every entry). Omitting the key preserves the
+  pre-#113 behavior; existing deployments are unaffected on
+  upgrade. Invalid values fail config validation at startup.
 
 ## v0.7.1 — wire-format changes operator scripts may notice
 

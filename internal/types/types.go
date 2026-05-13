@@ -62,6 +62,41 @@ const (
 	SourceDenyList        DecisionSource = "denylist"
 )
 
+// AllDecisionSources is the authoritative list of DecisionSource
+// values the codebase produces. Keep in lockstep with the const
+// block above — when a new source is added, add it here AND assert
+// against it in a real test (the sweep in
+// decisionsource_sweep_test.go enforces that, and the audit-level
+// filter test in internal/audit walks this list at runtime).
+var AllDecisionSources = []DecisionSource{
+	SourceRule,
+	SourceDefault,
+	SourceLLMAdvisor,
+	SourceApprovalQueue,
+	SourceApprovalTimeout,
+	SourceAllowList,
+	SourceDenyList,
+}
+
+// IsHumanOrLLM reports whether this decision was made by a human
+// (via the approval queue, including the timeout fallback) or by
+// the LLM advisor — as opposed to a static-policy match from a
+// rule, list, or default. The audit-log `decisions` level
+// (logging.audit_level) uses this predicate to decide which entries
+// to emit. See #113.
+//
+// Approval timeouts are included because the operator was asked
+// even if they did not respond before the timeout policy fired —
+// the entry still represents an interactive decision context, not
+// a static-policy auto-decision.
+func (s DecisionSource) IsHumanOrLLM() bool {
+	switch s {
+	case SourceLLMAdvisor, SourceApprovalQueue, SourceApprovalTimeout:
+		return true
+	}
+	return false
+}
+
 // Decision is the policy engine's output for a RequestEvent.
 type Decision struct {
 	Effect    Effect

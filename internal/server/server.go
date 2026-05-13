@@ -91,6 +91,11 @@ func New(cfg *config.Config, engine *policy.Engine) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	lvl, err := audit.ParseLevel(cfg.Logging.AuditLevel)
+	if err != nil {
+		return nil, err
+	}
+	auditLogger.SetLevel(lvl)
 	return NewWithAudit(cfg, engine, auditLogger)
 }
 

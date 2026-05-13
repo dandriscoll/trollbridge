@@ -172,6 +172,16 @@ logging:
   audit_path: /var/log/trollbridge/audit.jsonl
   audit_buffer_size: 1024
   audit_overflow: deny
+  # audit_level dials the verbosity of the JSONL audit log (#113):
+  #   all       — every entry (default; current behavior).
+  #   decisions — only entries where a human (approval queue, also
+  #               when the queue timed out) or the LLM advisor
+  #               weighed in. Static-policy auto-decisions (rule,
+  #               default, allowlist, denylist) are dropped.
+  #   none      — drop every entry. The audit file is still
+  #               opened; the operational log still records audit
+  #               write failures.
+  audit_level: all
   operational_path: stderr
 
 # Approvals queue tuning. (Auth posture lives under controller.)

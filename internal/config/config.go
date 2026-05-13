@@ -300,6 +300,13 @@ type Logging struct {
 	AuditPath       string `yaml:"audit_path"`
 	AuditBufferSize int    `yaml:"audit_buffer_size"`
 	AuditOverflow   string `yaml:"audit_overflow"`
+	// AuditLevel controls which audit entries land on disk:
+	//   "all"       — every entry (default; current behavior).
+	//   "decisions" — only entries from a human (approval queue,
+	//                 including timeout) or the LLM advisor.
+	//   "none"      — drop every entry.
+	// See #113.
+	AuditLevel      string `yaml:"audit_level"`
 	OperationalPath string `yaml:"operational_path"`
 }
 
@@ -404,6 +411,9 @@ func (c *Config) applyDefaults() {
 	if c.Logging.AuditOverflow == "" {
 		c.Logging.AuditOverflow = "deny"
 	}
+	if c.Logging.AuditLevel == "" {
+		c.Logging.AuditLevel = "all"
+	}
 	if c.Logging.OperationalPath == "" {
 		c.Logging.OperationalPath = "stderr"
 	}
@@ -457,6 +467,11 @@ func (c *Config) validate(path string) error {
 	case "deny", "drop", "block":
 	default:
 		return fmt.Errorf("config error in %s: `logging.audit_overflow` must be one of `deny`, `drop`, `block`. Got: %q.", path, c.Logging.AuditOverflow)
+	}
+	switch c.Logging.AuditLevel {
+	case "none", "decisions", "all":
+	default:
+		return fmt.Errorf("config error in %s: `logging.audit_level` must be one of `none`, `decisions`, `all`. Got: %q.", path, c.Logging.AuditLevel)
 	}
 	switch c.Interception.LeafKeyType {
 	case "rsa-4096", "ecdsa-p256":

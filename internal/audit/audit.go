@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
 // Entry is one audit-log record. Fields per DESIGN.md §15.2.
@@ -83,6 +85,53 @@ const (
 	OverflowBlock OverflowMode = "block"
 )
 
+// Level controls which entries the Logger emits. The zero value is
+// LevelAll so an audit.Logger constructed without SetLevel preserves
+// the original "every entry is written" behavior (#113).
+type Level int
+
+const (
+	// LevelAll emits every entry the caller writes. Default.
+	LevelAll Level = iota
+	// LevelDecisions emits only entries whose DecisionSource is
+	// a human (approval queue, including timeout) or the LLM
+	// advisor. Static-policy auto-decisions (rule, default, allow
+	// list, deny list) are dropped at enqueue.
+	LevelDecisions
+	// LevelNone emits nothing. The Logger silently drops every
+	// entry passed to Write.
+	LevelNone
+)
+
+// ParseLevel parses an operator-facing level string into a Level.
+// Accepts "all", "decisions", "none". Empty string defaults to
+// LevelAll (so a config omitting the key preserves current
+// behavior). Unknown values produce a clear error naming the legal
+// set.
+func ParseLevel(s string) (Level, error) {
+	switch s {
+	case "", "all":
+		return LevelAll, nil
+	case "decisions":
+		return LevelDecisions, nil
+	case "none":
+		return LevelNone, nil
+	}
+	return LevelAll, fmt.Errorf("audit: unknown level %q (want one of: none, decisions, all)", s)
+}
+
+// String renders a Level back to its operator-facing string form.
+func (l Level) String() string {
+	switch l {
+	case LevelNone:
+		return "none"
+	case LevelDecisions:
+		return "decisions"
+	default:
+		return "all"
+	}
+}
+
 // Logger is an async-buffered JSONL writer.
 type Logger struct {
 	path     string
@@ -96,12 +145,25 @@ type Logger struct {
 	droppedCounter atomic.Int64
 
 	opLog atomic.Pointer[slog.Logger]
+
+	// level is the operator-controlled emission filter (#113).
+	// Stored as int32 for lock-free atomic reads on the hot Write
+	// path; the zero value maps to LevelAll so a Logger built
+	// without SetLevel preserves prior behavior.
+	level atomic.Int32
 }
 
 // SetOpLog wires the operational logger so that JSON-encode
 // failures inside the writer goroutine surface on the same stream
 // the operator is tailing. Safe to call before or after Write.
 func (l *Logger) SetOpLog(lg *slog.Logger) { l.opLog.Store(lg) }
+
+// SetLevel updates the emission filter. Safe to call concurrently
+// with Write — the next entry observes the new level.
+func (l *Logger) SetLevel(lvl Level) { l.level.Store(int32(lvl)) }
+
+// Level returns the current emission filter.
+func (l *Logger) Level() Level { return Level(l.level.Load()) }
 
 // New opens (or creates with mode 0640) the audit-log file and
 // returns a Logger. bufSize bounds the in-memory queue.
@@ -131,10 +193,23 @@ func New(path string, bufSize int, overflow OverflowMode) (*Logger, error) {
 }
 
 // Write enqueues an Entry. Returns nil on enqueue, an error if
-// overflow=deny and the buffer is full.
+// overflow=deny and the buffer is full. Entries that the current
+// Level filters out are dropped here (before enqueue) and return
+// nil — they are not a caller error and they do not consume a
+// buffer slot.
 func (l *Logger) Write(e Entry) error {
 	if l.closed.Load() {
 		return fmt.Errorf("audit: logger closed")
+	}
+	// Level filter (#113). Drop before enqueue so the buffer
+	// budget is not spent on entries that will never be written.
+	switch Level(l.level.Load()) {
+	case LevelNone:
+		return nil
+	case LevelDecisions:
+		if !types.DecisionSource(e.DecisionSource).IsHumanOrLLM() {
+			return nil
+		}
 	}
 	if e.Timestamp == "" {
 		e.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)

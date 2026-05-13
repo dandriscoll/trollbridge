@@ -163,6 +163,11 @@ func runProxyLoop(cmd *cobra.Command, configPath string, verbose bool) error {
 		return &runtimeErr{err}
 	}
 	auditLogger.SetOpLog(opLog)
+	lvl, err := audit.ParseLevel(cfg.Logging.AuditLevel)
+	if err != nil {
+		return &runtimeErr{err}
+	}
+	auditLogger.SetLevel(lvl)
 	srv, err := server.NewWithLoggers(cfg, engine, auditLogger, opLog)
 	if err != nil {
 		return &runtimeErr{err}

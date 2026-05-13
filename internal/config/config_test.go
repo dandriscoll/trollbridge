@@ -184,6 +184,60 @@ logging: {audit_path: /tmp/a.jsonl}
 	})
 }
 
+// TestLoad_AuditLevelValidation pins the #113 contract:
+// logging.audit_level must be one of `none`, `decisions`, `all`
+// (or empty, defaulting to `all` for backwards compatibility).
+// Unknown values fail at config-load time with a message naming
+// the valid set.
+func TestLoad_AuditLevelValidation(t *testing.T) {
+	t.Run("empty defaults to all", func(t *testing.T) {
+		path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("default load failed: %v", err)
+		}
+		if cfg.Logging.AuditLevel != "all" {
+			t.Errorf("default audit_level = %q, want all", cfg.Logging.AuditLevel)
+		}
+	})
+	for _, accepted := range []string{"none", "decisions", "all"} {
+		t.Run(accepted+" accepted", func(t *testing.T) {
+			path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl, audit_level: `+accepted+`}
+`)
+			cfg, err := Load(path)
+			if err != nil {
+				t.Errorf("%q rejected: %v", accepted, err)
+			}
+			if cfg != nil && cfg.Logging.AuditLevel != accepted {
+				t.Errorf("audit_level = %q, want %q", cfg.Logging.AuditLevel, accepted)
+			}
+		})
+	}
+	t.Run("invalid value rejected", func(t *testing.T) {
+		path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl, audit_level: bogus}
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("expected error for invalid audit_level")
+		}
+		if !strings.Contains(err.Error(), "logging.audit_level") {
+			t.Errorf("error should name logging.audit_level: %v", err)
+		}
+		for _, want := range []string{"none", "decisions", "all"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error should name valid value %q: %v", want, err)
+			}
+		}
+	})
+}
+
 func TestParseBind_RejectsMissingPort(t *testing.T) {
 	cases := []string{"lo", "all", "127.0.0.1"}
 	for _, raw := range cases {

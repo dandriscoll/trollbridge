@@ -1474,6 +1474,7 @@ logging:
   audit_path: /var/log/trollbridge/audit.jsonl
   audit_buffer_size: 1024
   audit_overflow: deny     # deny | drop | block
+  audit_level: all         # all | decisions | none
   operational_path: stderr
 
 approvals:
@@ -1815,6 +1816,22 @@ On buffer overflow (writes slower than decisions):
   environments where availability dominates auditability.
 - `audit_overflow: block` — trollbridge blocks the dispatcher until
   the buffer drains. May cause client timeouts.
+
+The audit logger filters entries by operator-controlled level
+(`logging.audit_level`, #113):
+
+- `all` (default) — every entry is written.
+- `decisions` — only entries whose `decision_source` names a human
+  (approval queue, including queue timeout) or the LLM advisor are
+  written. Static-policy auto-decisions (rule, default, allowlist,
+  denylist) are dropped at enqueue. Filtered entries do not consume
+  buffer slots; overflow accounting is unaffected.
+- `none` — every entry is dropped. The audit file is still opened
+  so operational metadata (audit-write-failure events on the
+  operational log) survives.
+
+Dashboards that count audit lines per minute see a level-dependent
+floor; the operational log is unaffected by `audit_level`.
 
 ### 15.5 Rotation
 

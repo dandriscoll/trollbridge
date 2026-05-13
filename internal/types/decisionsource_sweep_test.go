@@ -7,21 +7,6 @@ import (
 	"testing"
 )
 
-// AllDecisionSources is the authoritative list of DecisionSource
-// values the codebase produces. Keep in lockstep with the const block
-// in types.go — when a new source is added there, add it here AND
-// add an assertion against it in a real test (the sweep below
-// enforces that).
-var AllDecisionSources = []DecisionSource{
-	SourceRule,
-	SourceDefault,
-	SourceLLMAdvisor,
-	SourceApprovalQueue,
-	SourceApprovalTimeout,
-	SourceAllowList,
-	SourceDenyList,
-}
-
 // TestDecisionSource_SweepEveryValueHasATestAssertion is a sweep test
 // per GO.md "Completeness for sweep changes": when the set of
 // DecisionSource values changes, per-test enumeration only catches

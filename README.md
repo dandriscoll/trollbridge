@@ -97,6 +97,11 @@ For verbose per-request operational output, run with `--verbose`,
 lines carry a `request_id=` field that correlates with the audit
 log.
 
+The audit log itself has its own verbosity dial:
+`logging.audit_level` in `trollbridge.yaml` accepts `all` (default;
+every entry), `decisions` (only human-or-LLM decisions; static-
+policy auto-decisions dropped), or `none` (drop every entry).
+
 ## Operator UI
 
 When `trollbridge run` starts on a terminal, it draws a two-pane
