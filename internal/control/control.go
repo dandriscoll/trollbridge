@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
 	"github.com/dandriscoll/trollbridge/internal/policy"
@@ -39,6 +40,23 @@ type TLSProvider interface {
 	ClientCAPool() *x509.CertPool
 }
 
+// ListsProvider exposes the daemon's current allow/deny lists to
+// the control plane. Closes #99 part 1 (attach-mode TUI parity for
+// the URLs pane). The /v1/lists endpoint reads from this provider
+// at request time so the response reflects any hot-reloads since
+// startup.
+type ListsProvider interface {
+	AllowPatterns() []string
+	DenyPatterns() []string
+}
+
+// DigestsProvider exposes the advisor's digest ring to the control
+// plane. Closes #99 part 2 (attach-mode TUI parity for the LLM
+// panel). Returns nil when no advisor is configured.
+type DigestsProvider interface {
+	Digests() []advisor.Digest
+}
+
 // Server is the control-plane HTTPS listener.
 type Server struct {
 	addr     string
@@ -46,6 +64,8 @@ type Server struct {
 	sessions *sessions.Tracker
 	engine   *policy.Engine
 	ops      *opstream.Ring
+	lists    ListsProvider
+	digests  DigestsProvider
 	ca       CAOps
 	tlsProv  TLSProvider
 	srv      *http.Server
@@ -76,6 +96,15 @@ func (s *Server) SetCA(c CAOps) { s.ca = c }
 // SetOps wires the operations ring exposed by /v1/ops. Safe to call
 // before or after ListenAndServe.
 func (s *Server) SetOps(r *opstream.Ring) { s.ops = r }
+
+// SetLists wires the daemon's current allow/deny lists into the
+// control plane so /v1/lists can return them. Closes #99 part 1.
+func (s *Server) SetLists(p ListsProvider) { s.lists = p }
+
+// SetDigests wires the advisor's digest ring into the control plane
+// so /v1/llm-digests can return recent classifications. Closes #99
+// part 2.
+func (s *Server) SetDigests(p DigestsProvider) { s.digests = p }
 
 // SetTLS wires the TLS-issuing provider used to bring up the mTLS
 // listener.
@@ -135,6 +164,8 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	mux.HandleFunc("/v1/holds", authd(s.listHolds))
 	mux.HandleFunc("/v1/holds/", authd(s.holdAction)) // /v1/holds/<id>/approve|deny
 	mux.HandleFunc("/v1/ops", authd(s.listOps))
+	mux.HandleFunc("/v1/lists", authd(s.listLists))             // closes #99 part 1
+	mux.HandleFunc("/v1/llm-digests", authd(s.listLLMDigests))  // closes #99 part 2
 	mux.HandleFunc("/v1/sessions", authd(s.listSessions))
 	mux.HandleFunc("/v1/rules", authd(s.rulesInfo))
 	mux.HandleFunc("/v1/rules/reload", authd(s.rulesReload))
@@ -236,6 +267,32 @@ func (s *Server) holdAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "unknown action; expected approve|deny", http.StatusBadRequest)
 	}
+}
+
+// listLists returns the daemon's current allow/deny lists. Closes
+// #99 part 1: enables the attach-mode TUI's URLs pane to render the
+// remote daemon's lists. Returns an empty object when no provider
+// is wired (control plane reachable but lists not exposed).
+func (s *Server) listLists(w http.ResponseWriter, r *http.Request) {
+	if s.lists == nil {
+		writeJSON(w, map[string][]string{"allow": {}, "deny": {}})
+		return
+	}
+	writeJSON(w, map[string][]string{
+		"allow": s.lists.AllowPatterns(),
+		"deny":  s.lists.DenyPatterns(),
+	})
+}
+
+// listLLMDigests returns the advisor's recent classification ring.
+// Closes #99 part 2: enables the attach-mode TUI's LLM panel to
+// render. Returns an empty array when no advisor is configured.
+func (s *Server) listLLMDigests(w http.ResponseWriter, r *http.Request) {
+	if s.digests == nil {
+		writeJSON(w, []advisor.Digest{})
+		return
+	}
+	writeJSON(w, s.digests.Digests())
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {

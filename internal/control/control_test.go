@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
@@ -133,4 +134,117 @@ func TestControl_HealthzAlwaysReachable(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("status: got %d, want 200", resp.StatusCode)
 	}
+}
+
+// stubLists implements ListsProvider for /v1/lists tests (closes #99
+// part 1).
+type stubLists struct{ allow, deny []string }
+
+func (s stubLists) AllowPatterns() []string { return s.allow }
+func (s stubLists) DenyPatterns() []string  { return s.deny }
+
+// TestControl_ListsEndpoint_ReturnsConfiguredPatterns asserts the
+// new /v1/lists endpoint serves the wired ListsProvider's data.
+func TestControl_ListsEndpoint_ReturnsConfiguredPatterns(t *testing.T) {
+	srv, addr, caObj, cancel := bootControl(t)
+	defer cancel()
+	srv.SetLists(stubLists{
+		allow: []string{"github.com", "*.example.com"},
+		deny:  []string{"169.254.169.254"},
+	})
+
+	c := clientWithCert(t, caObj, "operator-1")
+	resp, err := c.Get("https://" + addr + "/v1/lists")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	var got struct {
+		Allow []string `json:"allow"`
+		Deny  []string `json:"deny"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if err := jsonUnmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v: %s", err, body)
+	}
+	if !slicesEqual(got.Allow, []string{"github.com", "*.example.com"}) {
+		t.Errorf("allow: got %v, want [github.com *.example.com]", got.Allow)
+	}
+	if !slicesEqual(got.Deny, []string{"169.254.169.254"}) {
+		t.Errorf("deny: got %v, want [169.254.169.254]", got.Deny)
+	}
+}
+
+// TestControl_ListsEndpoint_NoProviderReturnsEmpty asserts the
+// endpoint is reachable even when SetLists was not called — useful
+// for older daemon configurations or tests that don't wire the
+// provider.
+func TestControl_ListsEndpoint_NoProviderReturnsEmpty(t *testing.T) {
+	_, addr, caObj, cancel := bootControl(t)
+	defer cancel()
+
+	c := clientWithCert(t, caObj, "operator-1")
+	resp, err := c.Get("https://" + addr + "/v1/lists")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	var got struct {
+		Allow []string `json:"allow"`
+		Deny  []string `json:"deny"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if err := jsonUnmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Allow) != 0 || len(got.Deny) != 0 {
+		t.Errorf("expected empty allow/deny; got allow=%v deny=%v", got.Allow, got.Deny)
+	}
+}
+
+// TestControl_LLMDigestsEndpoint_NoProviderReturnsEmpty: the
+// endpoint must respond even when the daemon has no advisor.
+func TestControl_LLMDigestsEndpoint_NoProviderReturnsEmpty(t *testing.T) {
+	_, addr, caObj, cancel := bootControl(t)
+	defer cancel()
+
+	c := clientWithCert(t, caObj, "operator-1")
+	resp, err := c.Get("https://" + addr + "/v1/llm-digests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var got []any
+	if err := jsonUnmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v: %s", err, body)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty array; got %v", got)
+	}
+}
+
+// jsonUnmarshal aliases encoding/json.Unmarshal so the test calls
+// read uniformly even if a future refactor changes the import path.
+var jsonUnmarshal = json.Unmarshal
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

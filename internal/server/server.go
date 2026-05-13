@@ -228,6 +228,12 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 	}
 	s.advisor = advisor.New(advCfg, prov)
 	s.advisor.SetLogger(opLog)
+	// Wire control-plane providers for the new attach-mode TUI
+	// surfaces (closes #99). Lists provider is the server itself
+	// (AllowPatterns / DenyPatterns); digests provider adapts the
+	// advisor service.
+	s.control.SetLists(s)
+	s.control.SetDigests(digestsProviderAdapter{adv: s.advisor})
 	s.transport = &http.Transport{
 		MaxIdleConns:        cfg.Forwarder.MaxIdleConns,
 		MaxIdleConnsPerHost: cfg.Forwarder.MaxIdleConnsPerHost,
@@ -1289,6 +1295,28 @@ func rawPatterns(h *hostlist.HostList) []string {
 		out = append(out, p.Raw)
 	}
 	return out
+}
+
+// AllowPatterns implements control.ListsProvider for the /v1/lists
+// control-plane endpoint (closes #99 part 1). Reads the live list
+// state under the server's mutex so hot-reloads are reflected
+// immediately.
+func (s *Server) AllowPatterns() []string { return rawPatterns(s.AllowList()) }
+
+// DenyPatterns implements control.ListsProvider; companion to
+// AllowPatterns.
+func (s *Server) DenyPatterns() []string { return rawPatterns(s.DenyList()) }
+
+// digestsProviderAdapter implements control.DigestsProvider over an
+// advisor.Service (closes #99 part 2). Stays nil-safe so attach mode
+// against an advisor-less daemon returns an empty slice.
+type digestsProviderAdapter struct{ adv *advisor.Service }
+
+func (a digestsProviderAdapter) Digests() []advisor.Digest {
+	if a.adv == nil {
+		return nil
+	}
+	return a.adv.Digests().Snapshot()
 }
 
 // modifierSetForAdvisor returns the names of modifiers the advisor

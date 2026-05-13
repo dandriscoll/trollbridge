@@ -37,9 +37,16 @@ type ControlClient interface {
 	Deny(id, reason string) error
 	// RecentLLMDigests returns recent advisor.Classify outcomes for
 	// the LLM bottom panel (closes #66). In-process clients delegate
-	// to advisor.Service.Digests(). HTTP clients currently return
-	// nil (control-plane /v1/llm-digests endpoint is a follow-up).
+	// to advisor.Service.Digests(); HTTP clients call the control-
+	// plane /v1/llm-digests endpoint (closes #99 part 2).
 	RecentLLMDigests() ([]advisor.Digest, error)
+	// RecentURLs returns the daemon's current allow/deny lists for
+	// the URLs bottom panel. In-process clients reach the server's
+	// list state directly; HTTP clients call /v1/lists (closes #99
+	// part 1). ok=false signals the daemon does not expose the lists
+	// (returned for null providers); the renderer then shows the
+	// attach-mode hint instead of an empty list.
+	RecentURLs() (allow, deny []string, ok bool, err error)
 }
 
 type httpClient struct{ cfg *config.Config }
@@ -79,10 +86,30 @@ func (c *httpClient) Deny(id, reason string) error {
 }
 
 func (c *httpClient) RecentLLMDigests() ([]advisor.Digest, error) {
-	// Control-plane /v1/llm-digests endpoint is a follow-up
-	// (filed in job 120's improvements). Until then, attach mode
-	// shows an empty LLM panel.
-	return nil, nil
+	body, err := controlclient.Get(c.cfg, "/v1/llm-digests")
+	if err != nil {
+		return nil, err
+	}
+	var out []advisor.Digest
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("decode llm-digests: %w", err)
+	}
+	return out, nil
+}
+
+func (c *httpClient) RecentURLs() (allow, deny []string, ok bool, err error) {
+	body, gerr := controlclient.Get(c.cfg, "/v1/lists")
+	if gerr != nil {
+		return nil, nil, false, gerr
+	}
+	var resp struct {
+		Allow []string `json:"allow"`
+		Deny  []string `json:"deny"`
+	}
+	if uerr := json.Unmarshal(body, &resp); uerr != nil {
+		return nil, nil, false, fmt.Errorf("decode lists: %w", uerr)
+	}
+	return resp.Allow, resp.Deny, true, nil
 }
 
 // NewHTTPClient returns a ControlClient that talks to the daemon's
@@ -138,6 +165,17 @@ func (c *inProcessClient) RecentLLMDigests() ([]advisor.Digest, error) {
 		return nil, nil
 	}
 	return c.adv.Digests().Snapshot(), nil
+}
+
+// RecentURLs on the in-process client returns ok=false because the
+// `trollbridge run` flow loads lists from the on-disk config file
+// directly (the existing CmdURLsRefresh path); the in-process URL
+// surface is not exposed via the client interface to avoid a second
+// source of truth. The renderer falls back to the file-loading code
+// path. The HTTP client is the only RecentURLs consumer that
+// actually returns data (closes #99 part 1).
+func (c *inProcessClient) RecentURLs() ([]string, []string, bool, error) {
+	return nil, nil, false, nil
 }
 
 // NewInProcessClient returns a ControlClient that calls the daemon's
@@ -346,17 +384,42 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 			// Allow/deny lists live in trollbridge.yaml on the proxy
 			// host. In LocalOnly (run) mode the operator is on that
 			// host and backend.ConfigPath points at the live file;
-			// in attach mode it's empty and we emit Local=false so
-			// the renderer shows the attach-mode hint (#79).
+			// in attach mode it's empty and we fall back to the
+			// control-plane /v1/lists endpoint (#99 part 1) which
+			// returns the daemon's live list state.
 			cfgPath := ""
 			if backend != nil {
 				cfgPath = backend.ConfigPath
 			}
 			if cfgPath == "" {
 				go func() {
+					allow, deny, ok, err := client.RecentURLs()
+					if err != nil {
+						select {
+						case <-loopCtx.Done():
+						case events <- URLsTickResult{Local: false, Err: err}:
+						}
+						return
+					}
+					if !ok {
+						// Daemon does not expose the lists (older
+						// daemon, or in-process client which routes
+						// the renderer through the file-load path
+						// when ConfigPath is set). Render the
+						// attach-mode hint as before.
+						select {
+						case <-loopCtx.Done():
+						case events <- URLsTickResult{Local: false}:
+						}
+						return
+					}
 					select {
 					case <-loopCtx.Done():
-					case events <- URLsTickResult{Local: false}:
+					case events <- URLsTickResult{
+						Allow: filterListEntries(allow),
+						Deny:  filterListEntries(deny),
+						Local: false,
+					}:
 					}
 				}()
 				break

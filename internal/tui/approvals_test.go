@@ -62,6 +62,10 @@ func (s *stubClient) RecentLLMDigests() ([]advisor.Digest, error) {
 	return nil, nil
 }
 
+func (s *stubClient) RecentURLs() ([]string, []string, bool, error) {
+	return nil, nil, false, nil
+}
+
 // TestRunLoop_ApproveFlowEndToEnd drives runLoop with scripted
 // keystrokes and a stub control client; asserts the approve call
 // landed and the loop exited cleanly on 'q'.
