@@ -138,3 +138,76 @@ func TestWatcher_FileAppearsAfterStart_TriggersReload(t *testing.T) {
 		t.Fatalf("watcher did not fire after file appeared")
 	}
 }
+
+// TestWatcher_FsnotifySubSecondDetection asserts the post-#110 win:
+// fsnotify-driven detection fires within ~150ms (debounce window +
+// scheduling slack), well under the prior 2s mtime-poll floor.
+func TestWatcher_FsnotifySubSecondDetection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trollbridge.yaml")
+	writeFile(t, path, "v1\n")
+
+	w := New(path) // default interval (irrelevant under fsnotify)
+	var calls atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Start(ctx, func() { calls.Add(1) })
+
+	// Let fsnotify's parent-dir watch attach.
+	time.Sleep(80 * time.Millisecond)
+	// Bump mtime past coarse-granularity floor on macOS HFS+ (~1s).
+	time.Sleep(1100 * time.Millisecond)
+	start := time.Now()
+	writeFile(t, path, "v2\n")
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if calls.Load() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() == 0 {
+		t.Fatalf("fsnotify did not fire within 500ms of write")
+	}
+	elapsed := time.Since(start)
+	if elapsed > 400*time.Millisecond {
+		t.Errorf("fsnotify detection took %v; want < 400ms (sub-second target)", elapsed)
+	}
+}
+
+// TestWatcher_AtomicRenameReplace asserts the parent-dir watch
+// pattern catches editor rename-replace flows (vim writebackup,
+// VS Code, sed -i) that a direct file watch would miss.
+func TestWatcher_AtomicRenameReplace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trollbridge.yaml")
+	writeFile(t, path, "v1\n")
+
+	w := New(path)
+	var calls atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Start(ctx, func() { calls.Add(1) })
+
+	time.Sleep(80 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond)
+
+	// Atomic write: write to a sibling, then rename over the target.
+	tmp := path + ".new"
+	writeFile(t, tmp, "v2\n")
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if calls.Load() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() == 0 {
+		t.Fatalf("watcher did not fire after atomic rename-replace")
+	}
+}
