@@ -233,6 +233,11 @@ func newRunCmd() *cobra.Command {
 							"event", oplog.EventRuleReload,
 							"version", engine.RuleSetVersion())
 					}
+					// Hot-reload the per-section knobs that don't
+					// require a restart (#111). Mode, approvals
+					// timing, and forwarder timeouts get picked up
+					// without a daemon bounce.
+					srv.ReloadConfig(freshCfg)
 				})
 			}()
 

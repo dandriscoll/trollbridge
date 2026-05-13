@@ -52,6 +52,25 @@ func NewEngine(mode string, includePaths []string, knownModifiers []string) (*En
 // SetClock overrides the engine's time source (for tests).
 func (e *Engine) SetClock(fn func() time.Time) { e.clock = fn }
 
+// SetMode atomically swaps the engine's top-level mode (default-deny
+// / default-allow / default-ask). Used by the hot-reload path
+// (closes #111 part: Mode is one of the safe sections to reload at
+// runtime). Does not re-parse rule files; pair with Reload() if the
+// rule include set also changed.
+func (e *Engine) SetMode(mode string) {
+	e.mu.Lock()
+	e.mode = mode
+	e.mu.Unlock()
+}
+
+// Mode returns the engine's current top-level mode. Used by the
+// reload callback to log the effective mode after a config swap.
+func (e *Engine) Mode() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.mode
+}
+
 // History returns the engine's decision-history buffer.
 func (e *Engine) History() *History { return e.history }
 

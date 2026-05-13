@@ -447,3 +447,63 @@ func TestQueue_PersistCallbackDoesNotFireOnTimeout(t *testing.T) {
 		t.Errorf("persist callback fired on auto-timeout; should fire only on manual approve/deny")
 	}
 }
+
+// TestQueue_Reconfigure_NewTimeoutAffectsNewWaits closes #111
+// (approvals slice). Reconfigure swaps the queue's timeout for new
+// holds; in-flight Wait calls keep their original timer.
+func TestQueue_Reconfigure_NewTimeoutAffectsNewWaits(t *testing.T) {
+	q := New(8, 5*time.Second, "deny")
+
+	// Reduce the timeout via Reconfigure.
+	q.Reconfigure(8, 100*time.Millisecond, "deny")
+
+	// New hold uses the new timeout.
+	id, ch, err := q.Enqueue(&types.RequestEvent{ID: "r1"}, types.Decision{Effect: types.EffectAskUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	d := q.Wait(context.Background(), id, ch)
+	elapsed := time.Since(start)
+	if d.Effect != types.EffectAskUserTimedOut {
+		t.Errorf("effect = %s, want EffectAskUserTimedOut", d.Effect)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("Wait took %v; expected ~100ms after Reconfigure", elapsed)
+	}
+}
+
+// TestQueue_Reconfigure_OnTimeoutSwap covers the on_timeout flip.
+func TestQueue_Reconfigure_OnTimeoutSwap(t *testing.T) {
+	q := New(8, 50*time.Millisecond, "deny")
+	q.Reconfigure(8, 50*time.Millisecond, "allow")
+
+	id, ch, err := q.Enqueue(&types.RequestEvent{ID: "r1"}, types.Decision{Effect: types.EffectAskUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := q.Wait(context.Background(), id, ch)
+	if d.Effect != types.EffectAskUserResolvedAllow {
+		t.Errorf("effect = %s, want EffectAskUserResolvedAllow (on_timeout=allow)", d.Effect)
+	}
+}
+
+// TestQueue_Reconfigure_IgnoresInvalidValues defends against a
+// malformed config edit clobbering live parameters.
+func TestQueue_Reconfigure_IgnoresInvalidValues(t *testing.T) {
+	q := New(16, 5*time.Second, "deny")
+	q.Reconfigure(0, 0, "")           // all zeros — should be ignored
+	q.Reconfigure(8, time.Second, "garbage") // invalid onTimeout — keep prior
+
+	// Verify the new fields apply where valid (max + timeout) and
+	// the invalid onTimeout was ignored.
+	if q.maxPending != 8 {
+		t.Errorf("maxPending = %d, want 8", q.maxPending)
+	}
+	if q.timeout != time.Second {
+		t.Errorf("timeout = %v, want 1s", q.timeout)
+	}
+	if q.onTimeout != "deny" {
+		t.Errorf("onTimeout = %q, want preserved 'deny'", q.onTimeout)
+	}
+}

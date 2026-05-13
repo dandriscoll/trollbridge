@@ -99,6 +99,29 @@ func (q *Queue) SetLogger(l Logger) { q.opLog = l }
 // DecisionPersist.
 func (q *Queue) SetDecisionPersist(cb DecisionPersist) { q.persistCb = cb }
 
+// Reconfigure swaps the queue's hot-reloadable parameters at runtime.
+// Closes #111 (the approvals slice). The new values apply to NEW
+// holds; in-flight Wait() calls continue to use the timer they
+// already armed (changing the timer mid-flight would risk dropping
+// holds that the operator was about to act on).
+//
+// maxPending <= 0 is silently ignored to preserve construction-time
+// validation; onTimeout outside {"deny","allow"} is also ignored.
+func (q *Queue) Reconfigure(maxPending int, timeout time.Duration, onTimeout string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if maxPending > 0 {
+		q.maxPending = maxPending
+	}
+	if timeout > 0 {
+		q.timeout = timeout
+	}
+	switch onTimeout {
+	case "allow", "deny":
+		q.onTimeout = onTimeout
+	}
+}
+
 // New constructs a Queue.
 func New(maxPending int, timeout time.Duration, onTimeout string) *Queue {
 	if maxPending <= 0 {

@@ -1421,6 +1421,84 @@ func (s *Server) SetLists(allow, deny []string) error {
 	return nil
 }
 
+// HotReloadableSections is the set of YAML sections whose values the
+// server picks up at runtime when ReloadConfig is called. Closes
+// #111. Sections not on this list require a daemon restart because
+// they shape state established at construction time (listeners,
+// CA, advisor providers, redactor regexes, audit-log file handles).
+//
+// The ordering matches trollbridge.yaml's section order so an
+// operator scanning the file can quickly tell which edits take
+// effect immediately and which need a restart.
+//
+// Hot-reloadable:
+//   - lists.allow, lists.deny — via ReloadListsFromConfig
+//   - policy.include rule files — via engine.Reload
+//   - mode — via engine.SetMode (closes #111)
+//   - approvals.signal_after_seconds — read at request time
+//   - approvals.timeout_seconds, approvals.on_timeout, approvals.max_pending — via queue.Reconfigure
+//   - forwarder.connection_acquire_timeout_seconds — read at request time
+//
+// Restart-required:
+//   - proxy, control, metrics binds (listener-shaped)
+//   - controller.auth (mTLS scaffolding established at boot)
+//   - interception.* (CA, leaf-cert TTL, root pool — established at boot)
+//   - llm.* provider/endpoint/api_key (advisor wiring)
+//   - logging.audit_path, logging.operational_path (file handles)
+//   - redaction.* (compiled regex set)
+//   - identities (matcher built at boot)
+//   - tui.* (UI options consumed at TUI startup)
+var HotReloadableSections = []string{
+	"lists.allow", "lists.deny", "policy.include", "mode",
+	"approvals.timeout_seconds", "approvals.signal_after_seconds",
+	"approvals.on_timeout", "approvals.max_pending",
+	"forwarder.connection_acquire_timeout_seconds",
+}
+
+// ReloadConfig swaps in fresh values for the hot-reloadable sections
+// (closes #111). Sections that require a restart are intentionally
+// ignored — the operator gets a startup-time error if those are
+// missing/invalid, and a runtime re-application could leak listeners
+// or break in-flight TLS interception.
+//
+// The lists + rules reload remains the responsibility of the
+// existing ReloadListsFromConfig + engine.Reload calls; ReloadConfig
+// is the third leg, applying the per-config-section knobs.
+//
+// Safe to call from the watcher goroutine. Holds listsMu only long
+// enough to swap the *config.Config pointer; subsequent reads race
+// only on field access (and field reads are atomic for the simple
+// numeric/string scalars that hot-reload covers).
+func (s *Server) ReloadConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	s.listsMu.Lock()
+	prevMode := s.cfg.Mode
+	s.cfg = cfg
+	s.listsMu.Unlock()
+
+	// Engine mode is held separately at engine construction; sync it
+	// in lockstep with cfg.Mode so the engine's no-rule-match
+	// fallback honors the new mode.
+	if cfg.Mode != prevMode {
+		s.engine.SetMode(cfg.Mode)
+		s.opLog.Info("mode changed",
+			"event", "mode_changed",
+			"from", prevMode,
+			"to", cfg.Mode,
+		)
+	}
+
+	// Approvals queue parameters: the queue holds timeout / max
+	// pending / on_timeout at construction. Reconfigure if available.
+	s.queue.Reconfigure(
+		cfg.Approvals.MaxPending,
+		time.Duration(cfg.Approvals.TimeoutSeconds)*time.Second,
+		cfg.Approvals.OnTimeout,
+	)
+}
+
 // ReloadListsFromConfig re-parses the cfg's inline lists into the
 // in-memory matcher. Called by the console REPL after it writes a
 // new entry into the yaml file.

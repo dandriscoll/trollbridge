@@ -246,3 +246,39 @@ func TestEngine_Reload(t *testing.T) {
 		t.Errorf("v2 expected allow, got %s", d.Effect)
 	}
 }
+
+// TestEngine_SetMode_AffectsNoRuleMatchPath closes #111 (mode hot-
+// reload). Switching mode at runtime changes the no-rule-match
+// fallback decision without re-parsing rules or re-constructing
+// the engine.
+func TestEngine_SetMode_AffectsNoRuleMatchPath(t *testing.T) {
+	e, err := NewEngine("default-deny", nil, Phase1KnownModifiers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := e.Decide(testReq()); d.Effect != types.EffectDeny {
+		t.Errorf("default-deny: got %s, want deny", d.Effect)
+	}
+	e.SetMode("default-allow")
+	if got := e.Mode(); got != "default-allow" {
+		t.Errorf("Mode() = %q, want default-allow", got)
+	}
+	if d := e.Decide(testReq()); d.Effect != types.EffectAllow {
+		t.Errorf("after SetMode(default-allow): got %s, want allow", d.Effect)
+	}
+	e.SetMode("default-ask")
+	if d := e.Decide(testReq()); d.Effect != types.EffectAskUser {
+		t.Errorf("after SetMode(default-ask): got %s, want ask_user", d.Effect)
+	}
+}
+
+func testReq() *types.RequestEvent {
+	return &types.RequestEvent{
+		ID:     "test-req-1",
+		Method: "GET",
+		Scheme: "https",
+		Host:   "example.com",
+		Port:   443,
+		Path:   "/",
+	}
+}
