@@ -70,6 +70,10 @@ func TestDenySignal_HTTPCarriesAllHeaders(t *testing.T) {
 	if strings.Contains(string(body), "deny-origin") {
 		t.Errorf("plain body leaks rule id: %q", body)
 	}
+	// #95 — every 470/471 carries the discovery header.
+	if got := resp.Header.Get(HeaderDiscovery); got != DiscoveryURL {
+		t.Errorf("Trollbridge-Discovery: got %q want %q", got, DiscoveryURL)
+	}
 
 	// Audit must carry the same request_id AND the full reason / rule
 	// id (which are precisely what's omitted from the wire).
@@ -140,6 +144,9 @@ func TestDenySignal_HTTPJSONBodyOnAcceptHeader(t *testing.T) {
 	}
 	if resp.Header.Get(HeaderProxyStatus) == "" {
 		t.Error("Proxy-Status missing on JSON deny")
+	}
+	if got := resp.Header.Get(HeaderDiscovery); got != DiscoveryURL {
+		t.Errorf("Trollbridge-Discovery: got %q want %q", got, DiscoveryURL)
 	}
 }
 
@@ -217,6 +224,9 @@ func TestDenySignal_CONNECTRawWireFormat(t *testing.T) {
 	}
 	if !resp.Close {
 		t.Error("CONNECT-deny should signal Connection: close (resp.Close=true)")
+	}
+	if got := resp.Header.Get(HeaderDiscovery); got != DiscoveryURL {
+		t.Errorf("Trollbridge-Discovery: got %q want %q", got, DiscoveryURL)
 	}
 
 	// And the same id must reach the audit log.

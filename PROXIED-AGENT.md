@@ -30,6 +30,12 @@ The reason is **not** on the wire. `Trollbridge-Reason` is
 Do not try to parse a reason out of the response — ask the
 operator.
 
+Every 470/471 also carries `Trollbridge-Discovery: <url>`. The URL
+points at a JSON document describing the wire protocol — status
+codes, headers, body shapes, and the audit-log correlation rule.
+Fetch it through the same proxy if you need protocol context;
+typical value is `http://config.trollbridge.dev/discovery`.
+
 HTTPS calls tunnel via CONNECT. When the proxy declines a CONNECT,
 many HTTP libraries surface a generic "tunnel connect failed" and
 hide the 470. If you see an opaque CONNECT failure on a plausible

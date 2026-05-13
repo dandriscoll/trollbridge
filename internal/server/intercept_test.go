@@ -305,6 +305,11 @@ func TestIntercept_DeniesPathAndAuditsCleanly(t *testing.T) {
 	if !strings.HasPrefix(ps, "trollbridge;") || !strings.Contains(ps, "error=http_request_denied") {
 		t.Errorf("Proxy-Status missing or wrong shape on intercepted deny: %q", ps)
 	}
+	// #95 — every 470/471 carries the discovery header on every
+	// transport, including the intercepted-TLS path.
+	if got := resp.Header.Get(HeaderDiscovery); got != DiscoveryURL {
+		t.Errorf("Trollbridge-Discovery on intercepted deny: got %q want %q", got, DiscoveryURL)
+	}
 
 	entries := h.auditEntries()
 	denyFound := false

@@ -174,7 +174,13 @@ curl http://config.trollbridge.dev/setup/proxied-agent.md   # PROXIED-AGENT.md
 curl http://config.trollbridge.dev/setup/instructions.md    # CLIENT-SETUP-AGENT.md
 curl http://config.trollbridge.dev/setup/env                # shell exports
 curl http://config.trollbridge.dev/setup/ca.crt             # CA cert (PEM); 404 if interception is off
+curl http://config.trollbridge.dev/discovery                # JSON: wire protocol description (status codes, headers, body shapes)
 ```
+
+Every 470 / 471 deny response also carries a `Trollbridge-Discovery`
+header pointing at the discovery URL, so an agent that gets denied
+can fetch the protocol document on the next request without prior
+configuration.
 
 `config.trollbridge.dev` is intentionally DNS-sinkholed — these
 endpoints work *only* through the proxy, so a misconfigured client

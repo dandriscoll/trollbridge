@@ -50,6 +50,13 @@ const (
 	EventAdvisorSchemaFail   = "advisor_schema_fail"   // WARN; #25
 	EventAdvisorUnknownFail  = "advisor_unknown_fail"  // WARN; #25
 	EventAdvisorWireResponse = "advisor_wire_response" // DEBUG; HTTPClassifier per call
+
+	// EventDiscoveryFetch fires at INFO when an agent fetches the
+	// protocol discovery document at /discovery on the magic host.
+	// Operator-meaningful because it indicates an agent is actively
+	// reading trollbridge's wire contract — typically post-deny
+	// bootstrap. Closes #95.
+	EventDiscoveryFetch = "discovery_fetch" // INFO; #95
 )
 
 // Phase-name constants for the operational log's `phase=` field on

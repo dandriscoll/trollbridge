@@ -6,6 +6,7 @@ import (
 	"mime"
 	"strings"
 
+	"github.com/dandriscoll/trollbridge/internal/selfdescribe"
 	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
@@ -30,6 +31,19 @@ const HeaderProxyStatus = "Proxy-Status"
 // state to a human or correlate with the operator's audit log
 // (closes #43).
 const HeaderHoldID = "Trollbridge-Hold-Id"
+
+// HeaderDiscovery names the URL of the trollbridge protocol
+// discovery document. Set on every 470 / 471 response so an agent
+// that has only the proxy address can fetch a machine-readable
+// description of the wire contract from a deterministic URL on
+// the magic host (closes #95).
+const HeaderDiscovery = "Trollbridge-Discovery"
+
+// DiscoveryURL is the canonical, deployment-invariant URL of the
+// protocol discovery JSON document. The host is the magic host
+// (sinkholed; intercepted by every trollbridge instance), the path
+// is the route registered in the selfdescribe package.
+const DiscoveryURL = "http://" + selfdescribe.MagicHost + "/discovery"
 
 // StatusTrollbridgeDeclined is the wire status code for a request the
 // proxy has actively declined (deny effect). 470 is unassigned in the
@@ -75,6 +89,7 @@ func denyResponse(d types.Decision, requestID, accept string) (headers map[strin
 		HeaderRequestID:   requestID,
 		HeaderReason:      category,
 		HeaderProxyStatus: formatProxyStatus(token, requestID),
+		HeaderDiscovery:   DiscoveryURL,
 	}
 	if d.HoldID != "" {
 		headers[HeaderHoldID] = d.HoldID

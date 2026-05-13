@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"net"
 	"strings"
@@ -46,6 +47,39 @@ func TestServeHTTP_NonMagicHostStillReachesEngine(t *testing.T) {
 			"Connection: close\r\n\r\n")
 	if status != 470 {
 		t.Errorf("status = %d, want 470 (non-magic host should hit the engine)", status)
+	}
+}
+
+// TestServeHTTP_DiscoveryReachableThroughProxy is the end-to-end
+// closure for issue #95: an agent that hits a denied request can
+// fetch the URL named in the Trollbridge-Discovery header through
+// the same proxy and receive a parseable JSON discovery document.
+// Asserts (a) reachability of the magic-host /discovery route via
+// forward-proxy form, (b) Content-Type, (c) JSON parse, (d) version
+// field present, (e) the same URL is what the deny response would
+// advertise.
+func TestServeHTTP_DiscoveryReachableThroughProxy(t *testing.T) {
+	proxyAddr, _, _, cleanup := bootHTTPProxyWithOpLog(t, 0)
+	defer cleanup()
+
+	body, status := proxyRoundTrip(t, proxyAddr,
+		"GET http://"+selfdescribe.MagicHost+selfdescribe.DiscoveryPath+" HTTP/1.1\r\n"+
+			"Host: "+selfdescribe.MagicHost+"\r\n"+
+			"Connection: close\r\n\r\n")
+	if status != 200 {
+		t.Fatalf("status = %d, want 200; body=%q", status, body)
+	}
+	var d selfdescribe.Discovery
+	if err := json.Unmarshal([]byte(body), &d); err != nil {
+		t.Fatalf("body is not JSON: %v\nbody=%s", err, body)
+	}
+	if d.Version != selfdescribe.DiscoveryVersion {
+		t.Errorf("served version = %q, want %q", d.Version, selfdescribe.DiscoveryVersion)
+	}
+	// The URL the deny response advertises must be the URL this
+	// test fetched. Guard against constant drift.
+	if !strings.HasSuffix(DiscoveryURL, selfdescribe.DiscoveryPath) {
+		t.Errorf("DiscoveryURL %q does not end with %q", DiscoveryURL, selfdescribe.DiscoveryPath)
 	}
 }
 

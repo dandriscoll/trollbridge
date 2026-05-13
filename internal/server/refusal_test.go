@@ -186,3 +186,48 @@ func TestDenyResponse_EmptyRequestIDDefendsWithSentinel(t *testing.T) {
 		t.Errorf("empty req id should fall back to %q; got %q", "unknown", hdrs[HeaderRequestID])
 	}
 }
+
+// TestDenyResponse_DiscoveryHeader_AlwaysSet is the source-of-truth
+// assertion for the "every 470/471 carries Trollbridge-Discovery"
+// contract added by issue #95. Asserted against every effect that
+// can land in denyResponse, both content-negotiation branches, and
+// hold-id-present and -absent variants.
+func TestDenyResponse_DiscoveryHeader_AlwaysSet(t *testing.T) {
+	cases := []struct {
+		name   string
+		effect types.Effect
+		holdID string
+		accept string
+	}{
+		{"deny plain", types.EffectDeny, "", ""},
+		{"deny json", types.EffectDeny, "", "application/json"},
+		{"deny plain with hold id", types.EffectDeny, "h-1", ""},
+		{"ask user plain", types.EffectAskUser, "", ""},
+		{"ask user json", types.EffectAskUser, "", "application/json"},
+		{"ask user signaled", types.EffectAskUserSignaled, "h-2", "application/json"},
+		{"ask llm", types.EffectAskLLM, "", ""},
+		{"ask user resolved deny", types.EffectAskUserResolvedDeny, "", "application/json"},
+		{"ask user timed out", types.EffectAskUserTimedOut, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := types.Decision{Effect: tc.effect, HoldID: tc.holdID, Reason: "x"}
+			hdrs, _, _ := denyResponse(d, "req-1", tc.accept)
+			got := hdrs[HeaderDiscovery]
+			if got != DiscoveryURL {
+				t.Errorf("Trollbridge-Discovery: got %q, want %q", got, DiscoveryURL)
+			}
+		})
+	}
+}
+
+// TestDiscoveryURL_PointsAtMagicHost guards the constant: if
+// MagicHost is renamed without updating the URL, this fails.
+func TestDiscoveryURL_PointsAtMagicHost(t *testing.T) {
+	if !strings.Contains(DiscoveryURL, "config.trollbridge.dev") {
+		t.Errorf("DiscoveryURL = %q, expected to contain magic host", DiscoveryURL)
+	}
+	if !strings.HasSuffix(DiscoveryURL, "/discovery") {
+		t.Errorf("DiscoveryURL = %q, expected /discovery path", DiscoveryURL)
+	}
+}

@@ -420,6 +420,14 @@ HTTP, CONNECT pre-tunnel, and intercepted HTTPS):
 - **`Trollbridge-Reason`** header: the categorical effect token —
   `declined` or `pending` — and nothing else. Reason text is in the
   audit log only.
+- **`Trollbridge-Discovery`** header: the URL of the protocol
+  discovery JSON document
+  (`http://config.trollbridge.dev/discovery`). Set on every 470 /
+  471 response so an agent that has only the proxy address can
+  fetch a machine-readable description of the wire contract from a
+  deterministic, well-known URL. The document enumerates status
+  codes, headers, body shapes, and the audit-log correlation rule.
+  See §15 for the discovery surface.
 - **Body, content-negotiated:**
   - When the request `Accept` header contains a media range matching
     `application/json` (other than `*/*`), the body is

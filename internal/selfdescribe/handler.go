@@ -25,6 +25,7 @@ func Handler(cfg *config.Config, listenAddr string, opLog *slog.Logger) http.Han
 	mux.HandleFunc("/setup/instructions.md", staticHandler(clientSetupMD, "text/markdown; charset=utf-8"))
 	mux.HandleFunc("/setup/env", envHandler(listenAddr))
 	mux.HandleFunc("/setup/ca.crt", caHandler(cfg))
+	mux.HandleFunc(DiscoveryPath, discoveryHandler())
 
 	// One layer of telemetry + request-id stamping wrapping every
 	// route. Out of the wrapper, no in-package code touches w/r.
@@ -48,12 +49,26 @@ func Handler(cfg *config.Config, listenAddr string, opLog *slog.Logger) http.Han
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		mux.ServeHTTP(recorder, r)
 		if opLog != nil {
-			opLog.Debug("self-describe served",
-				"phase", oplog.PhaseSelfDescribe,
-				"path", r.URL.Path,
-				"request_id", requestID,
-				"status", recorder.status,
-			)
+			// Discovery fetches (#95) get an INFO-level event so an
+			// operator running `trollbridge run` (no --verbose) sees
+			// agent bootstrap traffic. Other self-describe assets
+			// remain DEBUG-level (sibling cleanup deferred).
+			if r.URL.Path == DiscoveryPath && recorder.status == http.StatusOK {
+				opLog.Info("discovery fetched",
+					"event", oplog.EventDiscoveryFetch,
+					"phase", oplog.PhaseSelfDescribe,
+					"path", r.URL.Path,
+					"request_id", requestID,
+					"status", recorder.status,
+				)
+			} else {
+				opLog.Debug("self-describe served",
+					"phase", oplog.PhaseSelfDescribe,
+					"path", r.URL.Path,
+					"request_id", requestID,
+					"status", recorder.status,
+				)
+			}
 		}
 	})
 }
@@ -76,6 +91,7 @@ Endpoints (GET only):
 - /setup/instructions.md   — client-setup guide
 - /setup/env               — shell `+"`export`"+` lines for HTTP_PROXY / HTTPS_PROXY / NO_PROXY
 - /setup/ca.crt            — CA certificate (PEM); 404 if TLS interception is disabled
+- /discovery               — JSON description of the wire protocol (status codes, headers, body shapes)
 `, listenAddr)
 	}
 }
@@ -138,7 +154,7 @@ func notFound(w http.ResponseWriter, path string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
 	fmt.Fprintf(w, "no self-describe asset at %s\n", path)
-	fmt.Fprintln(w, "valid paths: /setup, /setup/proxied-agent.md, /setup/instructions.md, /setup/env, /setup/ca.crt")
+	fmt.Fprintln(w, "valid paths: /setup, /setup/proxied-agent.md, /setup/instructions.md, /setup/env, /setup/ca.crt, /discovery")
 }
 
 type statusRecorder struct {
