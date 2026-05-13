@@ -414,3 +414,31 @@ func TestApply_ScrollbackCaps(t *testing.T) {
 		t.Errorf("scrollback len = %d, want %d", len(m.Console.Scrollback), maxScrollback)
 	}
 }
+
+// TestSelectionFor_PerPanel pins the unified Selection accessor
+// added in #112. Each panel reads from the relevant model field;
+// existing call sites continue to work unchanged.
+func TestSelectionFor_PerPanel(t *testing.T) {
+	m := Model{
+		Selected:       3,
+		URLsSelected:   1,
+		DigestSelected: "req-foo",
+	}
+	if got := m.SelectionFor(BottomPanelURLs); got.Index != 1 || got.Key != "" {
+		t.Errorf("URLs: got %+v, want {1 \"\"}", got)
+	}
+	if got := m.SelectionFor(BottomPanelLLM); got.Index != -1 || got.Key != "req-foo" {
+		t.Errorf("LLM: got %+v, want {-1 req-foo}", got)
+	}
+	// Approvals (no explicit BottomPanel — fall through path).
+	if got := m.SelectionFor(BottomPanel(99)); got.Index != 3 {
+		t.Errorf("approvals fallback: got %+v, want Index=3", got)
+	}
+	// Console / Info report -1 (no per-panel cursor).
+	if got := m.SelectionFor(BottomPanelConsole); got.Index != -1 {
+		t.Errorf("console: got %+v, want Index=-1", got)
+	}
+	if got := m.SelectionFor(BottomPanelInfo); got.Index != -1 {
+		t.Errorf("info: got %+v, want Index=-1", got)
+	}
+}

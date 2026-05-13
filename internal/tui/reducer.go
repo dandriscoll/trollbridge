@@ -180,6 +180,45 @@ type AlertsState struct {
 	LastPendingSeen int
 }
 
+// Selection is the unified per-panel cursor abstraction (closes
+// #112). Each bottom panel tracks its own cursor: approvals + URLs
+// use Index (positional, into the displayed slice), LLM uses Key
+// (RequestID, since the digest ring re-orders and indices drift).
+//
+// The model still exposes the per-panel fields (Selected,
+// URLsSelected, DigestSelected) for backward-compatibility with
+// existing callers; a future job can migrate those fields onto a
+// Selections map[BottomPanel]Selection if a sixth panel arrives or
+// the per-field shape becomes a maintenance burden. The constructor
+// helpers below let callers read a per-panel selection through the
+// abstraction without committing to the map shape now.
+type Selection struct {
+	Index int    // -1 when empty; valid index otherwise
+	Key   string // empty when no key-based identity (approvals + URLs); RequestID for LLM
+}
+
+// SelectionFor returns the current selection for the named panel.
+// Reads from the model's existing per-panel fields so the
+// abstraction is a non-breaking addition; callers can switch to
+// this accessor at their own pace, and the underlying field
+// migration can land later without breaking the API.
+func (m Model) SelectionFor(p BottomPanel) Selection {
+	switch p {
+	case BottomPanelLLM:
+		return Selection{Index: -1, Key: m.DigestSelected}
+	case BottomPanelURLs:
+		return Selection{Index: m.URLsSelected}
+	default:
+		// Approvals + Console + Info share m.Selected as the upper-
+		// pane index; the lower panels (Console, Info) have no
+		// per-panel cursor today and return -1.
+		if p == BottomPanelConsole || p == BottomPanelInfo {
+			return Selection{Index: -1}
+		}
+		return Selection{Index: m.Selected}
+	}
+}
+
 // Event is the input to the reducer. Concrete types are below.
 type Event interface{ event() }
 
