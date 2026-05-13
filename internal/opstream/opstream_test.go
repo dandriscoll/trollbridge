@@ -1,10 +1,17 @@
 package opstream
 
 import (
+	"bytes"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 )
+
+func jsonMarshalImpl(v any) ([]byte, error) { return json.Marshal(v) }
+func bytesContains(haystack, needle []byte) bool {
+	return bytes.Contains(haystack, needle)
+}
 
 // fixedClock returns a clock that advances by the configured delta on
 // each call. Lets tests pin UpdatedAt ordering deterministically.
@@ -269,4 +276,53 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(buf[pos:])
+}
+
+// TestOp_JSONShape_OmitemptyHoldsForZeroValues closes the omitempty
+// regression-test bullet of #104. Marshaling an Op with the three
+// omitempty-tagged fields at zero must produce JSON that omits
+// those keys entirely; with non-zero values, the keys must appear.
+func TestOp_JSONShape_OmitemptyHoldsForZeroValues(t *testing.T) {
+	zero := Op{
+		RequestID: "r1",
+		Method:    "GET",
+		URL:       "https://example.com/",
+		// LatencyMS, ResponseSizeBytes, HoldID intentionally zero.
+	}
+	b, err := jsonMarshal(zero)
+	if err != nil {
+		t.Fatalf("marshal zero: %v", err)
+	}
+	for _, banned := range []string{"latency_ms", "response_size_bytes", "hold_id"} {
+		if containsKey(b, banned) {
+			t.Errorf("zero-Op JSON leaks %q key:\n%s", banned, b)
+		}
+	}
+
+	withVals := Op{
+		RequestID:         "r2",
+		Method:            "POST",
+		URL:               "https://example.com/",
+		HoldID:            "hold-42",
+		LatencyMS:         123,
+		ResponseSizeBytes: 4096,
+	}
+	b2, err := jsonMarshal(withVals)
+	if err != nil {
+		t.Fatalf("marshal withVals: %v", err)
+	}
+	for _, expected := range []string{"latency_ms", "response_size_bytes", "hold_id"} {
+		if !containsKey(b2, expected) {
+			t.Errorf("non-zero-Op JSON missing %q key:\n%s", expected, b2)
+		}
+	}
+}
+
+// jsonMarshal is a tiny wrapper around encoding/json.Marshal so
+// containsKey can be a pure substring check; tests don't have to
+// re-do the encoding step inline.
+func jsonMarshal(v any) ([]byte, error) { return jsonMarshalImpl(v) }
+
+func containsKey(b []byte, key string) bool {
+	return bytesContains(b, []byte("\""+key+"\""))
 }

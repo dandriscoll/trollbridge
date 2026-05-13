@@ -182,15 +182,22 @@ func TestApplyKey_ApproveOnNonPendingRowRoutesThroughConsole(t *testing.T) {
 
 // TestApply_OpsTickPreservesSelectionByRequestID is the analog of
 // the holds-side TestApply_TickPreservesSelectionByID for ops.
+//
+// De-tautologized per #104: place the target at a different index
+// pre vs post-mutation. The earlier version had req-B at index 1
+// in both pre and post slices, which let "Selected stays at 1"
+// pass without ID tracking.
 func TestApply_OpsTickPreservesSelectionByRequestID(t *testing.T) {
 	when := time.Unix(1_700_000_000, 0).UTC()
 	a := opAt("req-A", "GET", "https://a/", opstream.StatusChecking, "", when)
 	b := opAt("req-B", "GET", "https://b/", opstream.StatusChecking, "", when)
 	c := opAt("req-C", "GET", "https://c/", opstream.StatusChecking, "", when)
-	m := Model{Ops: []opstream.Op{a, b, c}, Selected: 1, Cols: 100, Rows: 30}
-	got, _ := Apply(m, OpsTickResult{Ops: []opstream.Op{c, b, a}})
-	if got.Selected != 1 {
-		t.Errorf("Selected = %d, want 1 (req-B's new index)", got.Selected)
+	m := Model{Ops: []opstream.Op{a, b, c}, Selected: 1, Cols: 100, Rows: 30} // selecting req-B
+	// New order [b, a, c]: req-B moves to index 0. The fix tracks
+	// by RequestID, so Selected must follow req-B to index 0.
+	got, _ := Apply(m, OpsTickResult{Ops: []opstream.Op{b, a, c}})
+	if got.Selected != 0 {
+		t.Errorf("Selected = %d, want 0 (req-B's new index)", got.Selected)
 	}
 	displayed := DisplayedOps(got)
 	if displayed[got.Selected].RequestID != "req-B" {

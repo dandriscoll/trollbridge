@@ -16,6 +16,16 @@ build:           ## Build the static binary into ./bin/trollbridge
 test:            ## Run all tests
 	CGO_ENABLED=0 $(GO) test $(PKG)
 
+.PHONY: test-race
+test-race:       ## Run all tests with the race detector
+	CGO_ENABLED=1 $(GO) test -race $(PKG)
+
+.PHONY: fuzz
+fuzz:            ## Run the regex + YAML fuzz suites for ~30s each
+	$(GO) test -run=NONE -fuzz=FuzzRuleRegex_PathRegex -fuzztime=15s ./internal/policy/
+	$(GO) test -run=NONE -fuzz=FuzzRuleRegex_BodyPattern -fuzztime=15s ./internal/policy/
+	$(GO) test -run=NONE -fuzz=FuzzYAMLLoad -fuzztime=30s ./internal/config/
+
 .PHONY: vet
 vet:             ## go vet
 	$(GO) vet $(PKG)

@@ -16,14 +16,20 @@ func snap(id, host string) approvals.Snapshot {
 // the #39 fix: when a tick replaces the holds slice in a different
 // order, Selected must follow the same hold by ID rather than
 // stay pinned to a stale index.
+//
+// De-tautologized per #104: place the target at a different index
+// pre vs post-mutation. The earlier version had b at index 1 in
+// both pre and post slices, which let "Selected stays at 1" pass
+// the test even without ID tracking.
 func TestApply_TickPreservesSelectionByID(t *testing.T) {
 	a, b, c := snap("a", "h1"), snap("b", "h2"), snap("c", "h3")
-	m := Model{Holds: []approvals.Snapshot{a, b, c}, Selected: 1}
-	// Same set of holds, different order. Pre-fix Selected would
-	// stay at 1 and now point at hold "a" or "c" — wrong hold.
-	got, _ := Apply(m, TickResult{Holds: []approvals.Snapshot{c, b, a}})
-	if got.Selected != 1 {
-		t.Fatalf("Selected = %d, want 1 (hold b's new index)", got.Selected)
+	m := Model{Holds: []approvals.Snapshot{a, b, c}, Selected: 1} // selecting b
+	// New order [b, a, c]: b moves to index 0. The fix tracks by ID,
+	// so Selected must follow b to index 0 — not stay at index 1
+	// (which would now point at a, the wrong hold).
+	got, _ := Apply(m, TickResult{Holds: []approvals.Snapshot{b, a, c}})
+	if got.Selected != 0 {
+		t.Fatalf("Selected = %d, want 0 (hold b's new index)", got.Selected)
 	}
 	if got.Holds[got.Selected].ID != "b" {
 		t.Errorf("hold at Selected = %s, want b", got.Holds[got.Selected].ID)

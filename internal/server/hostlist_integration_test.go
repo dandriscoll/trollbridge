@@ -303,3 +303,47 @@ func TestAllowList_WildcardSubdomainBypassesAdvisor(t *testing.T) {
 		t.Error("advisor was called; expected fast-path bypass")
 	}
 }
+
+// TestServer_FastPath_MethodGatedAllowMatch closes the #104 bullet
+// "Server-level integration test for method-gated fast-path." A
+// method-prefixed pattern (`GET https://api.example.com/v1/*`) on
+// the allowlist must match GET requests (engine fast-path → allow)
+// and miss POST requests (no fast-path → engine path; under
+// default-deny → 470).
+func TestServer_FastPath_MethodGatedAllowMatch(t *testing.T) {
+	_, originURL := plainOrigin(t, "ok")
+	originHostOnly, originPort, _ := net.SplitHostPort(strings.TrimPrefix(originURL, "http://"))
+
+	// Method-prefixed pattern: only allow GET to this host.
+	pattern := "GET http://" + originHostOnly + ":" + originPort + "/*"
+
+	// Boot under default-deny; allow only the method-gated pattern.
+	h := bootProxy(t, "default-deny", "")
+	if err := h.srv.SetLists([]string{pattern}, nil); err != nil {
+		t.Fatalf("SetLists: %v", err)
+	}
+
+	c := h.clientThroughProxy()
+
+	// GET — matches the pattern → fast-path → allow → 200.
+	resp, err := c.Get(originURL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("GET status: got %d, want 200 (fast-path allow)", resp.StatusCode)
+	}
+
+	// POST — does NOT match (pattern is method-gated to GET) →
+	// engine path → default-deny → 470.
+	postReq, _ := http.NewRequest("POST", originURL, nil)
+	resp2, err := c.Do(postReq)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != 470 {
+		t.Errorf("POST status: got %d, want 470 (default-deny — pattern is GET-only)", resp2.StatusCode)
+	}
+}
