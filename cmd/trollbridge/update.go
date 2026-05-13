@@ -18,6 +18,7 @@ var updateGOOS = runtime.GOOS
 
 func newUpdateCmd() *cobra.Command {
 	var checkOnly bool
+	var prefix string
 	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update trollbridge to the latest release.",
@@ -29,8 +30,9 @@ Mimics:
 
     curl -fsSL https://trollbridge.dev/install.sh | bash
 
-Override the install directory with TROLLBRIDGE_INSTALL_DIR. Auto-update
-is not yet supported on Windows; download the latest release from
+Override the install directory with TROLLBRIDGE_INSTALL_DIR or pass
+--prefix. Auto-update is not yet supported on Windows; download the
+latest release from
 https://github.com/dandriscoll/trollbridge/releases/latest.
 
 Use --check to print the latest released version without invoking
@@ -62,7 +64,7 @@ the installer.`,
 					"Download the latest release from https://github.com/dandriscoll/trollbridge/releases/latest")
 				return nil
 			}
-			if err := updater.Run(cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+			if err := updater.RunWithPrefix(cmd.OutOrStdout(), cmd.ErrOrStderr(), prefix); err != nil {
 				// Surface the classified hint above the wrapped error
 				// so the operator's first read names the next action,
 				// not the curl/sh exit code.
@@ -79,5 +81,7 @@ the installer.`,
 	}
 	cmd.Flags().BoolVar(&checkOnly, "check", false,
 		"check for the latest release without installing; report current vs latest version")
+	cmd.Flags().StringVar(&prefix, "prefix", "",
+		"install destination override; passed to install.sh as TROLLBRIDGE_INSTALL_DIR. Defaults to install.sh's chosen directory.")
 	return cmd
 }

@@ -15,12 +15,12 @@ func TestUpdateCmd_Windows_PrintsManualInstructions(t *testing.T) {
 	updateGOOS = "windows"
 	defer func() { updateGOOS = prev }()
 
-	prevRunner := updater.Run
-	updater.Run = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.RunWithPrefix
+	updater.RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
 		t.Fatalf("installer must not be invoked on windows; got call")
 		return nil
 	}
-	defer func() { updater.Run = prevRunner }()
+	defer func() { updater.RunWithPrefix = prevRunner }()
 
 	cmd := newUpdateCmd()
 	var out bytes.Buffer
@@ -44,13 +44,13 @@ func TestUpdateCmd_NonWindows_InvokesInstaller(t *testing.T) {
 	defer func() { updateGOOS = prev }()
 
 	called := false
-	prevRunner := updater.Run
-	updater.Run = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.RunWithPrefix
+	updater.RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
 		called = true
 		_, _ = stdout.Write([]byte("installer ran\n"))
 		return nil
 	}
-	defer func() { updater.Run = prevRunner }()
+	defer func() { updater.RunWithPrefix = prevRunner }()
 
 	cmd := newUpdateCmd()
 	var out bytes.Buffer
@@ -72,11 +72,11 @@ func TestUpdateCmd_InstallerFailure_SurfacesAsRuntimeErr(t *testing.T) {
 	updateGOOS = "linux"
 	defer func() { updateGOOS = prev }()
 
-	prevRunner := updater.Run
-	updater.Run = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.RunWithPrefix
+	updater.RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
 		return errors.New("curl: network unreachable")
 	}
-	defer func() { updater.Run = prevRunner }()
+	defer func() { updater.RunWithPrefix = prevRunner }()
 
 	cmd := newUpdateCmd()
 	var out bytes.Buffer
@@ -188,15 +188,15 @@ func TestUpdateCmd_FailureClassifiedHintAppears(t *testing.T) {
 	updateGOOS = "linux"
 	defer func() { updateGOOS = prev }()
 
-	prevRunner := updater.Run
-	updater.Run = func(stdout, stderr io.Writer) error {
+	prevRunner := updater.RunWithPrefix
+	updater.RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
 		return &updater.Error{
 			Underlying: errors.New("exit status 6"),
 			Class:      updater.FailureNetwork,
 			Hint:       "run `curl -v https://trollbridge.dev/install.sh` to debug network",
 		}
 	}
-	defer func() { updater.Run = prevRunner }()
+	defer func() { updater.RunWithPrefix = prevRunner }()
 
 	cmd := newUpdateCmd()
 	var out bytes.Buffer
@@ -212,5 +212,68 @@ func TestUpdateCmd_FailureClassifiedHintAppears(t *testing.T) {
 	}
 	if !strings.Contains(got, "hint:") {
 		t.Errorf("missing hint line; got: %s", got)
+	}
+}
+
+// TestUpdateCmd_PrefixFlag_PassesToInstaller closes #108 part 1:
+// `trollbridge update --prefix /tmp/foo` forwards the prefix as
+// TROLLBRIDGE_INSTALL_DIR to install.sh via RunWithPrefix.
+func TestUpdateCmd_PrefixFlag_PassesToInstaller(t *testing.T) {
+	prev := updateGOOS
+	updateGOOS = "linux"
+	defer func() { updateGOOS = prev }()
+
+	prevRunner := updater.RunWithPrefix
+	defer func() { updater.RunWithPrefix = prevRunner }()
+	var got string
+	updater.RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
+		got = prefix
+		return nil
+	}
+
+	cmd := newUpdateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--prefix", "/tmp/operator-pick"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got != "/tmp/operator-pick" {
+		t.Errorf("RunWithPrefix received prefix=%q; want /tmp/operator-pick", got)
+	}
+}
+
+// TestUpdateCmd_NoPrefixFlag_PassesEmpty asserts that the default
+// (no --prefix) invocation forwards an empty string, so install.sh
+// uses its default (today /usr/local/bin or ~/.local/bin per the
+// installer's logic).
+func TestUpdateCmd_NoPrefixFlag_PassesEmpty(t *testing.T) {
+	prev := updateGOOS
+	updateGOOS = "linux"
+	defer func() { updateGOOS = prev }()
+
+	prevRunner := updater.RunWithPrefix
+	defer func() { updater.RunWithPrefix = prevRunner }()
+	var got string
+	called := false
+	updater.RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
+		called = true
+		got = prefix
+		return nil
+	}
+
+	cmd := newUpdateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("RunE: %v", err)
+	}
+	if !called {
+		t.Fatal("RunWithPrefix was not invoked")
+	}
+	if got != "" {
+		t.Errorf("default prefix should be empty; got %q", got)
 	}
 }

@@ -8,10 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 )
+
+func osEnvironDefault() []string { return os.Environ() }
 
 // URL is the canonical install.sh location. Tests override it to point
 // at a local httptest server; production callers leave it as-is.
@@ -33,10 +36,29 @@ func Pipeline() string {
 // replace Run with a recorder so callers can exercise their wiring
 // without touching the network.
 var Run = func(stdout, stderr io.Writer) error {
+	return RunWithPrefix(stdout, stderr, "")
+}
+
+// RunWithPrefix is the prefix-aware variant of Run. When prefix is
+// non-empty, it is forwarded to install.sh as TROLLBRIDGE_INSTALL_DIR
+// so the binary lands in the operator-chosen directory rather than
+// install.sh's default. Closes #108 part 1 (the in-repo half;
+// install.sh's PATH-detection default is tracked in trollbridge-
+// deploy).
+//
+// Tests can override this var directly the same way they override Run.
+var RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
 	c := exec.Command("sh", "-c", Pipeline())
 	c.Stdout = stdout
 	var stderrBuf bytes.Buffer
 	c.Stderr = io.MultiWriter(stderr, &stderrBuf)
+	if prefix != "" {
+		// Inherit the operator's environment so curl/bash see DNS,
+		// proxy, and trust-store config; then layer the prefix.
+		env := append([]string{}, osEnviron()...)
+		env = append(env, "TROLLBRIDGE_INSTALL_DIR="+prefix)
+		c.Env = env
+	}
 	err := c.Run()
 	if err == nil {
 		return nil
@@ -44,6 +66,10 @@ var Run = func(stdout, stderr io.Writer) error {
 	class, hint := ClassifyError(err, stderrBuf.String())
 	return &Error{Underlying: err, Class: class, Hint: hint}
 }
+
+// osEnviron is split out so tests can swap the environment if
+// needed. Production callers leave it at os.Environ.
+var osEnviron = osEnvironDefault
 
 // FailureClass tags update failures so callers (and tests) can
 // branch without parsing stderr substrings. The set is closed; new
