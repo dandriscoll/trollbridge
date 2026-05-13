@@ -324,6 +324,15 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 
 		var cmd Cmd
 		model, cmd = Apply(model, ev)
+		if _, ok := cmd.(CmdRepaint); ok {
+			// Hard repaint: clear visible, clear scrollback, home,
+			// hide cursor. The subsequent render() call writes the
+			// current frame on top of a known-clean terminal — the
+			// affordance is vi's ^L (#115). Done before render so
+			// the cleared canvas is what the next frame paints onto;
+			// doing it after would clobber the just-rendered frame.
+			_, _ = out.Write([]byte("\x1b[2J\x1b[3J\x1b[H\x1b[?25l"))
+		}
 		_ = render(out, model)
 
 		if model.Quit {
@@ -530,6 +539,9 @@ func readKeys(ctx context.Context, in io.Reader, events chan<- Event) {
 				i++
 			case b == 0x09: // Tab
 				sendKey(ctx, events, KeyEvent{Key: KeyTab})
+				i++
+			case b == 0x0c: // Ctrl-L (hard repaint, #115)
+				sendKey(ctx, events, KeyEvent{Key: KeyCtrlL})
 				i++
 			case b == 0x0d || b == 0x0a: // Enter / LF
 				sendKey(ctx, events, KeyEvent{Key: KeyEnter})

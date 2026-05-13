@@ -27,6 +27,7 @@ func TestReadKeys_TableDriven_BytesToEvents(t *testing.T) {
 		{"backspace_bs", []byte{0x08}, KeyEvent{Key: KeyBackspace}},
 		{"ctrl_u", []byte{0x15}, KeyEvent{Key: KeyCtrlU}},
 		{"ctrl_z", []byte{0x1a}, KeyEvent{Key: KeyCtrlZ}},
+		{"ctrl_l", []byte{0x0c}, KeyEvent{Key: KeyCtrlL}},
 		{"esc_alone", []byte{0x1b}, KeyEvent{Key: KeyEsc}},
 		{"csi_up", []byte{0x1b, '[', 'A'}, KeyEvent{Key: KeyUp}},
 		{"csi_down", []byte{0x1b, '[', 'B'}, KeyEvent{Key: KeyDown}},

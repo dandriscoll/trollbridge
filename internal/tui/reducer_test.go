@@ -192,6 +192,59 @@ func TestApply_KeyRefresh_ApprovalsPane(t *testing.T) {
 	}
 }
 
+// TestApply_KeyCtrlL_Repaint pins that Ctrl-L returns CmdRepaint
+// and leaves the model untouched — the affordance is vi's ^L (#115).
+// Ctrl-L must not change focus, panel state, selection, or quit.
+func TestApply_KeyCtrlL_Repaint(t *testing.T) {
+	m := Model{
+		Focused:         PaneConsole,
+		Selected:        3,
+		BottomPanelOpen: true,
+		BottomPanel:     BottomPanelLLM,
+		LastInfo:        "prior info",
+	}
+	got, cmd := Apply(m, KeyEvent{Key: KeyCtrlL})
+	if _, ok := cmd.(CmdRepaint); !ok {
+		t.Fatalf("cmd = %T, want CmdRepaint", cmd)
+	}
+	if got.Focused != PaneConsole {
+		t.Errorf("Focused = %v, want PaneConsole (unchanged)", got.Focused)
+	}
+	if got.Selected != 3 {
+		t.Errorf("Selected = %d, want 3 (unchanged)", got.Selected)
+	}
+	if !got.BottomPanelOpen {
+		t.Errorf("BottomPanelOpen = false, want true (unchanged)")
+	}
+	if got.BottomPanel != BottomPanelLLM {
+		t.Errorf("BottomPanel = %v, want BottomPanelLLM (unchanged)", got.BottomPanel)
+	}
+	if got.LastInfo != "prior info" {
+		t.Errorf("LastInfo = %q, want %q (unchanged)", got.LastInfo, "prior info")
+	}
+	if got.Quit {
+		t.Errorf("Quit = true, want false")
+	}
+}
+
+// TestApply_KeyCtrlL_BypassesGeneralizeOffer pins that Ctrl-L is
+// dispatched before the GeneralizeOffer block, so a stuck offer
+// cannot swallow the operator's repaint request (#115).
+func TestApply_KeyCtrlL_BypassesGeneralizeOffer(t *testing.T) {
+	offer := GeneralizeOffer{Method: "GET", URL: "https://example.com/a"}
+	m := Model{
+		Focused:         PaneApprovals,
+		GeneralizeOffer: &offer,
+	}
+	got, cmd := Apply(m, KeyEvent{Key: KeyCtrlL})
+	if _, ok := cmd.(CmdRepaint); !ok {
+		t.Fatalf("cmd = %T, want CmdRepaint", cmd)
+	}
+	if got.GeneralizeOffer == nil {
+		t.Errorf("GeneralizeOffer cleared by Ctrl-L; should remain set so a subsequent digit can still accept the offer")
+	}
+}
+
 func TestApply_ActionResultSuccessRemovesHold(t *testing.T) {
 	m := Model{
 		Holds:    []approvals.Snapshot{snap("a", "x"), snap("b", "y"), snap("c", "z")},

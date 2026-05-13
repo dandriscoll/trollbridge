@@ -284,6 +284,10 @@ const (
 	// KeyCtrlZ is 0x1A. Used by the URLs pane to undo the most
 	// recent delete (#86).
 	KeyCtrlZ
+	// KeyCtrlL is 0x0C. Triggers a hard repaint — matches vi's ^L
+	// to sweep stray bytes that may have landed on the alt-screen
+	// (#115).
+	KeyCtrlL
 )
 
 // ActionResult arrives after an approve or deny POST completes.
@@ -333,6 +337,12 @@ type CmdQuit struct{}
 type CmdConsoleExec struct{ Line string }
 type CmdDigestRefresh struct{}
 
+// CmdRepaint is emitted on Ctrl-L. The runtime writes a hard-clear
+// sequence (clear visible + scrollback, home cursor, hide cursor)
+// before the next render so stray bytes leaked onto the alt-screen
+// are swept (#115).
+type CmdRepaint struct{}
+
 // opsPauseTicks is how many tick refreshes a navigation keystroke
 // suspends list ingestion for. At the ~1.5s tick cadence, 2 ticks ≈
 // 3 seconds — long enough for the operator to read the info pane
@@ -354,6 +364,7 @@ func (CmdConsoleExec) cmd()   {}
 func (CmdDigestRefresh) cmd() {}
 func (CmdURLsRefresh) cmd()   {}
 func (CmdRingBell) cmd()      {}
+func (CmdRepaint) cmd()       {}
 
 // Apply is the pure reducer. It does no I/O. Callers replace their
 // Model with the returned one and run the returned Cmd.
@@ -508,6 +519,13 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 	if e.Key == KeyCtrlC {
 		m.Quit = true
 		return m, CmdQuit{}
+	}
+	// Ctrl-L is a hard repaint (#115). Global, state-preserving:
+	// no focus change, no panel toggle, no console emission. Sits
+	// above the GeneralizeOffer block so a stuck offer cannot
+	// swallow the operator's redraw request.
+	if e.Key == KeyCtrlL {
+		return m, CmdRepaint{}
 	}
 	// Generalize-offer prompt (#85): when set, intercept the
 	// keystroke. 1/2/3 emit the broader pattern; any other key
