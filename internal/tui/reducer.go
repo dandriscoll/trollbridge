@@ -689,17 +689,13 @@ func digestAtDisplayIndex(m Model, idx int) (advisor.Digest, bool) {
 // The renderer decides inline-vs-modal layout based on whether the
 // detail block fits in the panel's available rows.
 func applyKeyLLM(m Model, e KeyEvent) (Model, Cmd) {
-	if e.Key == KeyEsc {
-		// Esc collapses an expanded detail; if nothing is expanded,
-		// Esc defocuses back to approvals (matches applyKeyURLs and
-		// applyKeyConsole — Esc inside a panel "backs out").
-		if m.DigestExpanded {
-			m.DigestExpanded = false
-			return m, CmdNone{}
-		}
-		m.Focused = PaneApprovals
-		return m, CmdNone{}
-	}
+	// (Per-panel KeyEsc handler removed — central applyKey handles
+	// Esc unconditionally before this is reached, closing the panel
+	// and resetting DigestExpanded. The prior two-stage collapse-
+	// first / close-second behavior is no longer accessible; the
+	// production contract is "Esc closes the LLM panel entirely; Enter
+	// is collapse-but-keep-open" as pinned by
+	// TestApplyKey_EscClosesLLMPanelEvenWhenExpanded. #105 cleanup.)
 	if e.Rune == 'q' {
 		// `q` defocuses (does not quit the TUI); quitting still
 		// works from approvals focus.
@@ -761,10 +757,9 @@ func applyKeyLLM(m Model, e KeyEvent) (Model, Cmd) {
 // selected entry through the existing console.Backend remove
 // path, Esc defocuses back to approvals.
 func applyKeyURLs(m Model, e KeyEvent) (Model, Cmd) {
-	if e.Key == KeyEsc {
-		m.Focused = PaneApprovals
-		return m, CmdNone{}
-	}
+	// (Per-panel KeyEsc handler removed — central applyKey at the
+	// top of dispatch handles Esc before this is reached. #105
+	// cleanup.)
 	// Meta-key passthrough (#98 part 4): '0'-'4' switch panels even
 	// from the URLs handler, so an operator browsing URLs can hop to
 	// the LLM panel without first defocusing back to approvals.
@@ -1211,12 +1206,11 @@ func applyKeyConsole(m Model, e KeyEvent) (Model, Cmd) {
 		m.Console.Input = nil
 		m.Console.Cursor = 0
 		return m, CmdNone{}
-	case KeyEsc:
-		// Esc inside the console pane returns focus to approvals
-		// rather than quitting the UI — operators expect Esc to
-		// "back out" of the input mode.
-		m.Focused = PaneApprovals
-		return m, CmdNone{}
+	// (Per-pane KeyEsc case removed — central applyKey handles Esc
+	// before this dispatch is reached. Closing the panel from the
+	// console focus is the correct behavior; the prior "back out
+	// to approvals while keeping panel open" behavior was already
+	// dead code. #105 cleanup.)
 	}
 	if e.Rune != 0 {
 		m.Console.Input = append(m.Console.Input[:m.Console.Cursor:m.Console.Cursor], append([]rune{e.Rune}, m.Console.Input[m.Console.Cursor:]...)...)

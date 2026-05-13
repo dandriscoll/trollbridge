@@ -1336,10 +1336,47 @@ const llmSelectionPad = "  "
 // chrome (top + bottom border) plus at least one peer digest row.
 // When false, render promotes the detail view to a full-body modal
 // instead.
-func llmDetailFitsInline(panelRows int) bool {
-	// 2 border rows + detail block (llmDetailLineCount) + at least 1
-	// peer row.
-	return panelRows >= 2+llmDetailLineCount+1
+//
+// detailLines is the actual number of detail rows for the currently
+// selected digest at the current panel width — see
+// llmDetailLineCountFor. Pre-#105 cleanup, this was a static
+// estimate (llmDetailLineCount=10); the actual count is exact and
+// avoids both the false-promote-to-modal and the false-inline-then-
+// clip failure modes.
+func llmDetailFitsInline(panelRows, detailLines int) bool {
+	// 2 border rows + detail block + at least 1 peer row.
+	return panelRows >= 2+detailLines+1
+}
+
+// llmDetailLineCountFor returns the actual wrapped line count of
+// the LLM detail block for the selected digest at the current
+// panel width. Falls back to the conservative llmDetailLineCount
+// estimate when no digest is selected (the modal-promotion check
+// still needs a reasonable answer).
+func llmDetailLineCountFor(m Model) int {
+	if m.DigestSelected == "" || len(m.Digests) == 0 {
+		return llmDetailLineCount
+	}
+	// Find the selected digest in the ring.
+	var d advisor.Digest
+	found := false
+	for _, x := range m.Digests {
+		if x.RequestID == m.DigestSelected {
+			d = x
+			found = true
+			break
+		}
+	}
+	if !found {
+		return llmDetailLineCount
+	}
+	// Wrap width = panel cols minus 2 borders. Match the renderer's
+	// wrap width so the count is accurate.
+	width := m.Cols - 2
+	if width <= 0 {
+		return llmDetailLineCount
+	}
+	return len(digestDetailLines(d, width))
 }
 
 // shouldRenderLLMModal reports whether the top-level render must
@@ -1365,7 +1402,7 @@ func shouldRenderLLMModal(m Model, bodyRows int) bool {
 	if bottomRows < 3 {
 		bottomRows = 3
 	}
-	return !llmDetailFitsInline(bottomRows)
+	return !llmDetailFitsInline(bottomRows, llmDetailLineCountFor(m))
 }
 
 // digestDetailLines formats the per-digest detail block as a fixed-

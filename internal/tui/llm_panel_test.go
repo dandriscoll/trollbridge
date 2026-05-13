@@ -387,19 +387,23 @@ func TestRenderLLMPane_ModalEscReturnsToList(t *testing.T) {
 
 // TestShouldRenderLLMModal_DecisionBoundary pins the modal-promotion
 // rule: with the panel chrome consuming top + bottom border rows
-// (#88) and a wrap-tolerant detail block of up to 10 lines (#91),
-// inline needs panelRows >= 13 (2 borders + 10 detail + 1 peer).
+// (#88) and the actual wrapped detail line count (#105 cleanup —
+// llmDetailLineCountFor replaces the static 10-line estimate),
+// inline needs panelRows >= 2 + actualDetailLines + 1.
+//
+// digestAt(0) at cols=100 wraps to 7 lines (no overflow on url or
+// reason at width=98), so inline needs panelRows >= 10.
 func TestShouldRenderLLMModal_DecisionBoundary(t *testing.T) {
 	m := modelWithDigests([]advisor.Digest{digestAt(0)})
 	m.DigestSelected = "req-a"
 	m.DigestExpanded = true
-	// bodyRows=26 → topRows=13 → bottomRows=13 → exactly fits.
-	if shouldRenderLLMModal(m, 26) {
-		t.Errorf("modal-promotion fired at bodyRows=26; bottom should fit 13 rows")
+	// bodyRows=20 → topRows=10 → bottomRows=10 → exactly fits 7+2+1.
+	if shouldRenderLLMModal(m, 20) {
+		t.Errorf("modal-promotion fired at bodyRows=20; bottom should fit 10 rows for a 7-line detail")
 	}
-	// bodyRows=24 → topRows=12 → bottomRows=12 → does NOT fit.
-	if !shouldRenderLLMModal(m, 24) {
-		t.Errorf("modal-promotion did not fire at bodyRows=24; bottom is 12 rows")
+	// bodyRows=18 → topRows=9 → bottomRows=9 → does NOT fit (need 10).
+	if !shouldRenderLLMModal(m, 18) {
+		t.Errorf("modal-promotion did not fire at bodyRows=18; bottom is 9 rows but detail+chrome+peer needs 10")
 	}
 }
 
