@@ -1,6 +1,6 @@
 # Alignment principles
 
-trollbridge's job is to give an AI agent network access under terms the operator has stated. Four principles govern how the LLM advisor participates in that decision. They are load-bearing: a regression in any one of them weakens the trust model the rest of the system is built on.
+trollbridge's job is to give an AI agent network access under terms the operator has stated. Five principles govern how the LLM advisor participates in that decision. They are load-bearing: a regression in any one of them weakens the trust model the rest of the system is built on.
 
 ## 1. The allow/deny list is human-only
 
@@ -53,6 +53,18 @@ Narrowing the LLM's view to "I'm classifying an HTTP request against an operator
 
 **What would violate it.** Naming "trollbridge" in any system-prompt template or tool definition; describing the application's role ("proxy," "gateway," "egress controller") in any string sent on the wire; populating advisor input fields with internal identifiers (operator usernames, internal hostnames, rule-engine rule IDs).
 
+## 5. The LLM does not see prior LLM verdicts
+
+The advisor's input carries the request shape, the operator's allow/deny lists, and the operator's directives. It carries no record of how this request — or any other request — was previously classified by an LLM.
+
+**The LLM advisor never sees a prior LLM judgment.** There is no input field for a prior verdict, no parameter on `Service.Classify` through which one could be passed, and no code path that reads a past advisor decision back into a new consult.
+
+**Why.** An advisor that can see prior LLM verdicts becomes self-reinforcing: it allows because it — or another LLM run — allowed something similar before, and the operator's intent drops out of the loop. A single bad LLM allow would then propagate forward as "precedent" with no human ever re-entering the path. The lists and the operator's directives are the only history the advisor is entitled to: they are human input. What an LLM decided before is not — it is the advisor's own output fed back as its own input, which is a feedback loop, not evidence.
+
+**Enforcement.** The advisor input shape (`internal/advisor/advisor.go::Input`) has no prior-verdict field. `Service.Classify` takes no history parameter. The `DigestRing` (`internal/advisor/digest.go`) records advisor outcomes for the operator UI but is write-only from the advisor's side — nothing reads it back into `Classify`. `internal/policy/history.go` feeds the deterministic `prior_decision` rule clause in the engine, never the advisor. `TestInput_NoPriorVerdictChannel` (`internal/advisor/advisor_test.go`) pins the `Input` field set so a re-introduced channel fails the build.
+
+**What would violate it.** Adding any `Input` field that carries a prior verdict (`recent_history`, `prior_decisions`, a "seen this host before" hint that includes an effect); passing past advisor outcomes into `Service.Classify`; having the advisor read the audit log, the digest ring, or the approval queue's resolved entries as classification context.
+
 ## How these principles compose
 
-The principles narrow the LLM's role across three axes: **what it can decide** (principle 1: not list contents), **what inputs it gets** (principle 2: only items the lists don't cover; principle 4: nothing about the host application), and **how strictly it must reason** (principle 3: no pattern matching, defer to engine). The result is a classifier whose worst-case failure mode — a wrong `ask_user` — costs the operator one extra prompt. Loosening any one principle moves the worst-case failure mode toward "the LLM silently allowed a request it shouldn't have, and the operator never saw it."
+The principles narrow the LLM's role across three axes: **what it can decide** (principle 1: not list contents), **what inputs it gets** (principle 2: only items the lists don't cover; principle 4: nothing about the host application; principle 5: no prior LLM verdicts), and **how strictly it must reason** (principle 3: no pattern matching, defer to engine). The result is a classifier whose worst-case failure mode — a wrong `ask_user` — costs the operator one extra prompt. Loosening any one principle moves the worst-case failure mode toward "the LLM silently allowed a request it shouldn't have, and the operator never saw it."

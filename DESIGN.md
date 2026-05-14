@@ -894,9 +894,6 @@ fields by default:
   },
   "identity": "coding-agent",
   "tool": "claude-code",
-  "recent_history": [
-    {"host": "github.com", "path": "/some/repo/issues/42", "effect": "allow"}
-  ],
   "rule_set_version": "2026-05-06-3",
   "allow_list": ["api.github.com", "*.npmjs.org"],
   "deny_list":  ["169.254.169.254", "pastebin.com"]
@@ -917,6 +914,10 @@ The advisor MUST NOT receive:
   run first.
 - Response bodies. Response-side LLM consults are a separate, opt-in
   Phase 4+ feature.
+- Prior advisor or LLM verdicts — any record of how this or another
+  request was previously classified by an LLM. The advisor classifies
+  from human input (the lists), the request shape, and the operator's
+  directives only. See `docs/alignment-principles.md` §5.
 
 ### 9.4 Output schema
 
@@ -927,7 +928,7 @@ defined in code by a JSON Schema):
 {
   "effect": "allow",
   "scope": "once",
-  "reason": "GitHub API listing repo issues; consistent with prior behavior.",
+  "reason": "GitHub API listing repo issues; matches the operator's allow_list intent for source-control hosts.",
   "modifiers": ["redact_authorization_header"],
   "confidence": "high"
 }

@@ -27,6 +27,13 @@ import (
 // what the operator already trusts/blocks but cannot modify these
 // lists. List mutation is human-only (console input or manual
 // file edit).
+//
+// Input carries no record of prior advisor or LLM verdicts. Per
+// docs/alignment-principles.md §5, the advisor classifies from
+// human input (the lists), the request shape, and the operator's
+// directives only — never from what an LLM decided before. There
+// is deliberately no field through which a prior verdict could be
+// fed in.
 type Input struct {
 	Method          string            `json:"method"`
 	Scheme          string            `json:"scheme"`
@@ -37,7 +44,6 @@ type Input struct {
 	BodySummary     map[string]any    `json:"body_summary,omitempty"`
 	Identity        string            `json:"identity"`
 	Tool            string            `json:"tool,omitempty"`
-	RecentHistory   []RecentDecision  `json:"recent_history,omitempty"`
 	RuleSetVersion  string            `json:"rule_set_version"`
 	AllowList       []string          `json:"allow_list,omitempty"`
 	DenyList        []string          `json:"deny_list,omitempty"`
@@ -52,14 +58,6 @@ type Input struct {
 	// defaults to ModeReview. Translators inspect this to decide
 	// whether to enable research-mode tools (e.g., web_search).
 	Mode string `json:"mode,omitempty"`
-}
-
-// RecentDecision is a compact record of a prior decision used as
-// advisor context. No bodies, no headers.
-type RecentDecision struct {
-	Host   string `json:"host"`
-	Path   string `json:"path"`
-	Effect string `json:"effect"`
 }
 
 // Output is the structured response shape the advisor MUST return.
@@ -207,7 +205,11 @@ type ListContext struct {
 // the advisor's Input as read-only context. The advisor MUST NOT
 // mutate either list — and the Service offers no API path that
 // would let it.
-func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSetVersion string, recent []RecentDecision, headersRedacted map[string]string, lists *ListContext) (types.Decision, string) {
+//
+// Classify takes no record of prior advisor/LLM verdicts: there is
+// no parameter through which a prior judgment could influence this
+// one (docs/alignment-principles.md §5).
+func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSetVersion string, headersRedacted map[string]string, lists *ListContext) (types.Decision, string) {
 	if !s.cfg.Enabled || s.prov == nil {
 		d := s.unavailableDecision("advisor disabled")
 		s.recordDigest(req, DigestOutcomeUnavailable, string(d.Effect), "", "", d.Reason)
@@ -226,7 +228,6 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 		Path:            req.Path,
 		HeadersRedacted: headersRedacted,
 		Identity:        req.IdentityID,
-		RecentHistory:   recent,
 		RuleSetVersion:  ruleSetVersion,
 		Directives:      s.cfg.Directives,
 		Mode:            s.cfg.Mode,

@@ -38,6 +38,67 @@ func TestOutput_NoListMutationField(t *testing.T) {
 	}
 }
 
+// TestInput_NoPriorVerdictChannel pins alignment principle §5
+// (docs/alignment-principles.md): the advisor's Input shape must
+// carry no record of prior advisor/LLM verdicts. The advisor
+// classifies from human input (the lists), the request shape, and
+// the operator's directives only — never from what an LLM decided
+// before.
+//
+// The check is by reflection over Input's field set (not by
+// marshaling an instance) so a re-added field is caught even when
+// it is `omitempty` and left zero-valued. Any change to Input's
+// field set fails this test, forcing a deliberate, reviewed
+// decision — re-introducing a prior-verdict channel (such as the
+// removed `recent_history`) cannot happen silently.
+func TestInput_NoPriorVerdictChannel(t *testing.T) {
+	// The complete, intended JSON key set of advisor.Input.
+	want := map[string]bool{
+		"method":           true,
+		"scheme":           true,
+		"host":             true,
+		"port":             true,
+		"path":             true,
+		"headers_redacted": true,
+		"body_summary":     true,
+		"identity":         true,
+		"tool":             true,
+		"rule_set_version": true,
+		"allow_list":       true,
+		"deny_list":        true,
+		"directives":       true,
+		"mode":             true,
+	}
+	// Secondary heuristic: name fragments that signal a prior-verdict
+	// channel creeping back under a different name. This only sharpens
+	// the failure message — the exhaustive `want` check below is the
+	// load-bearing guard and catches *any* new field regardless of name.
+	forbidden := []string{"recent", "history", "prior", "verdict", "decision", "outcome"}
+
+	tp := reflect.TypeOf(Input{})
+	got := map[string]bool{}
+	for i := 0; i < tp.NumField(); i++ {
+		tag := strings.SplitN(tp.Field(i).Tag.Get("json"), ",", 2)[0]
+		got[tag] = true
+		lower := strings.ToLower(tag)
+		for _, bad := range forbidden {
+			if strings.Contains(lower, bad) {
+				t.Errorf("Input exposes field %q — looks like a prior-verdict channel (alignment principle §5); the advisor must not see prior LLM judgments", tag)
+			}
+		}
+	}
+	for k := range want {
+		if !got[k] {
+			t.Errorf("Input is missing expected field %q — update this test deliberately if the field set change is intended", k)
+		}
+	}
+	for k := range got {
+		if !want[k] {
+			t.Errorf("Input exposes unexpected field %q — if this is an intended new advisor input, add it to `want` AND confirm it carries no prior-verdict information (alignment principle §5)", k)
+		}
+	}
+}
+
 func newReq() *types.RequestEvent {
 	return &types.RequestEvent{
 		Method: "GET", Scheme: "https-intercepted", Host: "x.com",
@@ -47,7 +108,7 @@ func newReq() *types.RequestEvent {
 
 func TestService_DisabledReturnsAskUser(t *testing.T) {
 	s := New(Config{Enabled: false}, nil)
-	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil, nil)
+	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil)
 	if d.Effect != types.EffectAskUser {
 		t.Errorf("disabled: got %s, want ask_user", d.Effect)
 	}
@@ -56,7 +117,7 @@ func TestService_DisabledReturnsAskUser(t *testing.T) {
 func TestService_AllowAccepted(t *testing.T) {
 	mock := &MockProvider{Output: Output{Effect: "allow", Confidence: "high", Reason: "ok"}}
 	s := New(Config{Enabled: true, ConfidenceFloor: "medium"}, mock)
-	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil, nil)
+	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil)
 	if d.Effect != types.EffectAllow {
 		t.Errorf("got %s, want allow", d.Effect)
 	}
@@ -68,7 +129,7 @@ func TestService_AllowAccepted(t *testing.T) {
 func TestService_LowConfidenceFallsBackToAskUser(t *testing.T) {
 	mock := &MockProvider{Output: Output{Effect: "allow", Confidence: "low", Reason: "iffy"}}
 	s := New(Config{Enabled: true, ConfidenceFloor: "medium"}, mock)
-	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil, nil)
+	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil)
 	if d.Effect != types.EffectAskUser {
 		t.Errorf("low-confidence: got %s, want ask_user", d.Effect)
 	}
@@ -77,7 +138,7 @@ func TestService_LowConfidenceFallsBackToAskUser(t *testing.T) {
 func TestService_MalformedEffectFallsBack(t *testing.T) {
 	mock := &MockProvider{Output: Output{Effect: "blammo", Confidence: "high"}}
 	s := New(Config{Enabled: true, ConfidenceFloor: "medium"}, mock)
-	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil, nil)
+	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil)
 	if d.Effect != types.EffectAskUser {
 		t.Errorf("malformed effect: got %s, want ask_user fallback", d.Effect)
 	}
@@ -90,7 +151,7 @@ func TestService_UnknownModifierStripped(t *testing.T) {
 		Enabled: true, ConfidenceFloor: "medium",
 		KnownModifiers: map[string]bool{"redact_authorization_header": true},
 	}, mock)
-	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil, nil)
+	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil)
 	if len(d.Modifiers) != 1 || d.Modifiers[0] != "redact_authorization_header" {
 		t.Errorf("modifiers: got %v, want [redact_authorization_header]", d.Modifiers)
 	}
@@ -99,7 +160,7 @@ func TestService_UnknownModifierStripped(t *testing.T) {
 func TestService_AdvisorErrorFallsBackPerOnUnavailable(t *testing.T) {
 	mock := &MockProvider{Err: errors.New("boom")}
 	s := New(Config{Enabled: true, OnUnavailable: "deny"}, mock)
-	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil, nil)
+	d, _ := s.Classify(context.Background(), newReq(), "v1", nil, nil)
 	if d.Effect != types.EffectDeny {
 		t.Errorf("on_unavailable=deny: got %s, want deny", d.Effect)
 	}
@@ -109,7 +170,7 @@ func TestService_CachesByRequestShape(t *testing.T) {
 	mock := &MockProvider{Output: Output{Effect: "allow", Confidence: "high"}}
 	s := New(Config{Enabled: true, ConfidenceFloor: "medium", CacheTTL: time.Minute}, mock)
 	for i := 0; i < 5; i++ {
-		s.Classify(context.Background(), newReq(), "v1", nil, nil, nil)
+		s.Classify(context.Background(), newReq(), "v1", nil, nil)
 	}
 	if mock.Calls != 1 {
 		t.Errorf("provider called %d times, want 1 (cached)", mock.Calls)
@@ -119,8 +180,8 @@ func TestService_CachesByRequestShape(t *testing.T) {
 func TestService_CacheKeyIncludesRuleSetVersion(t *testing.T) {
 	mock := &MockProvider{Output: Output{Effect: "allow", Confidence: "high"}}
 	s := New(Config{Enabled: true, ConfidenceFloor: "medium", CacheTTL: time.Minute}, mock)
-	s.Classify(context.Background(), newReq(), "v1", nil, nil, nil)
-	s.Classify(context.Background(), newReq(), "v2", nil, nil, nil)
+	s.Classify(context.Background(), newReq(), "v1", nil, nil)
+	s.Classify(context.Background(), newReq(), "v2", nil, nil)
 	if mock.Calls != 2 {
 		t.Errorf("provider called %d times across distinct rule_set_versions, want 2", mock.Calls)
 	}

@@ -1133,7 +1133,7 @@ func (s *Server) consultAdvisorForHold(req *types.RequestEvent, holdID string, h
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	d, _ := s.advisor.Classify(ctx, req, s.engine.RuleSetVersion(), nil, hdrs, lists)
+	d, _ := s.advisor.Classify(ctx, req, s.engine.RuleSetVersion(), hdrs, lists)
 	if d.Effect == types.EffectAllow || d.Effect == types.EffectDeny {
 		s.queue.ResolveByAdvisor(holdID, d)
 	}

@@ -71,7 +71,7 @@ func TestService_WireFailure_EmitsLayerTaggedEvent(t *testing.T) {
 	s := newServiceForFailureTest(prov, log)
 
 	req := &types.RequestEvent{ID: "req-wire-1", Method: "GET", Host: "example.com", Path: "/", Headers: nil}
-	_, _ = s.Classify(context.Background(), req, "v1", nil, nil, nil)
+	_, _ = s.Classify(context.Background(), req, "v1", nil, nil)
 
 	warnCalls := log.callsAtLevel("warn")
 	if len(warnCalls) != 1 {
@@ -93,7 +93,7 @@ func TestService_SchemaFailure_EmitsLayerTaggedEvent(t *testing.T) {
 	s := newServiceForFailureTest(prov, log)
 
 	req := &types.RequestEvent{ID: "req-schema-1", Method: "GET", Host: "example.com", Path: "/", Headers: nil}
-	_, _ = s.Classify(context.Background(), req, "v1", nil, nil, nil)
+	_, _ = s.Classify(context.Background(), req, "v1", nil, nil)
 
 	warnCalls := log.callsAtLevel("warn")
 	if len(warnCalls) != 1 {
@@ -114,7 +114,7 @@ func TestService_UnknownFailure_FallsBackToUnknownEvent(t *testing.T) {
 	s := newServiceForFailureTest(prov, log)
 
 	req := &types.RequestEvent{ID: "req-x", Method: "GET", Host: "x.example", Path: "/", Headers: nil}
-	_, _ = s.Classify(context.Background(), req, "v1", nil, nil, nil)
+	_, _ = s.Classify(context.Background(), req, "v1", nil, nil)
 
 	warnCalls := log.callsAtLevel("warn")
 	if len(warnCalls) != 1 || !hasArg(warnCalls[0].args, "event", "advisor_unknown_fail") {
@@ -129,7 +129,7 @@ func TestService_NoLogger_DoesNotPanic(t *testing.T) {
 	s := New(Config{Enabled: true, KnownModifiers: map[string]bool{}, Timeout: time.Second, CacheTTL: time.Minute}, prov)
 	// no SetLogger call
 	req := &types.RequestEvent{ID: "req-y", Method: "GET", Host: "y.example", Path: "/", Headers: nil}
-	_, _ = s.Classify(context.Background(), req, "v1", nil, nil, nil)
+	_, _ = s.Classify(context.Background(), req, "v1", nil, nil)
 	// Reaching here is the assertion.
 }
 
@@ -170,7 +170,7 @@ func TestService_LogsConsultedAndClassified(t *testing.T) {
 	s.SetLogger(log)
 
 	req := &types.RequestEvent{ID: "req-ok-1", Method: "GET", Host: "example.com", Path: "/", IdentityID: "id-1"}
-	_, _ = s.Classify(context.Background(), req, "v1", nil, nil, nil)
+	_, _ = s.Classify(context.Background(), req, "v1", nil, nil)
 
 	infoCalls := log.callsAtLevel("info")
 	if len(infoCalls) != 2 {
@@ -198,7 +198,7 @@ func TestService_LogsConsultedButNotClassifiedOnFailure(t *testing.T) {
 	s := newServiceForFailureTest(prov, log)
 
 	req := &types.RequestEvent{ID: "req-fail-1", Method: "GET", Host: "ex.com"}
-	_, _ = s.Classify(context.Background(), req, "v1", nil, nil, nil)
+	_, _ = s.Classify(context.Background(), req, "v1", nil, nil)
 
 	infoCalls := log.callsAtLevel("info")
 	if len(infoCalls) != 1 || !hasArg(infoCalls[0].args, "event", "advisor_consulted") {
