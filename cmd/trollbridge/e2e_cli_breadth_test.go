@@ -84,21 +84,40 @@ func TestE2E_AdvisorRoutedDeny(t *testing.T) {
 	}
 
 	auditPath := filepath.Join(dir, "audit.jsonl")
+
+	// A real rule file driven through the supported policy.include
+	// surface. One catch-all ask_llm rule routes every request to the
+	// LLM advisor. Combined with mode: default-deny below, this rule
+	// is the ONLY path to the advisor — delete it and the request is
+	// denied by the mode default (decision_source: default, not
+	// llm_advisor), which the audit assertion at the end of this test
+	// catches. That load-bearing-ness is the point: an earlier version
+	// of this test embedded an inline `policy: rules:` block, which
+	// config.Policy does not support, so it was silently dropped and
+	// the test passed via the default-ask fall-through instead of via
+	// a rule (closes #121).
+	rulesBody := `- id: route-via-advisor
+  description: Route every request to the LLM advisor.
+  priority: 10
+  match: {}
+  effect: ask_llm
+`
+	if err := os.WriteFile(filepath.Join(dir, "rules.yaml"), []byte(rulesBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	yamlBody := fmt.Sprintf(`proxy:   lo:%d
 control: 0
 metrics: 0
 controller:
   auth: mtls
-mode: default-ask
+mode: default-deny
 lists:
   allow: []
   deny: []
 policy:
-  rules:
-    - id: route-via-advisor
-      priority: 10
-      match: {}
-      effect: ask_llm
+  include:
+    - rules.yaml
 logging:
   audit_path:        %s
   audit_overflow:    deny
