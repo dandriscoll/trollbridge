@@ -96,7 +96,11 @@ const (
 	// LevelDecisions emits only entries whose DecisionSource is
 	// a human (approval queue, including timeout) or the LLM
 	// advisor. Static-policy auto-decisions (rule, default, allow
-	// list, deny list) are dropped at enqueue.
+	// list, deny list) are dropped at enqueue. Failure and error
+	// entries — TLS handshake failures, transport errors, body-read
+	// failures — likewise carry a non-human/LLM DecisionSource and
+	// are not retained: this level is decisions only, by design,
+	// not "decisions plus security events".
 	LevelDecisions
 	// LevelNone emits nothing. The Logger silently drops every
 	// entry passed to Write.

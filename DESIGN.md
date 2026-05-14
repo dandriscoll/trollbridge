@@ -1841,8 +1841,12 @@ The audit logger filters entries by operator-controlled level
 - `decisions` — only entries whose `decision_source` names a human
   (approval queue, including queue timeout) or the LLM advisor are
   written. Static-policy auto-decisions (rule, default, allowlist,
-  denylist) are dropped at enqueue. Filtered entries do not consume
-  buffer slots; overflow accounting is unaffected.
+  denylist) are dropped at enqueue, as are failure and error entries
+  (TLS handshake failures, transport errors, body-read failures),
+  which carry a non-human/LLM `decision_source`: `decisions` is
+  decisions only, by design — not "decisions plus security events".
+  Filtered entries do not consume buffer slots; overflow accounting
+  is unaffected.
 - `none` — every entry is dropped. The audit file is still opened
   so operational metadata (audit-write-failure events on the
   operational log) survives.

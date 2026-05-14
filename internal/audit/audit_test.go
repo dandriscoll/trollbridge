@@ -255,6 +255,71 @@ func TestLogger_LevelFilter_DropsByDecisionSource(t *testing.T) {
 	}
 }
 
+// TestLogger_LevelDecisions_DropsFailureEntries pins the
+// user-confirmed intent of the `decisions` level: it is decisions
+// only. Failure / error entries — a TLS handshake failure is the
+// canonical case — carry a non-human/LLM DecisionSource and are NOT
+// retained, even though they also carry Error / TLSErrorCategory.
+//
+// TestLogger_LevelFilter_DropsByDecisionSource above writes only
+// clean `allow` entries, so it would still pass if a future change
+// started retaining entries that carry TLSErrorCategory/Error. This
+// test locks the decision against exactly that carve-out: at
+// `decisions` level the human/LLM decision survives and the
+// failure entry is dropped, both written to one logger.
+func TestLogger_LevelDecisions_DropsFailureEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+	l, err := New(path, 64, OverflowBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.SetLevel(LevelDecisions)
+
+	// A TLS-handshake-failure-shaped entry: non-human/LLM source,
+	// plus the failure diagnostics a forensic carve-out would key on.
+	if err := l.Write(Entry{
+		RequestID:        "req-tls-fail",
+		DecisionSource:   string(types.SourceDefault),
+		Decision:         "deny",
+		Error:            "tls: handshake failure",
+		TLSErrorCategory: "unsupported_protocol",
+		TLSSNI:           "blocked.example",
+	}); err != nil {
+		t.Fatalf("Write failure entry: %v", err)
+	}
+	// A genuine decision in the same logger — must survive, proving
+	// the filter still admits decisions while dropping the failure.
+	if err := l.Write(Entry{
+		RequestID:      "req-approved",
+		DecisionSource: string(types.SourceApprovalQueue),
+		Decision:       "allow",
+	}); err != nil {
+		t.Fatalf("Write decision entry: %v", err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var got []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var e Entry
+		if err := json.Unmarshal(scanner.Bytes(), &e); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		got = append(got, e.RequestID)
+	}
+	if len(got) != 1 || got[0] != "req-approved" {
+		t.Errorf("LevelDecisions emitted %v, want only [req-approved] — the failure entry must be dropped (decisions is decisions only)", got)
+	}
+}
+
 // TestLogger_LevelChangeIsObservable pins that SetLevel is hot —
 // the next Write picks up the new level. Critical for runtime
 // reconfiguration paths that may toggle audit levels without
