@@ -134,6 +134,33 @@ func TestClassifyError_ExitCode126_EmptyStderr(t *testing.T) {
 	}
 }
 
+// TestClassifyError_ExitCode126_HintListsAllPathMatches locks #122:
+// the wrong-CPU clause must inspect every trollbridge on PATH, not
+// just the first. `command -v trollbridge` resolves only the first
+// match, so an operator with multiple installs gets a hint pointing
+// at a binary that may not be the one that failed; `which -a` lists
+// them all. The negative substring is the load-bearing assertion —
+// it fails if the clause regresses to `command -v trollbridge`.
+func TestClassifyError_ExitCode126_HintListsAllPathMatches(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("update pipeline is unix-only")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not on PATH; cannot synthesize an *exec.ExitError")
+	}
+	exitErr := exec.Command("sh", "-c", "exit 126").Run()
+	if exitErr == nil {
+		t.Fatal("expected *exec.ExitError from `sh -c 'exit 126'`; got nil")
+	}
+	_, hint := ClassifyError(exitErr, "")
+	if !strings.Contains(hint, "which -a trollbridge") {
+		t.Errorf("hint must tell the operator to inspect every trollbridge on PATH (`which -a trollbridge`); got: %q", hint)
+	}
+	if strings.Contains(hint, "command -v trollbridge") {
+		t.Errorf("hint regressed to `command -v trollbridge`, which inspects only the first PATH match (#122); got: %q", hint)
+	}
+}
+
 // TestClassifyError_ExitCode126_SubstringWinsForSpecificStderr locks the
 // priority order: a 126 with a recognizable stderr substring keeps its
 // more-specific class. Prevents a future refactor from demoting the

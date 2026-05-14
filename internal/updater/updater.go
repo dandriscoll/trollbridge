@@ -141,7 +141,8 @@ func ClassifyError(err error, capturedStderr string) (FailureClass, string) {
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 126 {
 		return FailureCannotExecute, "exit 126 means a command in the install pipeline could not be executed. " +
 			"Common causes: (1) the installed trollbridge binary is for the wrong CPU — " +
-			"run `file $(command -v trollbridge)` and compare to `uname -m`; " +
+			"run `file $(which -a trollbridge)` and compare to `uname -m` " +
+			"(`which -a` lists every trollbridge on PATH, not just the first); " +
 			"(2) /tmp is mounted noexec — re-run with `TMPDIR=$HOME/.cache trollbridge update`; " +
 			"(3) `bash` is on PATH but not executable — `ls -l $(command -v bash)`. " +
 			"If none apply, report at https://github.com/dandriscoll/trollbridge/issues with the full output."
