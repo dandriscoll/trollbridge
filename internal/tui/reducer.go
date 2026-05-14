@@ -9,6 +9,7 @@ package tui
 
 import (
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -421,10 +422,10 @@ func applyTick(m Model, e TickResult) (Model, Cmd) {
 		m.OpsPausedTicks--
 		return m, CmdNone{}
 	}
-	prevKey := selectedRequestKey(m)
+	prevGroup, prevReq := selectionAnchors(m)
 	m.Holds = e.Holds
 	m.LastErr = ""
-	preserveSelectionByRequestID(&m, prevKey)
+	preserveSelection(&m, prevGroup, prevReq)
 	clampSelection(&m)
 	return m, CmdNone{}
 }
@@ -438,10 +439,10 @@ func applyOpsTick(m Model, e OpsTickResult) (Model, Cmd) {
 		m.OpsPausedTicks--
 		return m, CmdNone{}
 	}
-	prevKey := selectedRequestKey(m)
+	prevGroup, prevReq := selectionAnchors(m)
 	m.Ops = e.Ops
 	m.LastErr = ""
-	preserveSelectionByRequestID(&m, prevKey)
+	preserveSelection(&m, prevGroup, prevReq)
 	clampSelection(&m)
 
 	// Pending-rose detection. PendingCount surveys the same
@@ -472,44 +473,67 @@ func PendingCount(m Model) int {
 	return n
 }
 
-// selectedRequestKey returns the stable identifier (request_id or
-// `hold:<holdID>`) of the operator's currently-selected row, or ""
-// if no row is selected. Captured BEFORE m.Ops / m.Holds is replaced
+// selectionAnchors returns two stable identifiers for the operator's
+// currently-selected row, captured BEFORE m.Ops / m.Holds is replaced
 // by a tick so the post-tick preserve-selection step can re-locate
-// the same logical row in the new list (closes #89 part 2).
-func selectedRequestKey(m Model) string {
+// the same logical row (closes #89 part 2, #119):
+//
+//   - group: the row's GroupKey — the folded group's identity, stable
+//     across a representative flip when a newer op joins the group.
+//   - req: the representative op's request_id (or `hold:<holdID>`) —
+//     a fallback for when the group itself changed shape.
+//
+// Both are "" when no row is selected.
+func selectionAnchors(m Model) (group, req string) {
 	displayed := DisplayedOps(m)
 	if m.Selected < 0 || m.Selected >= len(displayed) {
-		return ""
+		return "", ""
 	}
-	key := displayed[m.Selected].RequestID
-	if key == "" {
-		key = "hold:" + displayed[m.Selected].HoldID
+	sel := displayed[m.Selected]
+	req = sel.RequestID
+	if req == "" {
+		req = "hold:" + sel.HoldID
 	}
-	return key
+	return sel.GroupKey, req
 }
 
-// preserveSelectionByRequestID keeps the operator's selection on the
-// same logical operation across refresh ticks (closes #39, #52, and
-// #89). The caller passes prevKey — the key captured BEFORE the new
-// m.Ops/m.Holds was written. If prevKey is empty there is no
-// previously-selected row to track. If the new list does not contain
-// the prevKey, Selected resets to -1; clampSelection moves it onto
-// the head of the list afterwards.
-func preserveSelectionByRequestID(m *Model, prevKey string) {
-	if prevKey == "" {
+// preserveSelection keeps the operator's selection on the same logical
+// row across refresh ticks (closes #39, #52, #89, #119). The caller
+// passes the anchors captured by selectionAnchors BEFORE the new
+// m.Ops/m.Holds was written.
+//
+// It matches by GroupKey first: a folded group keeps its identity even
+// when a newer op joins and flips the representative — the case #119's
+// wider grouping key makes common (a burst of similar URLs would
+// otherwise re-pick the representative every tick and drop the
+// cursor). It then falls back to the representative's request id,
+// which covers a row whose group key changed shape between ticks (e.g.
+// a pending op resolving). If neither matches, Selected resets to -1
+// and clampSelection moves it onto the head of the list afterwards.
+func preserveSelection(m *Model, prevGroup, prevReq string) {
+	if prevGroup == "" && prevReq == "" {
 		return
 	}
 	rebuilt := DisplayedOps(*m)
 	m.Selected = -1
-	for i, o := range rebuilt {
-		key := o.RequestID
-		if key == "" {
-			key = "hold:" + o.HoldID
+	if prevGroup != "" {
+		for i, o := range rebuilt {
+			if o.GroupKey == prevGroup {
+				m.Selected = i
+				return
+			}
 		}
-		if key == prevKey {
-			m.Selected = i
-			return
+	}
+	if prevReq != "" {
+		for i, o := range rebuilt {
+			key := o.RequestID
+			if key == "" {
+				key = "hold:" + o.HoldID
+			}
+			if key == prevReq {
+				m.Selected = i
+				return
+			}
 		}
 	}
 }
@@ -1394,6 +1418,13 @@ func clampSelection(m *Model) {
 type DisplayedOp struct {
 	opstream.Op
 	Count int
+	// GroupKey is the stable identity of this displayed row, used to
+	// keep the operator's selection anchored across refresh ticks even
+	// as a folded group's representative op changes (#119). For a
+	// folded resolved group it encodes (method, host, dir, status);
+	// for a never-folded row (pending / signaled / checking) it
+	// encodes the op's own request or hold id.
+	GroupKey string
 }
 
 // DisplayedOps returns the unified list rendered in the upper pane:
@@ -1402,9 +1433,15 @@ type DisplayedOp struct {
 // are NOT in the ring become synthetic ops with status "pending" so
 // the operator never silently loses an actionable hold.
 //
-// Ops are then grouped by (Method, URL); each group's representative
-// is the newest op (first in the newest-first ordering) and Count
-// records the underlying repetition (closes #63).
+// Resolved ops are then grouped by (Method, Host, Directory, Status):
+// requests to the same host and the same path directory that share a
+// method and a final status collapse into one row whose Count records
+// the repetition and whose representative is the newest op by
+// UpdatedAt (closes #119, generalizing #63's identical-URL fold).
+//
+// Not-yet-resolved ops (pending, signaled, checking) are exempt from
+// folding: each stays its own row so the a/d approve/deny keys always
+// target one unambiguous request.
 func DisplayedOps(m Model) []DisplayedOp {
 	flat := append([]opstream.Op(nil), m.Ops...)
 	seenHoldIDs := map[string]struct{}{}
@@ -1434,25 +1471,83 @@ func DisplayedOps(m Model) []DisplayedOp {
 		})
 	}
 
-	type key struct{ method, url string }
+	type key struct{ method, host, dir, status string }
 	indexOf := map[key]int{}
 	out := make([]DisplayedOp, 0, len(flat))
 	for _, o := range flat {
-		k := key{o.Method, o.URL}
+		if !opIsResolved(o.Status) {
+			// Held / signaled / pre-decision ops never fold — each
+			// stays an individually actionable row (#119).
+			anchor := "o\x00" + o.RequestID
+			if o.RequestID == "" {
+				anchor = "h\x00" + o.HoldID
+			}
+			out = append(out, DisplayedOp{Op: o, Count: 1, GroupKey: anchor})
+			continue
+		}
+		host, dir := opGroupHostDir(o.URL)
+		k := key{o.Method, host, dir, o.Status}
 		if i, ok := indexOf[k]; ok {
 			out[i].Count++
-			// Most-recent representative wins.
+			// Most-recent representative wins. Assigning .Op replaces
+			// only the embedded op; Count and GroupKey are siblings
+			// and stay put — the row's identity is the group, not the
+			// representative.
 			if o.UpdatedAt.After(out[i].UpdatedAt) {
-				cnt := out[i].Count
 				out[i].Op = o
-				out[i].Count = cnt
 			}
 			continue
 		}
 		indexOf[k] = len(out)
-		out = append(out, DisplayedOp{Op: o, Count: 1})
+		out = append(out, DisplayedOp{
+			Op:       o,
+			Count:    1,
+			GroupKey: "g\x00" + o.Method + "\x00" + host + "\x00" + dir + "\x00" + o.Status,
+		})
 	}
 	return out
+}
+
+// opIsResolved reports whether an op has reached a final outcome and
+// is therefore eligible for similarity folding in DisplayedOps. Held
+// (pending), signaled, and pre-decision (checking) ops are NOT
+// resolved: each must stay an individual row so it remains
+// unambiguously actionable (#119).
+func opIsResolved(status string) bool {
+	switch status {
+	case opstream.StatusPending, opstream.StatusSignaled, opstream.StatusChecking:
+		return false
+	default:
+		return true
+	}
+}
+
+// opGroupHostDir splits an op URL into the (host, directory) pair used
+// by DisplayedOps' similarity key (#119).
+//
+// For a scheme://host/path URL — intercepted ops and the synthetic
+// pending ops built above — it returns the host and the directory:
+// the path truncated to and including its last '/', so files in the
+// same directory share a key. Query and fragment are ignored.
+//
+// CONNECT and TLS ops are recorded scheme-less, as a bare "host" or
+// "host:port" with no path (see server.opURLForRequest). url.Parse
+// yields no host for those, so they take the second branch: the whole
+// string becomes the host and the directory is empty. They therefore
+// fold by exact host:port — the right behavior, since a CONNECT tunnel
+// has no path dimension to group on. A genuinely unparseable URL lands
+// in the same branch and likewise folds only with a byte-identical
+// sibling, which is the safe degradation.
+func opGroupHostDir(rawURL string) (host, dir string) {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL, ""
+	}
+	p := u.Path
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		return u.Host, p[:i+1]
+	}
+	return u.Host, "/"
 }
 
 func itoaPort(p int) string {

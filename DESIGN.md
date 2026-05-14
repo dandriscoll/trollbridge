@@ -1581,9 +1581,24 @@ are unaffected. The `--no-console` flag disables it explicitly.
 
 Layout:
 
-- **Approvals pane (top)** — lists pending holds, refreshing
-  automatically as the queue changes. Keys: `a` approve, `d` deny,
-  `↑↓` (or `j`/`k`) select, `r` refresh now, `q` (or `Esc`) quit.
+- **Approvals pane (top)** — lists pending holds and recent
+  operations, refreshing automatically as the queue changes. Keys:
+  `a` approve, `d` deny, `↑↓` (or `j`/`k`) select, `r` refresh now,
+  `q` (or `Esc`) quit.
+- **Row collapsing** — the approvals pane folds resolved operations
+  that share a method, host, path directory (the URL path up to and
+  including its last `/`), and status into a single row. CONNECT and
+  TLS operations, recorded as a bare host with no path, fold by exact
+  host (and port). The row shows the most recent operation's URL and a
+  Braille glyph whose dot density scales logarithmically with the
+  number of collapsed operations (closes #63, #119). Held / signaled /
+  pre-decision operations are never folded — each stays an
+  individually actionable row so the `a` / `d` keys always target one
+  unambiguous request. The operator's selection stays anchored to a
+  folded group across refresh ticks even as the group's most-recent
+  representative changes. Collapsing is display-only: the audit log
+  and the `/v1/ops` control-plane endpoint always carry the full,
+  ungrouped record.
 - **Console pane (bottom)** — operator commands as a typed prompt:
   - `allow <pattern>` — append `<pattern>` to the first configured
     allow file, validating the pattern first. The file is re-
