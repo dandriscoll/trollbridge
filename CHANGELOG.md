@@ -45,6 +45,16 @@ The full set of commits between any two tags is on GitHub at
 - External-edit detection migrated from mtime polling to fsnotify
   (#110). Detection latency drops from the previous 2s floor to
   ~50ms (the debounce window).
+- Config and rule files are now decoded strictly (#123). A YAML key
+  with no matching field — a typo (`mod:` for `mode:`), or an
+  unsupported block — fails the load loudly instead of being silently
+  discarded; `trollbridge validate` now reports the offending key and
+  line instead of `OK`. **Operator-visible breaking change:** a config
+  or included rule file carrying an unknown or forward-compat key that
+  previously loaded will now error on `run`, `validate`, and
+  hot-reload — run `trollbridge validate` to find the offending key,
+  then remove or correct it. On the hot-reload path the reload fails
+  and the prior config/rule set is kept (the daemon does not crash).
 
 ### Forensics
 

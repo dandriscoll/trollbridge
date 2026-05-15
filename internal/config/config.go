@@ -5,8 +5,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -359,8 +361,10 @@ type DecisionCache struct {
 }
 
 // Load reads config from path, applies defaults, validates, and
-// returns the resulting Config. Rejects v1 / v2 configs with a
-// migration message that names what changed.
+// returns the resulting Config. Decoding is strict: a YAML key with
+// no matching struct field — a typo (`mod:` for `mode:`), or an
+// unsupported block — fails the load loudly rather than being
+// silently discarded (#123).
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -373,7 +377,13 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// KnownFields(true) makes the decoder reject unknown keys. Decode
+	// returns io.EOF on an empty or comments-only file; that is not an
+	// error here — the zero Config flows through applyDefaults and
+	// validate exactly as it did under the prior yaml.Unmarshal path.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	cfg.applyDefaults()

@@ -439,3 +439,81 @@ tui:
 		t.Error("tui.alerts.chime=true: ChimeEnabled() = false, want true")
 	}
 }
+
+// TestLoad_RejectsUnknownTopLevelKey closes issue #123: an unknown
+// top-level YAML key (here the dev-era `trollbridge_version`, dropped
+// from the schema in e38ee83) must fail the load loudly, not be
+// silently discarded. Before strict decoding this config loaded with
+// no error and `trollbridge validate` reported OK.
+func TestLoad_RejectsUnknownTopLevelKey(t *testing.T) {
+	path := writeYaml(t, `trollbridge_version: 3
+proxy: lo:8080
+control: lo:8081
+controller: {auth: mtls}
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for unknown top-level key `trollbridge_version`")
+	}
+	if !strings.Contains(err.Error(), "trollbridge_version") {
+		t.Errorf("error should name the offending key `trollbridge_version`: %v", err)
+	}
+}
+
+// TestLoad_RejectsUnknownNestedKey proves strict decoding reaches
+// nested structs, not just the top level — a typo'd key inside the
+// `llm` block must fail the same way (#123).
+func TestLoad_RejectsUnknownNestedKey(t *testing.T) {
+	path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+llm:
+  enabled: true
+  provdier: anthropic
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for unknown nested key `llm.provdier`")
+	}
+	if !strings.Contains(err.Error(), "provdier") {
+		t.Errorf("error should name the offending key `provdier`: %v", err)
+	}
+}
+
+// TestLoad_EmptyAndCommentsOnlyConfigUsesDefaults guards the io.EOF
+// handling in the strict decoder: yaml.Decoder.Decode returns io.EOF
+// on an empty or comments-only document where yaml.Unmarshal returned
+// the zero value with no error. The load must still succeed — the
+// zero Config flows through applyDefaults() (which fills in the
+// default proxy bind) and validate() — not abort with a bare `EOF`
+// parse error (#123 regression guard).
+func TestLoad_EmptyAndCommentsOnlyConfigUsesDefaults(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty":         "",
+		"comments-only": "# just a comment\n# and another\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := writeYaml(t, body)
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("empty config must load on defaults, not abort: %v", err)
+			}
+			if cfg.Proxy.Host != "127.0.0.1" || cfg.Proxy.Port != 8080 {
+				t.Errorf("empty config: Proxy = %+v, want default 127.0.0.1:8080", cfg.Proxy)
+			}
+		})
+	}
+}
+
+// TestLoad_ExampleConfigLoads_DefaultState is the default-state
+// invariant for #123: the shipped config.example.yaml — the file
+// operators copy — must still load under strict decoding with zero
+// operator edits. A regression here means strict decoding broke the
+// out-of-the-box config.
+func TestLoad_ExampleConfigLoads_DefaultState(t *testing.T) {
+	if _, err := Load("../../config.example.yaml"); err != nil {
+		t.Fatalf("shipped config.example.yaml must load under strict decoding: %v", err)
+	}
+}

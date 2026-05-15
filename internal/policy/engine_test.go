@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dandriscoll/trollbridge/internal/types"
@@ -244,6 +245,62 @@ func TestEngine_Reload(t *testing.T) {
 	}
 	if d := e.Decide(newReq("example.com", "GET", "/")); d.Effect != types.EffectAllow {
 		t.Errorf("v2 expected allow, got %s", d.Effect)
+	}
+}
+
+// TestEngine_RejectsUnknownRuleKey closes issue #123 for rule files:
+// an unknown key on a Rule (here `priorty:`, a typo of `priority:`)
+// must fail the load loudly. Before strict decoding the key was
+// silently dropped and the rule loaded with the typo'd field ignored.
+func TestEngine_RejectsUnknownRuleKey(t *testing.T) {
+	p := writeRules(t, `
+- id: typo-rule
+  match: {host: example.com}
+  effect: allow
+  priorty: 500
+`)
+	_, err := NewEngine("default-deny", []string{p}, Phase1KnownModifiers())
+	if err == nil {
+		t.Fatal("expected error for unknown rule key `priorty`")
+	}
+	if !strings.Contains(err.Error(), "priorty") {
+		t.Errorf("error should name the offending key `priorty`: %v", err)
+	}
+}
+
+// TestEngine_RejectsUnknownMatchKey is the security-relevant case
+// from #123: a misspelled match sub-key (`math:` for `method:`)
+// silently broadens a rule under lenient decoding — the method
+// constraint simply vanishes. Strict decoding must reject it.
+func TestEngine_RejectsUnknownMatchKey(t *testing.T) {
+	p := writeRules(t, `
+- id: broadened-rule
+  match:
+    host: example.com
+    math: ["GET"]
+  effect: allow
+`)
+	_, err := NewEngine("default-deny", []string{p}, Phase1KnownModifiers())
+	if err == nil {
+		t.Fatal("expected error for unknown match key `math`")
+	}
+	if !strings.Contains(err.Error(), "math") {
+		t.Errorf("error should name the offending key `math`: %v", err)
+	}
+}
+
+// TestEngine_CommentsOnlyRuleFile guards the io.EOF handling on the
+// rule-file side: a comments-only rule file (the shape of the
+// gitignored default rules.yaml) must load as zero rules with no
+// error, not a bare EOF parse error (#123 regression guard).
+func TestEngine_CommentsOnlyRuleFile(t *testing.T) {
+	p := writeRules(t, "# structured rules go here\n# none yet\n")
+	e, err := NewEngine("default-deny", []string{p}, Phase1KnownModifiers())
+	if err != nil {
+		t.Fatalf("comments-only rule file must load as zero rules: %v", err)
+	}
+	if n := len(e.Rules()); n != 0 {
+		t.Errorf("comments-only rule file: got %d rules, want 0", n)
 	}
 }
 

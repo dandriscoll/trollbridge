@@ -1,9 +1,12 @@
 package policy
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"sync"
@@ -86,7 +89,14 @@ func (e *Engine) Reload() error {
 		}
 		hasher.Write(data)
 		var fileRules []Rule
-		if err := yaml.Unmarshal(data, &fileRules); err != nil {
+		// KnownFields(true) rejects an unknown key on a Rule or a
+		// Match clause — a typo like `math:` for `method:` would
+		// otherwise be silently dropped and silently broaden the
+		// rule (#123). Decode returns io.EOF on an empty or
+		// comments-only rule file; that means zero rules, not an error.
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		if err := dec.Decode(&fileRules); err != nil && !errors.Is(err, io.EOF) {
 			return fmt.Errorf("parse rules %s: %w", path, err)
 		}
 		for i, r := range fileRules {
