@@ -38,8 +38,21 @@ func newRunCmd() *cobra.Command {
 			if configPath == "" {
 				configPath = defaultConfigPath()
 			}
+
+			// Early stderr logger for failures that happen before the
+			// configured operational logger can be built (#128).
+			// oplog.New with StderrSink writes to os.Stderr and cannot
+			// fail (no file is opened) — the error is safely ignored;
+			// TestNew_StderrSinkNeverErrors pins that invariant.
+			startupLog, _ := oplog.New(oplog.StderrSink, nil)
+
 			cfg, err := config.Load(configPath)
 			if err != nil {
+				startupLog.Error("config load failed",
+					"event", oplog.EventConfigLoadFailure,
+					"path", configPath,
+					"error", err.Error(),
+				)
 				return &configErr{err}
 			}
 
@@ -62,6 +75,11 @@ func newRunCmd() *cobra.Command {
 			}
 			opLog, err := oplog.New(opPath, levelVar)
 			if err != nil {
+				startupLog.Error("operational log init failed",
+					"event", oplog.EventConfigLoadFailure,
+					"path", opPath,
+					"error", err.Error(),
+				)
 				return &configErr{err}
 			}
 

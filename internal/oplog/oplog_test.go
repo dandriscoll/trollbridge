@@ -65,6 +65,20 @@ func TestNew_StderrSinkSentinel(t *testing.T) {
 	}
 }
 
+// TestNew_StderrSinkNeverErrors pins the invariant cmd/trollbridge
+// run.go relies on (#128): oplog.New with the StderrSink sentinel and
+// a nil level opens no file and therefore cannot fail, so the early
+// startup logger can safely ignore the returned error.
+func TestNew_StderrSinkNeverErrors(t *testing.T) {
+	lg, err := New(StderrSink, nil)
+	if err != nil {
+		t.Fatalf("New(StderrSink, nil) must never error: %v", err)
+	}
+	if lg == nil {
+		t.Fatal("New(StderrSink, nil) returned a nil logger")
+	}
+}
+
 func TestNew_FileSinkOpensWithDirAndMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// POSIX 0o640/0o750 are not enforceable on Windows (NTFS ACLs

@@ -62,6 +62,11 @@ The full set of commits between any two tags is on GitHub at
   still accepted. **Operator-visible breaking change** for anyone who
   split a config or rule file into multiple documents: keep one
   document per file.
+- `trollbridge run` now emits a structured `config_load_failure`
+  operational-log event when it cannot load its config or open its
+  operational log at startup (#128). Previously these pre-startup
+  failures reached stderr only, with no structured event — a daemon
+  that failed to start left no operational-log record of why.
 
 ### Forensics
 
