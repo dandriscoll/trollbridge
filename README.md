@@ -52,10 +52,10 @@ attached to each tagged release on the
 
 ```sh
 curl -L -o trollbridge.tar.gz \
-  https://github.com/dandriscoll/trollbridge/releases/download/v0.7.11/trollbridge_v0.7.11_linux_amd64.tar.gz
+  https://github.com/dandriscoll/trollbridge/releases/download/v0.7.12/trollbridge_v0.7.12_linux_amd64.tar.gz
 # Verify against the release's SHA256SUMS file before extracting.
 tar -xzf trollbridge.tar.gz
-sudo install -m 0755 trollbridge_v0.7.11_linux_amd64/trollbridge /usr/local/bin/trollbridge
+sudo install -m 0755 trollbridge_v0.7.12_linux_amd64/trollbridge /usr/local/bin/trollbridge
 trollbridge version
 ```
 
