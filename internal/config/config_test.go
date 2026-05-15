@@ -507,6 +507,62 @@ func TestLoad_EmptyAndCommentsOnlyConfigUsesDefaults(t *testing.T) {
 	}
 }
 
+// TestLoad_RejectsMultipleDocuments closes issue #126: a config file
+// with a `---`-separated second YAML document had documents 2..N
+// silently ignored — the same silent-drop class as #123, at document
+// granularity. The load must now reject the file.
+func TestLoad_RejectsMultipleDocuments(t *testing.T) {
+	path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+---
+proxy: lo:9999
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for multi-document config")
+	}
+	if !strings.Contains(err.Error(), "multiple") {
+		t.Errorf("error should mention multiple documents: %v", err)
+	}
+}
+
+// TestLoad_RejectsDocumentAfterEmptyDocument pins that the
+// trailing-document scan (#126) does not stop at the first empty
+// document — a real document after an empty one must still be
+// caught. A single non-looping check would let this through.
+func TestLoad_RejectsDocumentAfterEmptyDocument(t *testing.T) {
+	path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+---
+---
+proxy: lo:9999
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error: a real document follows an empty one")
+	}
+	if !strings.Contains(err.Error(), "multiple") {
+		t.Errorf("error should mention multiple documents: %v", err)
+	}
+}
+
+// TestLoad_TrailingSeparatorOK pins that a single document followed
+// by a bare `---` separator with no content is not treated as a
+// second document (#126 — the rejection must fire on real trailing
+// documents, not on a harmless trailing separator).
+func TestLoad_TrailingSeparatorOK(t *testing.T) {
+	path := writeYaml(t, `proxy: lo:8080
+mode: default-deny
+logging: {audit_path: /tmp/a.jsonl}
+---
+`)
+	if _, err := Load(path); err != nil {
+		t.Fatalf("single document with a bare trailing separator must load: %v", err)
+	}
+}
+
 // TestLoad_ExampleConfigLoads_DefaultState is the default-state
 // invariant for #123: the shipped config.example.yaml — the file
 // operators copy — must still load under strict decoding with zero

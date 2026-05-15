@@ -386,6 +386,23 @@ func Load(path string) (*Config, error) {
 	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	// Reject a `---`-separated second document with content. Decode
+	// reads one document per call, so a trailing document would
+	// otherwise be silently ignored (#126). A bare trailing
+	// separator yields a null document — harmless, tolerated.
+	for {
+		var extra any
+		err := dec.Decode(&extra)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse config %s: %w", path, err)
+		}
+		if extra != nil {
+			return nil, fmt.Errorf("parse config %s: multiple YAML documents found; trollbridge reads a single document per file", path)
+		}
+	}
 	cfg.applyDefaults()
 	if err := cfg.validate(path); err != nil {
 		return nil, err

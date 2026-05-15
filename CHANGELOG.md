@@ -55,6 +55,13 @@ The full set of commits between any two tags is on GitHub at
   hot-reload — run `trollbridge validate` to find the offending key,
   then remove or correct it. On the hot-reload path the reload fails
   and the prior config/rule set is kept (the daemon does not crash).
+- Config and rule files with more than one YAML document now fail the
+  load (#126). `---`-separated documents after the first were silently
+  ignored — the same silent-drop class as #123 at document
+  granularity. A bare trailing `---` separator with no content is
+  still accepted. **Operator-visible breaking change** for anyone who
+  split a config or rule file into multiple documents: keep one
+  document per file.
 
 ### Forensics
 

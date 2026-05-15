@@ -99,6 +99,23 @@ func (e *Engine) Reload() error {
 		if err := dec.Decode(&fileRules); err != nil && !errors.Is(err, io.EOF) {
 			return fmt.Errorf("parse rules %s: %w", path, err)
 		}
+		// Reject a `---`-separated second document with content.
+		// Decode reads one document per call, so a trailing document
+		// would otherwise be silently ignored (#126). A bare trailing
+		// separator yields a null document — harmless, tolerated.
+		for {
+			var extra any
+			err := dec.Decode(&extra)
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return fmt.Errorf("parse rules %s: %w", path, err)
+			}
+			if extra != nil {
+				return fmt.Errorf("parse rules %s: multiple YAML documents found; trollbridge reads a single document per file", path)
+			}
+		}
 		for i, r := range fileRules {
 			if r.ID == "" {
 				return fmt.Errorf("rule load error in %s at index %d: missing required field `id`. Fix: add an `id:` line to the rule.", path, i)

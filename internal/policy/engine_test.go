@@ -289,6 +289,28 @@ func TestEngine_RejectsUnknownMatchKey(t *testing.T) {
 	}
 }
 
+// TestEngine_RejectsMultipleDocuments closes issue #126 for rule
+// files: a `---`-separated second document of rules was silently
+// ignored. The reload must reject the file.
+func TestEngine_RejectsMultipleDocuments(t *testing.T) {
+	p := writeRules(t, `
+- id: a
+  match: {host: example.com}
+  effect: allow
+---
+- id: b
+  match: {host: other.com}
+  effect: deny
+`)
+	_, err := NewEngine("default-deny", []string{p}, Phase1KnownModifiers())
+	if err == nil {
+		t.Fatal("expected error for multi-document rule file")
+	}
+	if !strings.Contains(err.Error(), "multiple") {
+		t.Errorf("error should mention multiple documents: %v", err)
+	}
+}
+
 // TestEngine_CommentsOnlyRuleFile guards the io.EOF handling on the
 // rule-file side: a comments-only rule file (the shape of the
 // gitignored default rules.yaml) must load as zero rules with no
