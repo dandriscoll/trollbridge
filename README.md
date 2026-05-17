@@ -49,9 +49,9 @@ Windows.
 
 Pre-built binaries for Linux and macOS (amd64 and arm64) are also
 attached to each tagged release. The most recent build:
-[`v0.7.13/trollbridge_v0.7.13_linux_amd64.tar.gz`](https://github.com/dandriscoll/trollbridge/releases/download/v0.7.13/trollbridge_v0.7.13_linux_amd64.tar.gz)
+[`v0.7.13/trollbridge_v0.7.14_linux_amd64.tar.gz`](https://github.com/dandriscoll/trollbridge/releases/download/v0.7.14/trollbridge_v0.7.14_linux_amd64.tar.gz)
 — verify against that release's SHA256SUMS, extract, and
-`sudo install -m 0755 trollbridge_v0.7.13_linux_amd64/trollbridge /usr/local/bin/trollbridge`.
+`sudo install -m 0755 trollbridge_v0.7.14_linux_amd64/trollbridge /usr/local/bin/trollbridge`.
 
 ## Run
 
