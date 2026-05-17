@@ -313,6 +313,44 @@ func TestRunInteractiveInit_AOAIPromptsForEndpoint(t *testing.T) {
 	}
 }
 
+// TestRunInteractiveInit_AOAIDefaultsModelToGPT4oMini closes #131:
+// the wizard's model-prompt default was a Claude model name even
+// after the operator picked aoai. With the provider-aware default,
+// accepting the prompt's default yields gpt-4o-mini and the prompt's
+// "[default]" text reflects it.
+func TestRunInteractiveInit_AOAIDefaultsModelToGPT4oMini(t *testing.T) {
+	endpoint := "https://contoso.openai.azure.com/openai/deployments/gpt4omini/chat/completions?api-version=2024-02-15-preview"
+	in := newReader(strings.Join([]string{
+		"user",
+		"local",
+		"default-ask",
+		"n", // interception
+		"y", // advisor
+		"aoai",
+		"",  // model: accept default
+		endpoint,
+		"sk-azure-test", // user-mode prompts for key
+	}, "\n") + "\n")
+	var out bytes.Buffer
+	ans, err := runInteractiveInit(in, &out)
+	if err != nil {
+		t.Fatalf("runInteractiveInit: %v\n%s", err, out.String())
+	}
+	if ans.llmModel != "gpt-4o-mini" {
+		t.Errorf("aoai accepting default model: llmModel = %q, want %q", ans.llmModel, "gpt-4o-mini")
+	}
+	// The prompt transcript must surface the new default so the
+	// operator can see what they're accepting.
+	if !strings.Contains(out.String(), "model [gpt-4o-mini]:") {
+		t.Errorf("aoai model prompt should show [gpt-4o-mini] default; transcript:\n%s", out.String())
+	}
+	// Sanity: the rendered config from applyAnswers carries the model.
+	rendered := applyAnswers(defaultConfigYAML, ans)
+	if !strings.Contains(rendered, "model:    gpt-4o-mini") {
+		t.Errorf("rendered config should contain `model: gpt-4o-mini`; got:\n%s", rendered)
+	}
+}
+
 func TestRunInteractiveInit_AnthropicSkipsEndpointPrompt(t *testing.T) {
 	in := newReader(strings.Join([]string{
 		"user",

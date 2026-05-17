@@ -131,6 +131,16 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 			[]string{"anthropic", "aoai", "other"},
 			ans.llmProvider,
 		)
+		// Provider-aware model default: the struct-init value above is
+		// the anthropic default. Azure OpenAI does not serve Claude
+		// models, so suggest a sensible Azure deployment placeholder
+		// instead (#131); `other` has no useful default.
+		switch ans.llmProvider {
+		case "aoai":
+			ans.llmModel = "gpt-4o-mini"
+		case "other":
+			ans.llmModel = ""
+		}
 		ans.llmModel = promptString(r, out, "   model", ans.llmModel)
 		// Endpoint: anthropic uses the template default; aoai/other
 		// have no useful default and must be supplied.

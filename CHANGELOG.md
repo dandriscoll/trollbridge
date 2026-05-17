@@ -72,6 +72,13 @@ The full set of commits between any two tags is on GitHub at
   silent no-op. With strict YAML decoding (#123) the same clause now
   surfaces as a parse error naming `tool`, so the operator can edit
   the line out instead of believing a non-functional rule was active.
+- `trollbridge init` interactive wizard now defaults the `model:`
+  prompt by provider (#131). Azure OpenAI does not serve Claude
+  models, but the wizard had been suggesting `claude-opus-4-7` after
+  the operator picked `aoai`. New defaults: `claude-opus-4-7` for
+  anthropic (unchanged), `gpt-4o-mini` for aoai, empty for `other`.
+  Operators who type the model name they actually want are
+  unaffected.
 
 ### Forensics
 
