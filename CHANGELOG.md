@@ -100,6 +100,15 @@ The full set of commits between any two tags is on GitHub at
   `server` / `lists`). Operators alerting on "daemon failed to
   start" should extend their `config_load_failure` query to
   include `startup_failure`.
+- `trollbridge init` interactive wizard now hints when `az` is
+  installed but the operator is not authenticated (#136). On the
+  `aoai` provider branch, the wizard distinguishes "no `az` in
+  PATH" (still a silent skip, unchanged) from "`az` present but
+  `az account show` fails" — the latter now prints a one-line
+  transcript hint suggesting `az login` and a re-run, then falls
+  through to the existing manual prompts. Operators who would
+  have benefited from the find/create shortcut now know it is
+  one `az login` away.
 - `trollbridge init` interactive wizard now offers to find or
   create an Azure OpenAI deployment via the `az` CLI when the
   operator picks `aoai` as the provider (#132). Detection: `az`

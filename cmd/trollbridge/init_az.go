@@ -17,9 +17,11 @@ import (
 // — populating the endpoint URL / model / (user-mode) API key from
 // the chosen or created resource.
 //
-// Detection rule: `az --version` succeeds AND `az account show`
-// succeeds. Either failure → silently skip; the wizard falls back
-// to the existing manual prompts.
+// Detection rule: `az --version` succeeds (PATH check) AND
+// `az account show` succeeds (auth check). PATH-fail → silent
+// skip. PATH-pass + auth-fail → one-line transcript hint
+// suggesting `az login` + re-run, then silent fall-through
+// (closes #136). PATH-pass + auth-pass → full flow.
 
 // azExec is the single subprocess entry point. Tests replace this
 // with a canned-JSON returner; production routes through `exec.Command("az", ...)`.
@@ -37,17 +39,32 @@ var azExec = func(args ...string) ([]byte, error) {
 	return out, nil
 }
 
+// azInPath returns true when the `az` binary is reachable and
+// `az --version` succeeds. Single-purpose probe; callers that
+// need to discriminate PATH-fail from auth-fail use this plus
+// azLoggedIn instead of azAvailable.
+func azInPath() bool {
+	_, err := azExec("--version")
+	return err == nil
+}
+
+// azLoggedIn returns true when `az account show` succeeds —
+// i.e., the operator has an active subscription. Assumes
+// azInPath is true; if az is not in PATH the call fails with
+// the same shape as not-logged-in, so callers should gate this
+// on azInPath when they need to distinguish the two states.
+func azLoggedIn() bool {
+	_, err := azExec("account", "show", "-o", "json")
+	return err == nil
+}
+
 // azAvailable returns true only when both az is reachable AND a
-// subscription is logged in. The wizard's offer to use az fires
-// only when this returns true.
+// subscription is logged in. Kept as a convenience for callers
+// (and tests) that only need the binary "shortcut usable?"
+// answer; runAzFlow uses the split helpers instead so it can
+// emit the not-logged-in hint.
 func azAvailable() bool {
-	if _, err := azExec("--version"); err != nil {
-		return false
-	}
-	if _, err := azExec("account", "show", "-o", "json"); err != nil {
-		return false
-	}
-	return true
+	return azInPath() && azLoggedIn()
 }
 
 // azAccount is the trimmed JSON shape of `az cognitiveservices
@@ -233,9 +250,18 @@ func aoaiEndpointURL(accountEndpoint, deployment string) string {
 // orchestrator returns to its choice prompt so the operator can
 // retry or pick a different path.
 func runAzFlow(r *bufio.Reader, out io.Writer, ans *initAnswers) {
-	if !azAvailable() {
-		// Silent skip: the operator has no az or is not logged in.
-		// The existing manual prompts that follow are unchanged.
+	if !azInPath() {
+		// Silent skip: the operator has no `az`. The existing
+		// manual prompts that follow are unchanged.
+		return
+	}
+	if !azLoggedIn() {
+		// `az` is here but the operator is not authenticated.
+		// Surface the activation step so they know the shortcut
+		// is one `az login` away, then fall through silently to
+		// the manual prompts (closes #136).
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "   → az detected but not authenticated; run `az login`, then re-run `trollbridge init` to use the AOAI shortcut.")
 		return
 	}
 

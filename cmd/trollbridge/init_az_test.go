@@ -151,6 +151,33 @@ func TestRunAzFlow_SkipsWhenAzUnavailable(t *testing.T) {
 	}
 }
 
+// TestRunAzFlow_HintWhenNotLoggedIn confirms that when `az` is in
+// PATH but `az account show` fails, the orchestrator prints the
+// activation hint (closes #136) and then falls through silently —
+// without modifying ans — so the existing manual prompts continue
+// to drive the wizard.
+func TestRunAzFlow_HintWhenNotLoggedIn(t *testing.T) {
+	s := newStubAz(t)
+	s.canned["--version"] = "azure-cli 2.x"
+	s.errs["account show -o json"] = errors.New("Please run 'az login' to setup account.")
+	defer s.install()()
+
+	in := newReader("")
+	var out bytes.Buffer
+	ans := initAnswers{installMode: "user"}
+	runAzFlow(in, &out, &ans)
+
+	if ans.llmEndpoint != "" || ans.llmKey != "" || ans.llmModel != "" {
+		t.Errorf("runAzFlow not-logged-in should not modify ans; got %+v", ans)
+	}
+	got := out.String()
+	for _, want := range []string{"az detected but not authenticated", "az login", "trollbridge init"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("runAzFlow not-logged-in transcript missing %q; full output:\n%s", want, got)
+		}
+	}
+}
+
 // TestRunAzFlow_SkipChoiceLeavesAnsUntouched: az is available, but
 // the operator picks `skip` at the action prompt.
 func TestRunAzFlow_SkipChoiceLeavesAnsUntouched(t *testing.T) {
