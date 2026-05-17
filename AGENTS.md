@@ -121,10 +121,27 @@ should be a major version. The constants live in
   job artifacts go in the operator's private workspace
   (`/src/dan/jobs/`), not in this tree.
 - **Releases via `scripts/release.sh`.** Never tag manually; the
-  script edits version-bearing files (README, server.go), commits,
+  script edits version-bearing files (README, server.go), promotes
+  `CHANGELOG.md` `## Unreleased` to a versioned heading, commits,
   tags, builds the four-arch matrix, pushes, and publishes the GH
   release in one go. `--bump patch|minor|major --yes` for
-  non-interactive.
+  non-interactive. The script preflights that `## Unreleased` is
+  non-empty and refuses to release otherwise — see the CHANGELOG
+  convention below.
+- **CHANGELOG.md `## Unreleased` is part of the working tree, not an
+  afterthought.** Every change an operator would notice — a new flag,
+  a wire-protocol shift, a behavior change, the closing of a tracked
+  issue — adds a one-line entry under the right subsection of
+  `## Unreleased` (Wire / TUI / Operator / Forensics / Docs) **in
+  the same commit that lands the change**. At release time
+  `scripts/release.sh` consumes that section as the GH release
+  body via `gh release create --notes-file`, so the discipline at
+  commit time directly determines how the release reads to a
+  visitor. Internal-only refactors, test-only changes, and
+  dependency bumps with no behavior delta do not earn an entry.
+  Issue numbers are cited as `(#NNN)` in the entry; reference the
+  audit-log fields or wire codes by name so an operator searching
+  for `event=startup_failure` lands on the matching entry.
 - **Daemon-mode runs use `--no-console`.** `trollbridge run
   --no-console` suppresses the operator UI and is the deployment
   shape for systemd / supervisor / container hosts. Approvals are

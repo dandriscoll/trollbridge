@@ -9,6 +9,19 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Release process
+
+- GitHub release bodies are now sourced from CHANGELOG.md `## Unreleased`
+  via `gh release create --notes-file` rather than the prior
+  `--generate-notes` which had degraded to bodies reading only
+  `**Full Changelog**: <compare-link>` for v0.7.10..v0.7.14.
+  `scripts/release.sh` now preflights that `## Unreleased` is non-empty
+  and fails closed otherwise, promotes the section to a versioned
+  heading (`## vX.Y.Z — YYYY-MM-DD`), and includes CHANGELOG.md in the
+  release bump commit. Producer-side contract documented in
+  `AGENTS.md`: operator-visible changes add their CHANGELOG entry in
+  the same commit, not deferred to release time.
+
 ### Wire / TUI
 
 - `/v1/lists` and `/v1/llm-digests` control-plane endpoints (#99). The

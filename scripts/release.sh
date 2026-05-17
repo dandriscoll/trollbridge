@@ -135,6 +135,7 @@ cd "$REPO_ROOT"
 DIST="$REPO_ROOT/dist"
 README="$REPO_ROOT/README.md"
 SERVER_GO="$REPO_ROOT/internal/server/server.go"
+CHANGELOG="$REPO_ROOT/CHANGELOG.md"
 
 # ---------- discover current version ----------
 
@@ -258,6 +259,30 @@ preflight_gh_release() {
     fi
 }
 
+# Fail-closed: CHANGELOG.md must have a '## Unreleased' section with
+# non-empty content (at least one line that is neither blank nor a
+# subsection heading). The release body is sourced from this section
+# — letting an empty one through is the failure shape that produced
+# bodies reading only "Full Changelog: <compare-link>" for the
+# v0.7.10..v0.7.14 stretch.
+preflight_changelog_has_content() {
+    if [[ ! -f "$CHANGELOG" ]]; then
+        echo "release failed: CHANGELOG.md not found at repo root; fix: create CHANGELOG.md with a '## Unreleased' section describing operator-facing changes since v${CURRENT}" >&2
+        exit 1
+    fi
+    local body
+    body="$(awk '
+        /^## Unreleased$/ { in_section = 1; next }
+        in_section && /^## / { in_section = 0 }
+        in_section { print }
+    ' "$CHANGELOG")"
+    # Substantive = not blank, not a subsection heading (### …).
+    if [[ -z "$(echo "$body" | grep -v '^[[:space:]]*$' | grep -v '^###')" ]]; then
+        echo "release failed: CHANGELOG.md '## Unreleased' section is missing or empty; fix: add operator-facing entries under '## Unreleased' (group by Wire / TUI / Operator / Forensics / Docs as appropriate) describing what changed since v${CURRENT} — the GH release body is sourced from this section" >&2
+        exit 1
+    fi
+}
+
 # ---------- bump version-bearing files ----------
 
 apply_bumps() {
@@ -298,14 +323,60 @@ apply_bumps() {
     fi
 }
 
+# ---------- promote changelog ----------
+
+# Rename the '## Unreleased' heading to '## v<NEW> — <YYYY-MM-DD>' and
+# insert a fresh empty '## Unreleased' above it. All content that was
+# under Unreleased is now under the versioned heading and becomes the
+# GH release body via extract_release_notes(). Idempotent on rerun
+# only if the previous run failed before the bump commit landed —
+# once a versioned heading exists, that section is frozen.
+promote_changelog() {
+    local new="$1" today
+    today="$(date -u +%Y-%m-%d)"
+    awk -v new="$new" -v today="$today" '
+        BEGIN { promoted = 0 }
+        /^## Unreleased$/ && !promoted {
+            print "## Unreleased"
+            print ""
+            print "## v" new " — " today
+            promoted = 1
+            next
+        }
+        { print }
+    ' "$CHANGELOG" > "$CHANGELOG.tmp" && mv "$CHANGELOG.tmp" "$CHANGELOG"
+    if ! grep -q "^## v${new} — " "$CHANGELOG"; then
+        echo "promote failed: CHANGELOG.md does not contain '## v${new} — ' after promotion; fix: inspect $CHANGELOG and the '## Unreleased' anchor — the awk pass should have matched it" >&2
+        exit 1
+    fi
+}
+
+# Pull the section body between '## v<new> — ' and the next '## '
+# heading into a tmpfile suitable for `gh release create --notes-file`.
+# Drops the version heading itself (gh uses the release name) but
+# preserves the subsection structure.
+extract_release_notes() {
+    local new="$1" outfile="$2"
+    awk -v target_prefix="## v${new} — " '
+        index($0, target_prefix) == 1 { in_section = 1; next }
+        in_section && /^## / { in_section = 0 }
+        in_section { print }
+    ' "$CHANGELOG" > "$outfile"
+    # Strip leading blank lines for a tidier release body.
+    sed -i.bak -e '/./,$!d' "$outfile" 2>/dev/null || true
+    rm -f "${outfile}.bak"
+}
+
 # ---------- commit + tag ----------
 
 commit_and_tag() {
     local new="$1"
-    git add "$README" "$SERVER_GO"
+    git add "$README" "$SERVER_GO" "$CHANGELOG"
     git commit -m "release: bump version to v${new}" \
-               -m "Updates the README install-snippet URL and the internal/server/server.go" \
-               -m "var Version fallback. The fallback is shown only when trollbridge is" \
+               -m "Updates the README install-snippet URL, the internal/server/server.go" \
+               -m "var Version fallback, and promotes CHANGELOG.md '## Unreleased' to" \
+               -m "'## v${new} — <date>' so 'gh release create --notes-file' has prose to" \
+               -m "publish. The var Version fallback is shown only when trollbridge is" \
                -m "built without the release script's -ldflags injection (e.g. 'go run')." \
                >/dev/null
     git tag -a "v${new}" -m "release v${new}"
@@ -372,7 +443,7 @@ push_and_publish() {
         echo "dry-run: skipping commit/tag/push/publish" >&2
         echo "dry-run: artifacts in $DIST:" >&2
         ls -l "$DIST" >&2
-        echo "dry-run: working tree changes pending. Revert with: git checkout README.md internal/server/server.go" >&2
+        echo "dry-run: working tree changes pending. Revert with: git checkout README.md internal/server/server.go CHANGELOG.md" >&2
         return 0
     fi
     echo "push: origin main" >&2
@@ -384,7 +455,21 @@ push_and_publish() {
         gh release delete "v${new}" --yes >/dev/null 2>&1 || true
     fi
     echo "publish: creating release v${new}" >&2
-    gh release create "v${new}" --generate-notes "$DIST"/trollbridge_*.tar.gz "$DIST"/trollbridge_*.exe "$DIST/SHA256SUMS"
+    local notes_file
+    notes_file="$(mktemp)"
+    extract_release_notes "$new" "$notes_file"
+    if [[ ! -s "$notes_file" ]]; then
+        # Shouldn't happen — preflight_changelog_has_content guarded
+        # against an empty Unreleased section, and promote_changelog
+        # just moved that content under '## v<new>'. If extraction
+        # came back empty anyway, the anchor pattern is wrong. Fail
+        # loudly rather than publish an empty body.
+        echo "publish failed: extracted release notes are empty; fix: inspect CHANGELOG.md '## v${new} — ' section and the extract_release_notes() awk" >&2
+        rm -f "$notes_file"
+        exit 1
+    fi
+    gh release create "v${new}" --notes-file "$notes_file" "$DIST"/trollbridge_*.tar.gz "$DIST"/trollbridge_*.exe "$DIST/SHA256SUMS"
+    rm -f "$notes_file"
     echo "release: $(gh release view "v${new}" --json url -q .url)" >&2
 }
 
@@ -409,10 +494,14 @@ preflight_clean_tree
 preflight_branch_uptodate
 preflight_no_tag_yet "v${NEW}"
 preflight_gh_release "v${NEW}"
+preflight_changelog_has_content
 
 apply_bumps "$CURRENT" "$NEW"
 echo "apply: README updated" >&2
 echo "apply: server.go updated" >&2
+
+promote_changelog "$NEW"
+echo "apply: CHANGELOG.md '## Unreleased' promoted to '## v${NEW}'" >&2
 
 if [[ $DRY_RUN -eq 0 ]]; then
     commit_and_tag "$NEW"
