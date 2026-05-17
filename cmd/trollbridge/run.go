@@ -222,11 +222,13 @@ func newRunCmd() *cobra.Command {
 			signal.Notify(hup, syscall.SIGHUP)
 			go func() {
 				for range hup {
-					if err := engine.Reload(); err != nil {
+					err := engine.Reload()
+					if err != nil {
 						opLog.Error("rule reload failed", "event", oplog.EventRuleReloadFailure, "error", err.Error())
 					} else {
 						opLog.Info("rules reloaded", "event", oplog.EventRuleReload, "version", engine.RuleSetVersion())
 					}
+					srv.RecordReload("rules", err)
 				}
 			}()
 
@@ -244,26 +246,36 @@ func newRunCmd() *cobra.Command {
 						opLog.Error("list-reload re-parse failed",
 							"event", oplog.EventAllowlistReloadFailure,
 							"error", err.Error())
+						// Re-parse failure shadows lists+rules+config below;
+						// surface as a "lists" reload failure since that
+						// was the next step in the cascade. The TUI badge
+						// fires until the operator fixes the file.
+						srv.RecordReload("lists", err)
 						return
 					}
-					if rerr := srv.ReloadListsFromConfig(freshCfg); rerr != nil {
+					listsErr := srv.ReloadListsFromConfig(freshCfg)
+					if listsErr != nil {
 						opLog.Error("list reload failed",
 							"event", oplog.EventAllowlistReloadFailure,
-							"error", rerr.Error())
+							"error", listsErr.Error())
 					}
-					if rerr := engine.Reload(); rerr != nil {
+					srv.RecordReload("lists", listsErr)
+					rulesErr := engine.Reload()
+					if rulesErr != nil {
 						opLog.Error("rule reload failed",
-							"event", oplog.EventRuleReloadFailure, "error", rerr.Error())
+							"event", oplog.EventRuleReloadFailure, "error", rulesErr.Error())
 					} else {
 						opLog.Info("rules reloaded",
 							"event", oplog.EventRuleReload,
 							"version", engine.RuleSetVersion())
 					}
+					srv.RecordReload("rules", rulesErr)
 					// Hot-reload the per-section knobs that don't
 					// require a restart (#111). Mode, approvals
 					// timing, and forwarder timeouts get picked up
 					// without a daemon bounce.
 					srv.ReloadConfig(freshCfg)
+					srv.RecordReload("config", nil)
 				})
 			}()
 
@@ -288,9 +300,11 @@ func newRunCmd() *cobra.Command {
 							opLog.Error("list-reload re-parse failed",
 								"event", oplog.EventAllowlistReloadFailure,
 								"error", err.Error())
+							srv.RecordReload("lists", err)
 							return
 						}
-						_ = srv.ReloadListsFromConfig(freshCfg)
+						listsErr := srv.ReloadListsFromConfig(freshCfg)
+						srv.RecordReload("lists", listsErr)
 						yamlWatcher.MarkReloaded()
 					},
 					OnTest:   replTestFn(configPath),
@@ -323,7 +337,7 @@ func newRunCmd() *cobra.Command {
 								"error", fmt.Sprintf("%v", r))
 						}
 					}()
-					if err := tui.RunOperator(ctx, tui.NewInProcessClientWithAdvisor(srv.Queue(), srv.Ops(), srv.Advisor()), os.Stdin, os.Stdout, backend, welcome, cancel, tui.Options{ChimeEnabled: cfg.TUI.Alerts.ChimeEnabled()}); err != nil {
+					if err := tui.RunOperator(ctx, tui.NewInProcessClientFull(srv.Queue(), srv.Ops(), srv.Advisor(), srv), os.Stdin, os.Stdout, backend, welcome, cancel, tui.Options{ChimeEnabled: cfg.TUI.Alerts.ChimeEnabled()}); err != nil {
 						opLog.Warn("operator UI exited",
 							"event", oplog.EventOperatorUIError,
 							"error", err.Error())

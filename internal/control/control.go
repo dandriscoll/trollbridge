@@ -23,6 +23,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
 	"github.com/dandriscoll/trollbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/reloadstatus"
 	"github.com/dandriscoll/trollbridge/internal/sessions"
 )
 
@@ -57,18 +58,27 @@ type DigestsProvider interface {
 	Digests() []advisor.Digest
 }
 
+// ReloadStatusProvider surfaces the daemon's most-recent hot-reload
+// outcome on /v1/rules so the TUI badge (#129) can render it. The
+// concrete provider lives on *server.Server; control takes an
+// interface to avoid an import cycle.
+type ReloadStatusProvider interface {
+	ReloadStatus() reloadstatus.Status
+}
+
 // Server is the control-plane HTTPS listener.
 type Server struct {
-	addr     string
-	queue    *approvals.Queue
-	sessions *sessions.Tracker
-	engine   *policy.Engine
-	ops      *opstream.Ring
-	lists    ListsProvider
-	digests  DigestsProvider
-	ca       CAOps
-	tlsProv  TLSProvider
-	srv      *http.Server
+	addr         string
+	queue        *approvals.Queue
+	sessions     *sessions.Tracker
+	engine       *policy.Engine
+	ops          *opstream.Ring
+	lists        ListsProvider
+	digests      DigestsProvider
+	reloadStatus ReloadStatusProvider
+	ca           CAOps
+	tlsProv      TLSProvider
+	srv          *http.Server
 
 	opLog *slog.Logger
 }
@@ -105,6 +115,11 @@ func (s *Server) SetLists(p ListsProvider) { s.lists = p }
 // so /v1/llm-digests can return recent classifications. Closes #99
 // part 2.
 func (s *Server) SetDigests(p DigestsProvider) { s.digests = p }
+
+// SetReloadStatusProvider wires the daemon's reload-status surface
+// so /v1/rules can report the most-recent hot-reload outcome. The
+// TUI badge in the approvals pane consumes this (closes #129).
+func (s *Server) SetReloadStatusProvider(p ReloadStatusProvider) { s.reloadStatus = p }
 
 // SetTLS wires the TLS-issuing provider used to bring up the mTLS
 // listener.
@@ -300,10 +315,27 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) rulesInfo(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{
+	payload := map[string]any{
 		"rule_set_version": s.engine.RuleSetVersion(),
 		"rules":            s.engine.Rules(),
-	})
+	}
+	if s.reloadStatus != nil {
+		// Closes #129: surface the most-recent hot-reload outcome
+		// alongside the loaded rule set. JSON tags on
+		// reloadstatus.Status omit the fields when LastAt is zero
+		// (no reload attempted) or LastError is empty (last
+		// attempt succeeded) — backwards-compatible with the
+		// pre-#129 response shape.
+		st := s.reloadStatus.ReloadStatus()
+		if !st.LastAt.IsZero() {
+			payload["last_reload_at"] = st.LastAt
+			payload["last_reload_source"] = st.LastSource
+		}
+		if st.LastError != "" {
+			payload["last_reload_error"] = st.LastError
+		}
+	}
+	writeJSON(w, payload)
 }
 
 func (s *Server) rulesReload(w http.ResponseWriter, r *http.Request) {

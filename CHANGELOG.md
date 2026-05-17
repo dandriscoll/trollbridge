@@ -125,6 +125,18 @@ The full set of commits between any two tags is on GitHub at
 
 ### TUI
 
+- Approvals-pane header gains a `␇ reload failed` badge when the
+  daemon's last hot-reload attempt errored (#129). Same red-bold
+  style as the existing pending-count indicator (#72) so the badge
+  is visible from across the room. Operators editing the config to
+  tighten policy now have a visual cue when their edit did not take
+  — the silent-divergence exposure the issue named (since strict
+  decoding, #123, made reload failures more likely on operator
+  typos) is now operator-observable, not log-only. Badge clears on
+  the next successful reload; no dismiss key by design. The
+  server's `/v1/rules` response carries `last_reload_error`,
+  `last_reload_at`, `last_reload_source` (omitempty) — backwards-
+  compatible with existing consumers.
 - LLM panel now scrolls correctly when the selection moves below
   the visible newest-first window (#117). The selection
   (DigestSelected) was always moving on Up/Down/j/k — the

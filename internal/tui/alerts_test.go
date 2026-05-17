@@ -106,7 +106,7 @@ func TestAlerts_BellKeyTogglesChime(t *testing.T) {
 // ANSI wrap around the pending count when pending > 0. Closes the
 // #72 "very distinct visual indication" requirement.
 func TestAlerts_PaneLabelCarriesVisualIndicatorWhenPending(t *testing.T) {
-	withPending := formatOpsPaneLabelText(5, 2)
+	withPending := formatOpsPaneLabelText(5, 2, false)
 	if !strings.Contains(withPending, "\x1b[1;31m") {
 		t.Errorf("label missing bold-red ANSI escape when pending>0: %q", withPending)
 	}
@@ -117,12 +117,45 @@ func TestAlerts_PaneLabelCarriesVisualIndicatorWhenPending(t *testing.T) {
 		t.Errorf("label does not name the count: %q", withPending)
 	}
 
-	noPending := formatOpsPaneLabelText(5, 0)
+	noPending := formatOpsPaneLabelText(5, 0, false)
 	if strings.Contains(noPending, "\x1b[1;31m") {
 		t.Errorf("label carries bold-red ANSI when pending=0: %q", noPending)
 	}
 	if strings.Contains(noPending, "␇") {
 		t.Errorf("label carries bell glyph when pending=0: %q", noPending)
+	}
+}
+
+// TestAlerts_PaneLabelCarriesReloadFailedBadge closes #129: when the
+// daemon's last hot-reload attempt errored, the approvals-pane label
+// surfaces a bold-red `␇ reload failed` badge so the operator
+// notices their edit did not take. Independent of the pending-count
+// indicator — both can fire together.
+func TestAlerts_PaneLabelCarriesReloadFailedBadge(t *testing.T) {
+	withReloadFail := formatOpsPaneLabelText(5, 0, true)
+	if !strings.Contains(withReloadFail, "reload failed") {
+		t.Errorf("label missing `reload failed` text: %q", withReloadFail)
+	}
+	if !strings.Contains(withReloadFail, "\x1b[1;31m") {
+		t.Errorf("label missing bold-red ANSI escape for reload-failed badge: %q", withReloadFail)
+	}
+	if !strings.Contains(withReloadFail, "␇") {
+		t.Errorf("label missing bell glyph for reload-failed badge: %q", withReloadFail)
+	}
+
+	// Pending + reload-failed together: both badges present.
+	both := formatOpsPaneLabelText(5, 3, true)
+	if !strings.Contains(both, "3 pending") {
+		t.Errorf("combined label missing pending count: %q", both)
+	}
+	if !strings.Contains(both, "reload failed") {
+		t.Errorf("combined label missing reload-failed text: %q", both)
+	}
+
+	// Clean state: no badge in either form.
+	clean := formatOpsPaneLabelText(5, 0, false)
+	if strings.Contains(clean, "reload failed") {
+		t.Errorf("clean label carries reload-failed text: %q", clean)
 	}
 }
 

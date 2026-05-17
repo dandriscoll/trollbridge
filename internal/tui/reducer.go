@@ -16,6 +16,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
+	"github.com/dandriscoll/trollbridge/internal/reloadstatus"
 )
 
 var _ = opstream.Op{}
@@ -151,6 +152,13 @@ type Model struct {
 	// key to dismiss). Cleared after the next reducer step that
 	// consumes or dismisses the offer (closes #85).
 	GeneralizeOffer *GeneralizeOffer
+
+	// ReloadStatus carries the daemon's most-recent hot-reload
+	// outcome (closes #129). Polled from /v1/rules on each refresh
+	// tick; populated from ReloadTickResult by the reducer. The
+	// approvals-pane header renders a bold-red `␇ reload failed`
+	// badge when ReloadStatus.LastError is non-empty.
+	ReloadStatus reloadstatus.Status
 }
 
 // URLsUndoEntry carries the pattern + side (allow/deny) needed to
@@ -253,6 +261,19 @@ type URLsTickResult struct {
 	Err   error
 }
 
+// ReloadTickResult arrives after a poll of /v1/rules' reload-status
+// fields completes (closes #129). The reducer drops the carried
+// Status into Model.ReloadStatus; the approvals-pane renderer reads
+// it to drive the failed-reload badge.
+//
+// A non-nil Err means the poll itself failed (network, transport).
+// The reducer treats that as "keep the previous status" — a
+// transport blip should not flip the badge state.
+type ReloadTickResult struct {
+	Status reloadstatus.Status
+	Err    error
+}
+
 // KeyEvent arrives when the operator presses a key.
 type KeyEvent struct {
 	Rune rune    // printable rune (a, d, q, j, k, etc.) or 0
@@ -316,6 +337,7 @@ func (TickResult) event()        {}
 func (OpsTickResult) event()     {}
 func (DigestTickResult) event()  {}
 func (URLsTickResult) event()    {}
+func (ReloadTickResult) event()  {}
 func (KeyEvent) event()          {}
 func (ActionResult) event()      {}
 func (ResizeEvent) event()       {}
@@ -397,6 +419,15 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 					m.URLsSelected = total - 1
 				}
 			}
+		}
+		return m, CmdNone{}
+	case ReloadTickResult:
+		// Transport-level failure: keep the previous status so a
+		// blip in the control-plane fetch does not flip the badge.
+		// A real reload failure surfaces via Status.LastError, not
+		// via Err.
+		if e.Err == nil {
+			m.ReloadStatus = e.Status
 		}
 		return m, CmdNone{}
 	case KeyEvent:

@@ -14,6 +14,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/console"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
+	"github.com/dandriscoll/trollbridge/internal/reloadstatus"
 	"github.com/dandriscoll/trollbridge/internal/types"
 )
 
@@ -64,6 +65,10 @@ func (s *stubClient) RecentLLMDigests() ([]advisor.Digest, error) {
 
 func (s *stubClient) RecentURLs() ([]string, []string, bool, error) {
 	return nil, nil, false, nil
+}
+
+func (s *stubClient) ReloadStatus() (reloadstatus.Status, error) {
+	return reloadstatus.Status{}, nil
 }
 
 // TestRunLoop_ApproveFlowEndToEnd drives runLoop with scripted

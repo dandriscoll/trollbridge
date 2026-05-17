@@ -17,6 +17,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/console"
 	"github.com/dandriscoll/trollbridge/internal/controlclient"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
+	"github.com/dandriscoll/trollbridge/internal/reloadstatus"
 	"golang.org/x/term"
 )
 
@@ -47,6 +48,12 @@ type ControlClient interface {
 	// (returned for null providers); the renderer then shows the
 	// attach-mode hint instead of an empty list.
 	RecentURLs() (allow, deny []string, ok bool, err error)
+	// ReloadStatus returns the daemon's most-recent hot-reload
+	// outcome (closes #129). When the returned Status carries a
+	// non-empty LastError, the approvals-pane header renders a
+	// bold-red `␇ reload failed` badge so the operator notices that
+	// the file on disk diverges from what the daemon is running.
+	ReloadStatus() (reloadstatus.Status, error)
 }
 
 type httpClient struct{ cfg *config.Config }
@@ -97,6 +104,22 @@ func (c *httpClient) RecentLLMDigests() ([]advisor.Digest, error) {
 	return out, nil
 }
 
+func (c *httpClient) ReloadStatus() (reloadstatus.Status, error) {
+	// /v1/rules carries the most-recent reload outcome alongside the
+	// rule set (the same endpoint /v1/rules returned pre-#129; the
+	// new fields are omitempty so older daemons return zero-value
+	// state and the badge stays quiet).
+	body, gerr := controlclient.Get(c.cfg, "/v1/rules")
+	if gerr != nil {
+		return reloadstatus.Status{}, gerr
+	}
+	var resp reloadstatus.Status
+	if uerr := json.Unmarshal(body, &resp); uerr != nil {
+		return reloadstatus.Status{}, fmt.Errorf("decode rules: %w", uerr)
+	}
+	return resp, nil
+}
+
 func (c *httpClient) RecentURLs() (allow, deny []string, ok bool, err error) {
 	body, gerr := controlclient.Get(c.cfg, "/v1/lists")
 	if gerr != nil {
@@ -118,12 +141,25 @@ func NewHTTPClient(cfg *config.Config) ControlClient {
 	return &httpClient{cfg: cfg}
 }
 
+// ReloadStatusSource is the in-process counterpart to /v1/rules'
+// last_reload_* fields (closes #129). The daemon's *server.Server
+// satisfies it via its ReloadStatus() method. Wired through the
+// in-process client constructor so the TUI badge can render
+// without an HTTP hop when the operator UI is embedded in
+// `trollbridge run`.
+type ReloadStatusSource interface {
+	ReloadStatus() reloadstatus.Status
+}
+
 type inProcessClient struct {
 	q   *approvals.Queue
 	ops *opstream.Ring
 	// adv is the advisor service whose Digests() ring backs the
 	// LLM bottom panel (closes #66). May be nil if no advisor wired.
 	adv *advisor.Service
+	// reload is the daemon's reload-status surface (closes #129).
+	// May be nil — the TUI badge then stays dormant.
+	reload ReloadStatusSource
 }
 
 func (c *inProcessClient) ListHolds() ([]approvals.Snapshot, error) {
@@ -167,6 +203,13 @@ func (c *inProcessClient) RecentLLMDigests() ([]advisor.Digest, error) {
 	return c.adv.Digests().Snapshot(), nil
 }
 
+func (c *inProcessClient) ReloadStatus() (reloadstatus.Status, error) {
+	if c.reload == nil {
+		return reloadstatus.Status{}, nil
+	}
+	return c.reload.ReloadStatus(), nil
+}
+
 // RecentURLs on the in-process client returns ok=false because the
 // `trollbridge run` flow loads lists from the on-disk config file
 // directly (the existing CmdURLsRefresh path); the in-process URL
@@ -194,6 +237,15 @@ func NewInProcessClient(q *approvals.Queue, ops *opstream.Ring) ControlClient {
 // nil — the LLM panel then renders empty.
 func NewInProcessClientWithAdvisor(q *approvals.Queue, ops *opstream.Ring, adv *advisor.Service) ControlClient {
 	return &inProcessClient{q: q, ops: ops, adv: adv}
+}
+
+// NewInProcessClientFull wires the advisor and the reload-status
+// source. The reload source (typically the daemon's *server.Server)
+// drives the approvals-pane header badge for failed hot-reloads
+// (closes #129). Any argument may be nil — the corresponding
+// surface then renders empty.
+func NewInProcessClientFull(q *approvals.Queue, ops *opstream.Ring, adv *advisor.Service, rs ReloadStatusSource) ControlClient {
+	return &inProcessClient{q: q, ops: ops, adv: adv, reload: rs}
 }
 
 // RunOperator drives the unified two-pane operator UI. The caller
@@ -361,6 +413,16 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				select {
 				case <-loopCtx.Done():
 				case events <- OpsTickResult{Ops: ops, Err: err}:
+				}
+			}()
+			go func() {
+				// Closes #129: refresh the failed-reload badge.
+				// Same cadence as the holds/ops polls; one extra
+				// /v1/rules request per tick. Cheap.
+				st, err := client.ReloadStatus()
+				select {
+				case <-loopCtx.Done():
+				case events <- ReloadTickResult{Status: st, Err: err}:
 				}
 			}()
 		case CmdApprove:
@@ -615,8 +677,16 @@ func tickRefresh(ctx context.Context, client ControlClient, events chan<- Event)
 		case events <- OpsTickResult{Ops: ops, Err: err}:
 		}
 	}
+	emitReload := func() {
+		st, err := client.ReloadStatus()
+		select {
+		case <-ctx.Done():
+		case events <- ReloadTickResult{Status: st, Err: err}:
+		}
+	}
 	emitHolds()
 	emitOps()
+	emitReload()
 	t := time.NewTicker(1500 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -626,6 +696,7 @@ func tickRefresh(ctx context.Context, client ControlClient, events chan<- Event)
 		case <-t.C:
 			go emitHolds()
 			go emitOps()
+			go emitReload()
 		}
 	}
 }
@@ -725,7 +796,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			pending++
 		}
 	}
-	label := formatPaneLabel(formatOpsPaneLabelText(len(displayed), pending), focused)
+	label := formatPaneLabel(formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != ""), focused)
 	rightHint := ""
 	if focused {
 		// Panel-discovery hint when the bottom is hidden; Tab/hide cue
@@ -889,15 +960,23 @@ func colorizeURLForRow(cell, url string) string {
 // label shown at the top of the approvals pane. When `pending > 0`,
 // the pending segment gains a bell glyph and a bold+red ANSI wrap
 // so the indicator is visible from across the room (closes #72).
+// When `reloadFailed` is true, a sibling `␇ reload failed` badge
+// fires in the same red-bold style (closes #129) — the daemon's
+// last hot-reload attempt errored and the running set diverges
+// from the file on disk. Both badges can fire together.
 // formatPaneLabel further wraps the result with the pane's focus
 // styling.
-func formatOpsPaneLabelText(total, pending int) string {
-	if pending == 0 {
-		return fmt.Sprintf("trollbridge operations — %d total · %d pending", total, pending)
+func formatOpsPaneLabelText(total, pending int, reloadFailed bool) string {
+	label := fmt.Sprintf("trollbridge operations — %d total · %d pending", total, pending)
+	if pending > 0 {
+		// \x1b[1;31m = bold red. The bell-glyph prefix doubles as a
+		// no-color affordance for terminals that strip ANSI.
+		label = fmt.Sprintf("trollbridge operations — %d total · \x1b[1;31m␇ %d pending\x1b[22;39m", total, pending)
 	}
-	// \x1b[1;31m = bold red. The bell-glyph prefix doubles as a
-	// no-color affordance for terminals that strip ANSI.
-	return fmt.Sprintf("trollbridge operations — %d total · \x1b[1;31m␇ %d pending\x1b[22;39m", total, pending)
+	if reloadFailed {
+		label += " · \x1b[1;31m␇ reload failed\x1b[22;39m"
+	}
+	return label
 }
 
 // colorizeStatus wraps the status in a class color per #57's
@@ -980,7 +1059,7 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			pending++
 		}
 	}
-	header := formatOpsPaneLabelText(len(displayed), pending)
+	header := formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != "")
 	if m.Focused == PaneApprovals {
 		b.WriteString(boldLine("▶ "+header, m.Cols))
 	} else {

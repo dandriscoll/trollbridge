@@ -31,6 +31,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/opstream"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/redact"
+	"github.com/dandriscoll/trollbridge/internal/reloadstatus"
 	"github.com/dandriscoll/trollbridge/internal/selfdescribe"
 	"github.com/dandriscoll/trollbridge/internal/sessions"
 	"github.com/dandriscoll/trollbridge/internal/types"
@@ -70,6 +71,11 @@ type Server struct {
 
 	connsMu sync.Mutex
 	conns   map[net.Conn]struct{}
+
+	// reloadTracker carries the last-outcome of a hot-reload attempt
+	// (closes #129). Surfaced via /v1/rules and rendered as a TUI
+	// badge in the approvals pane header when LastError is non-empty.
+	reloadTracker reloadstatus.Tracker
 
 	// MaxBodySampleBytes caps how much request body we read for
 	// body_pattern matching on plain HTTP. 0 disables.
@@ -239,6 +245,10 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 	// advisor service.
 	s.control.SetLists(s)
 	s.control.SetDigests(digestsProviderAdapter{adv: s.advisor})
+	// Closes #129: /v1/rules surfaces the most-recent hot-reload
+	// outcome so the TUI badge can render it without subscribing to
+	// the operational log.
+	s.control.SetReloadStatusProvider(s)
 	s.transport = &http.Transport{
 		MaxIdleConns:        cfg.Forwarder.MaxIdleConns,
 		MaxIdleConnsPerHost: cfg.Forwarder.MaxIdleConnsPerHost,
