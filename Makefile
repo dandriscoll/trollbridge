@@ -26,6 +26,15 @@ fuzz:            ## Run the regex + YAML fuzz suites for ~30s each
 	$(GO) test -run=NONE -fuzz=FuzzRuleRegex_BodyPattern -fuzztime=15s ./internal/policy/
 	$(GO) test -run=NONE -fuzz=FuzzYAMLLoad -fuzztime=30s ./internal/config/
 
+.PHONY: llm-test
+llm-test:        ## Run LLM-advisor bundles against the live LLM (set TROLLBRIDGE_LLM_TEST_CONFIG; see llmtest/README.md)
+	@if [ -z "$$TROLLBRIDGE_LLM_TEST_CONFIG" ]; then \
+	  echo "set TROLLBRIDGE_LLM_TEST_CONFIG=/path/to/trollbridge.yaml first" >&2; \
+	  echo "see llmtest/README.md for details" >&2; \
+	  exit 2; \
+	fi
+	$(GO) test -tags=llmtest -v ./llmtest/...
+
 .PHONY: vet
 vet:             ## go vet
 	$(GO) vet $(PKG)

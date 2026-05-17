@@ -113,6 +113,18 @@ The full set of commits between any two tags is on GitHub at
   commands. Operators who want the manual flow pick `skip`. Az
   must be logged in to the desired subscription before init
   starts (`az account set --subscription <id>` if multiple).
+- `make llm-test` (new) runs the LLM-advisor regression suite
+  against the live LLM configured by your `trollbridge.yaml`
+  (closes #133). Point `TROLLBRIDGE_LLM_TEST_CONFIG` at the
+  config, then `make llm-test`. Bundles under
+  `llmtest/bundles/*.yaml` declare directives + allow/deny
+  context + cases with expected verdict (`allow`/`deny`/
+  `ask_user`) and confidence band (`low`/`medium`/`high`). The
+  framework dispatches one live LLM call per case and reports
+  per-case pass/fail — catches prompt drift, model-version
+  drift, and subtle policy gaps. Three starter bundles
+  (baseline / security / grey-area) ship by default; add your
+  own under `llmtest/bundles/`. See `llmtest/README.md`.
 
 ### Forensics
 

@@ -335,6 +335,16 @@ the four principles governing the LLM advisor's role.
 See `docs/deploy.md` for deployment recipes and `DESIGN.md` for
 the full specification.
 
+## LLM-advisor regression testing
+
+The `llmtest/` directory ships a small framework for asserting
+that the configured LLM advisor is implementing your policy in
+accordance with your prompts. `make llm-test` (with
+`TROLLBRIDGE_LLM_TEST_CONFIG` pointing at a working config)
+runs every bundle under `llmtest/bundles/*.yaml` against the
+live LLM and reports per-case pass/fail. See `llmtest/README.md`
+for the bundle format. Closes #133.
+
 ## License
 
 [MIT](LICENSE).
