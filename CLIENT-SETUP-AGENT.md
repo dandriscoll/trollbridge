@@ -120,8 +120,8 @@ sudo security add-trusted-cert -d -r trustRoot \
 
 For language runtimes that bring their own trust bundle (Python's
 `certifi`, Node's `NODE_EXTRA_CA_CERTS`, Java's `cacerts`, etc.),
-also point those at the cert file. The repo's main README has
-runtime-specific snippets.
+also point those at the cert file. See `DESIGN.md` §7.5 ("Installing
+the CA into a client trust store") for the per-runtime snippet list.
 
 ## Step 4 — Verify
 

@@ -150,6 +150,27 @@ The full set of commits between any two tags is on GitHub at
 
 ### Docs
 
+- README rewritten as a first-time-reader front door (#135). The
+  page is now ~130 lines (was ~390), organized as: what trollbridge
+  is, an audience map ("agent is installing for me" /
+  "installing on my own machine" / "deploying to a host"),
+  install / run / verify, and a compact "Where to go next" doc map.
+  Operator-deep content moved to two new docs:
+  [`docs/operator-ui.md`](docs/operator-ui.md) (TUI keymap, daemon
+  mode, attach, console REPL, CI validation via
+  `trollbridge validate`) and
+  [`docs/self-describing.md`](docs/self-describing.md)
+  (`config.trollbridge.dev/*` bootstrap endpoints). Hosts /
+  CA / mTLS / TLS-interception specifics link to the existing
+  [`PROXY-SETUP-AGENT.md`](PROXY-SETUP-AGENT.md). No CLI behavior
+  changed; the agentic-setup URL and curl-pipe installer
+  command are preserved verbatim.
+- `CLIENT-SETUP-AGENT.md` Step 3 no longer claims the README has
+  per-runtime trust-bundle snippets (Python `certifi`, Node
+  `NODE_EXTRA_CA_CERTS`, Java `cacerts`) — it never did. The
+  reference now points at `DESIGN.md` §7.5, which does carry the
+  list. Embedded copy in `internal/selfdescribe/` updated in
+  lock-step so the drift test stays green.
 - `CLIENT-SETUP-AGENT.md` Step 1 now documents two scopes for the
   proxy env vars (#116). Shell-wide (existing `export …` pattern)
   for the convenient case; per-process / agent-scoped (the
