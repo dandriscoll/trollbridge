@@ -4,16 +4,36 @@
 
 # trollbridge
 
+[![release](https://img.shields.io/github/v/release/dandriscoll/trollbridge)](https://github.com/dandriscoll/trollbridge/releases)
+[![ci](https://github.com/dandriscoll/trollbridge/actions/workflows/ci.yml/badge.svg)](https://github.com/dandriscoll/trollbridge/actions/workflows/ci.yml)
+[![license](https://img.shields.io/github/license/dandriscoll/trollbridge)](LICENSE)
+[![go](https://img.shields.io/github/go-mod/go-version/dandriscoll/trollbridge)](go.mod)
+
 ![trollbridge — LLM-Powered Proxy & Security Gateway for AI Agents](trollbridge_infographic.png)
 
-An LLM-powered HTTP/HTTPS proxy that lets LLM agents reach network
-resources under controlled, inspectable, policy-governed conditions.
-The proxy is implemented in Go: a single static binary, no runtime
+> **Let your agents run amok — but only where you say.**
+
+trollbridge is the proxy your local agent calls out through. Read,
+write, and run files freely on your machine; reach the network only
+where you've authorized. New destinations hold one keystroke from
+approval. Implemented in Go: a single static binary, no runtime
 deps.
+
+## What it does
+
+- **Read, write, run.** trollbridge does not gate local files or
+  processes. Your agent has full filesystem and shell access.
+- **Outbound only where you say.** HTTP and HTTPS requests are
+  checked against allow/deny lists and rule policy. Matches pass
+  through with audit-log entries; non-matches don't.
+- **Hold the rest for one keystroke.** Unapproved destinations
+  pause and surface in the operator UI. Press `a` to approve (the
+  destination joins `lists.allow`), `d` to deny. The held request
+  resumes — no agent restart, no retry loop.
 
 ## Where to go from here
 
-Pick the path that matches what you're doing:
+Three paths in — pick the one that matches what you're doing:
 
 - **An LLM agent is installing trollbridge for me.** Hand the agent
   this URL:

@@ -9,6 +9,17 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Docs
+
+- README opening rewritten to unify voice with trollbridge.dev: the
+  tagline ("Let your agents run amok — but only where you say") and
+  the three pillars (read/write/run · outbound only where you say ·
+  hold the rest for one keystroke) now mirror the site's three
+  feature panels. The technical "policy-governed conditions"
+  framing moves into the body. README also gains a badges row
+  (release / ci / license / go version) and a one-line summary
+  over the audience-routing block. No CLI behavior changed.
+
 ### Release process
 
 - GitHub release bodies are now sourced from CHANGELOG.md `## Unreleased`
