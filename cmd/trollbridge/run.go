@@ -104,6 +104,12 @@ func newRunCmd() *cobra.Command {
 				policy.Phase1KnownModifiers(),
 			)
 			if err != nil {
+				opLog.Error("startup failed",
+					"event", oplog.EventStartupFailure,
+					"stage", "policy",
+					"paths", cfg.ResolveIncludePaths(configPath),
+					"error", err.Error(),
+				)
 				return &configErr{err}
 			}
 			auditLogger, err := audit.New(
@@ -112,6 +118,12 @@ func newRunCmd() *cobra.Command {
 				audit.OverflowMode(cfg.Logging.AuditOverflow),
 			)
 			if err != nil {
+				opLog.Error("startup failed",
+					"event", oplog.EventStartupFailure,
+					"stage", "audit",
+					"audit_path", cfg.Logging.AuditPath,
+					"error", err.Error(),
+				)
 				return &runtimeErr{err}
 			}
 			auditLogger.SetOpLog(opLog)
@@ -120,11 +132,22 @@ func newRunCmd() *cobra.Command {
 			// mistake, not an operator one.
 			lvl, err := audit.ParseLevel(cfg.Logging.AuditLevel)
 			if err != nil {
+				opLog.Error("startup failed",
+					"event", oplog.EventStartupFailure,
+					"stage", "audit_level",
+					"audit_level", cfg.Logging.AuditLevel,
+					"error", err.Error(),
+				)
 				return &runtimeErr{err}
 			}
 			auditLogger.SetLevel(lvl)
 			srv, err := server.NewWithLoggers(cfg, engine, auditLogger, opLog)
 			if err != nil {
+				opLog.Error("startup failed",
+					"event", oplog.EventStartupFailure,
+					"stage", "server",
+					"error", err.Error(),
+				)
 				return &runtimeErr{err}
 			}
 
@@ -136,6 +159,13 @@ func newRunCmd() *cobra.Command {
 			// new patterns back to the file via configwrite and
 			// triggers an in-process re-parse via the OnReload hook.
 			if err := srv.SetLists(cfg.Lists.Allow, cfg.Lists.Deny); err != nil {
+				opLog.Error("startup failed",
+					"event", oplog.EventStartupFailure,
+					"stage", "lists",
+					"allow_count", len(cfg.Lists.Allow),
+					"deny_count", len(cfg.Lists.Deny),
+					"error", err.Error(),
+				)
 				return &configErr{err}
 			}
 

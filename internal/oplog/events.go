@@ -7,6 +7,14 @@ const (
 	EventShutdown                 = "shutdown"
 	EventConfigLoaded             = "config_loaded"
 	EventConfigLoadFailure        = "config_load_failure"
+	// EventStartupFailure fires when the daemon failed to construct
+	// after the operational log was open — `policy.NewEngine`,
+	// `audit.New`, server construction, and inline-list parse failures
+	// (closes #134). Sibling of EventConfigLoadFailure (#128), which
+	// covers the *pre*-opLog failures. Carries a `stage` attribute
+	// naming the construction step that failed (`policy` / `audit` /
+	// `audit_level` / `server` / `lists`).
+	EventStartupFailure           = "startup_failure"
 	EventListening                = "listening"
 	EventControlListening         = "control_listening"
 	EventRuleReload               = "rule_reload"

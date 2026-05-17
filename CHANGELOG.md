@@ -90,6 +90,16 @@ The full set of commits between any two tags is on GitHub at
   exit-code contract is now documented in the command help and in
   the README: `0` = valid, `1` = invalid (any reason). Operators
   binding config-lint from their own CI now have a stable surface.
+- `trollbridge run` now emits a structured `startup_failure`
+  operational-log event when it fails to construct after the
+  operational log is open (#134). Sibling to #128, which covers the
+  *pre*-opLog slice (`config_load_failure`). The new event covers
+  `policy.NewEngine`, `audit.New`, `audit.ParseLevel`,
+  `server.NewWithLoggers`, and inline-list parse failures; each
+  carries a `stage` attribute (`policy` / `audit` / `audit_level` /
+  `server` / `lists`). Operators alerting on "daemon failed to
+  start" should extend their `config_load_failure` query to
+  include `startup_failure`.
 
 ### Forensics
 
