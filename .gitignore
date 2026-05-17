@@ -20,3 +20,7 @@ rules.yaml
 # Go workspace
 /vendor/
 /go.work.sum
+
+# Built test/debug binaries; release artifacts live under dist/
+/trollbridge
+/trollbridge.exe

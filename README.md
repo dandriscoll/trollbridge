@@ -223,6 +223,30 @@ loads the config, parses the rules and lists, and (when LLM is
 enabled) issues a real classification call so misconfigured
 endpoints / keys / providers fail loud before `trollbridge run`.
 
+### Validating configuration in CI
+
+`trollbridge validate -c <path>` parses the config + included rules
++ inline lists and reports the result. Use this as a config-lint step
+in your own CI.
+
+- Without `--json`: prints a human-readable summary on stdout.
+- With `--json`: prints a single JSON object on stdout with the same
+  fields. Operators wiring this from CI bind to the object and the
+  exit code; nothing prints to stderr when `--json` is set.
+
+Exit-code contract (stable):
+
+| code | meaning                                                    |
+|------|------------------------------------------------------------|
+| 0    | configuration and rule set parse cleanly                   |
+| 1    | any validation failure — file missing, YAML parse error, unknown key (strict decoding rejects typos, #123), list parse error, &c. |
+
+```sh
+trollbridge validate --json -c /etc/trollbridge/trollbridge.yaml \
+  | jq -e '.ok' >/dev/null \
+  || { echo "config invalid"; exit 1; }
+```
+
 ### Hosts
 
 trollbridge has two distinct hosts in the general case:

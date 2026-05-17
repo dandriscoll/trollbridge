@@ -85,6 +85,11 @@ The full set of commits between any two tags is on GitHub at
   `trollbridge_v<X.Y.Z>_<os>_<arch>.tar.gz`. Windows operators with
   bookmarked tarball URLs from prior releases will need to point at
   the new `trollbridge_v<X.Y.Z>_windows_<arch>.exe` asset.
+- `trollbridge validate --json` emits a single JSON object on stdout
+  with the same shape as the existing human summary (#127). The
+  exit-code contract is now documented in the command help and in
+  the README: `0` = valid, `1` = invalid (any reason). Operators
+  binding config-lint from their own CI now have a stable surface.
 
 ### Forensics
 
