@@ -289,6 +289,27 @@ func TestEngine_RejectsUnknownMatchKey(t *testing.T) {
 	}
 }
 
+// TestEngine_RejectsToolField closes issue #125: a `tool:` clause
+// was parsed into Match.Tool and silently ignored by the evaluator.
+// After removal, strict decoding (#123) must reject the clause with
+// an error naming `tool` so the operator notices.
+func TestEngine_RejectsToolField(t *testing.T) {
+	p := writeRules(t, `
+- id: tool-clause-rejected
+  match:
+    host: example.com
+    tool: claude-code
+  effect: allow
+`)
+	_, err := NewEngine("default-deny", []string{p}, Phase1KnownModifiers())
+	if err == nil {
+		t.Fatal("expected error for unsupported match key `tool`")
+	}
+	if !strings.Contains(err.Error(), "tool") {
+		t.Errorf("error should name the offending key `tool`: %v", err)
+	}
+}
+
 // TestEngine_RejectsMultipleDocuments closes issue #126 for rule
 // files: a `---`-separated second document of rules was silently
 // ignored. The reload must reject the file.

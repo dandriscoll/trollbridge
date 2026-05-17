@@ -34,7 +34,6 @@ type Match struct {
 	PathRegex    string       `yaml:"path_regex"`
 	HeaderMatch  map[string]string `yaml:"header_match"`
 	Identity     string       `yaml:"identity"`
-	Tool         string       `yaml:"tool"`
 	ContentType  string       `yaml:"content_type"`
 	BodyPattern  string       `yaml:"body_pattern"`
 	Time         *TimeWindow  `yaml:"time"`
@@ -162,7 +161,6 @@ func (r *Rule) matches(req *types.RequestEvent, ctx evalContext) bool {
 			return false
 		}
 	}
-	_ = m.Tool
 	return true
 }
 

@@ -797,7 +797,6 @@ Rule fields trollbridge MUST support:
   - `response_header_match` / `response_body_pattern` — for response-
     side rules; require post-response inspection (§11).
   - `identity` — string, must match resolved client identity.
-  - `tool` — string, optional client-supplied tool ID (advisory).
   - `time` — cron-like window, e.g., `weekdays 09:00-18:00`.
   - `prior_decision` — predicate over the recent audit log (e.g.,
     "if the same identity hit this host in the last 60s with a

@@ -67,6 +67,11 @@ The full set of commits between any two tags is on GitHub at
   operational log at startup (#128). Previously these pre-startup
   failures reached stderr only, with no structured event — a daemon
   that failed to start left no operational-log record of why.
+- Rule files containing `match.tool` now fail to load (#125). The
+  field was parsed but never evaluated — a `tool:` clause was a
+  silent no-op. With strict YAML decoding (#123) the same clause now
+  surfaces as a parse error naming `tool`, so the operator can edit
+  the line out instead of believing a non-functional rule was active.
 
 ### Forensics
 
