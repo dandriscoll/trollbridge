@@ -427,7 +427,8 @@ HTTP, CONNECT pre-tunnel, and intercepted HTTPS):
   fetch a machine-readable description of the wire contract from a
   deterministic, well-known URL. The document enumerates status
   codes, headers, body shapes, and the audit-log correlation rule.
-  See §15 for the discovery surface.
+  See [`docs/self-describing.md`](docs/self-describing.md) for the
+  operator-facing summary of the discovery endpoints.
 - **Body, content-negotiated:**
   - When the request `Accept` header contains a media range matching
     `application/json` (other than `*/*`), the body is
