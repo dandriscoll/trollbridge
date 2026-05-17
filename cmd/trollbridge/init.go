@@ -110,10 +110,11 @@ approvals:
 func newInitCmd() *cobra.Command {
 	var dir string
 	var force, nonInteractive bool
+	var answersPath string
 	defaultDir := filepath.Dir(defaultConfigPath())
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create a trollbridge.yaml. Interactive when stdin is a TTY; static defaults otherwise.",
+		Short: "Create a trollbridge.yaml. Interactive when stdin is a TTY; --answers <file> for agentic flow; static defaults otherwise.",
 		Long: `Create a trollbridge.yaml in the target directory.
 
 The default directory matches the location every other subcommand
@@ -126,8 +127,18 @@ asks about topology, policy mode, TLS interception, and LLM
 advisor — and (when interception is chosen) generates the CA in
 the same invocation.
 
+When --answers <file> is passed, init reads structured answers
+from the file (or stdin if the value is "-") and renders the
+config without prompting. This is the agentic-onboarding path:
+an LLM onboarding agent collects user answers, writes the
+file matching the schema in config.agentic.yaml, and calls init
+with --answers. The same rendering as the interactive path runs;
+the answers file is just a non-TTY input channel.
+
 When stdin is not a TTY (CI, redirected input) or --non-interactive
 is passed, init writes the static default config without prompting.
+
+See SETUP-AGENT.md for the full agentic-onboarding flow.
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
@@ -137,7 +148,8 @@ is passed, init writes the static default config without prompting.
 				return &runtimeErr{err}
 			}
 			out := cmd.OutOrStdout()
-			interactive := !nonInteractive && stdinIsTTY(cmd.InOrStdin())
+			useAnswersFile := answersPath != ""
+			interactive := !useAnswersFile && !nonInteractive && stdinIsTTY(cmd.InOrStdin())
 
 			yamlPath := filepath.Join(dir, "trollbridge.yaml")
 			if _, err := os.Stat(yamlPath); err == nil && !force {
@@ -152,7 +164,26 @@ is passed, init writes the static default config without prompting.
 
 			content := defaultConfigYAML
 			var ans initAnswers
-			if interactive {
+			if useAnswersFile {
+				a, err := loadAnswersFile(answersPath, cmd.InOrStdin())
+				if err != nil {
+					return &configErr{err}
+				}
+				ans = a
+				absDir, abserr := filepath.Abs(dir)
+				if abserr != nil {
+					absDir = dir
+				}
+				applyPathDefaults(&ans, absDir)
+				content = applyAnswers(defaultConfigYAML, ans)
+
+				if ans.llmEnabled && ans.installMode == "user" && ans.llmKey != "" {
+					if err := writeLLMKey(ans.llmKeyPath, ans.llmKey); err != nil {
+						return &runtimeErr{fmt.Errorf("write LLM key: %w", err)}
+					}
+					fmt.Fprintf(out, "  wrote LLM API key: %s (mode 0600)\n", ans.llmKeyPath)
+				}
+			} else if interactive {
 				a, err := runInteractiveInit(cmd.InOrStdin(), out)
 				if err != nil {
 					return &configErr{err}
@@ -163,26 +194,7 @@ is passed, init writes the static default config without prompting.
 				if abserr != nil {
 					absDir = dir
 				}
-
-				// Path defaults branch on install mode. user-mode
-				// anchors every file at the absolute init-dir path
-				// (so the daemon, started later from any cwd, still
-				// finds them — issue #14). daemon-mode uses the
-				// canonical /etc/trollbridge/ + /var/log/trollbridge/
-				// paths; the package install pre-creates the dirs
-				// owned by the `trollbridge` user (Q1 punt — user
-				// creation is a packaging concern).
-				if ans.installMode == "daemon" {
-					ans.caCertPath = DefaultCACertPath
-					ans.caKeyPath = DefaultCAKeyPath
-					ans.auditPath = DefaultDaemonAuditPath
-					ans.llmKeyPath = DefaultDaemonLLMKeyPath
-				} else {
-					ans.caCertPath = filepath.Join(absDir, "trollbridge-ca.crt")
-					ans.caKeyPath = filepath.Join(absDir, "trollbridge-ca.key")
-					ans.auditPath = filepath.Join(absDir, "trollbridge.audit.jsonl")
-					ans.llmKeyPath = filepath.Join(absDir, "llm.key")
-				}
+				applyPathDefaults(&ans, absDir)
 				content = applyAnswers(defaultConfigYAML, ans)
 
 				// user-mode + LLM advisor: the operator typed the
@@ -220,14 +232,50 @@ is passed, init writes the static default config without prompting.
 				cFlag = " -c " + absYaml
 			}
 
-			printNextSteps(out, ans, interactive, cFlag)
+			// Both interactive and --answers paths populate `ans` and
+			// expect mode-aware next-steps. Only the bare static
+			// default (no flags, no TTY) gets the generic block.
+			hasAnswers := interactive || useAnswersFile
+			printNextSteps(out, ans, hasAnswers, cFlag)
 			return nil
 		},
 	}
 	cmd.Flags().StringVarP(&dir, "dir", "d", defaultDir, "directory to write the config to (default: matches `trollbridge run -c` discovery)")
 	cmd.Flags().BoolVar(&force, "force", false, "archive existing files (.bak) and replace")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "skip the guided setup; write the static default config")
+	cmd.Flags().StringVar(&answersPath, "answers", "", "read structured answers from this YAML file ('-' = stdin); see SETUP-AGENT.md and config.agentic.yaml")
 	return cmd
+}
+
+// applyPathDefaults branches on install mode to anchor every
+// answered path. user-mode anchors at the absolute init-dir path
+// (so the daemon, started later from any cwd, still finds them —
+// issue #14); daemon-mode uses the canonical /etc/trollbridge/ +
+// /var/log/trollbridge/ paths. Shared by the interactive flow and
+// the --answers flow so both render the same set of resolved
+// paths from the same answers.
+//
+// Operators who supply an explicit audit_path / cert_path / etc.
+// in their answers file can override after this runs — they win
+// over the install-mode default. (Today only audit_path has an
+// explicit override field; cert/key/llm-key paths are always
+// derived from install mode + init dir.)
+func applyPathDefaults(ans *initAnswers, absDir string) {
+	if ans.installMode == "daemon" {
+		ans.caCertPath = DefaultCACertPath
+		ans.caKeyPath = DefaultCAKeyPath
+		if ans.auditPath == "" {
+			ans.auditPath = DefaultDaemonAuditPath
+		}
+		ans.llmKeyPath = DefaultDaemonLLMKeyPath
+		return
+	}
+	ans.caCertPath = filepath.Join(absDir, "trollbridge-ca.crt")
+	ans.caKeyPath = filepath.Join(absDir, "trollbridge-ca.key")
+	if ans.auditPath == "" {
+		ans.auditPath = filepath.Join(absDir, "trollbridge.audit.jsonl")
+	}
+	ans.llmKeyPath = filepath.Join(absDir, "llm.key")
 }
 
 // printNextSteps emits an operator-facing block describing the

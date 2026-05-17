@@ -1,0 +1,313 @@
+# trollbridge — agentic configuration template
+#
+# This file is the YAML companion to SETUP-AGENT.md. It serves three
+# audiences from one source:
+#
+#   1. An onboarding LLM agent — uses the structured comments below
+#      (`agent:`, `required:`, `depends_on:`, `ask:`, `default:`,
+#      `validate:`, `warning:`, `platforms:`) to decide what to ask
+#      the user and what to fill in.
+#   2. A human operator — reads the same comments as plain prose to
+#      understand each decision before authoring config by hand.
+#   3. The trollbridge binary — `trollbridge validate -c
+#      config.agentic.yaml` loads it cleanly. Filling in the
+#      placeholder values produces a runnable trollbridge.yaml.
+#
+# The annotated comments use a small grammar an LLM can parse:
+#
+#   # agent: required | optional | defer
+#       - required: the agent MUST ask the user before filling this.
+#       - optional: ask only if the user volunteers a constraint or
+#         the named goal makes it relevant.
+#       - defer:   keep the default; advanced; revisit after base
+#         setup is verified.
+#
+#   # depends_on: <field> = <value>   (only ask if the named field
+#                                      already resolved to value)
+#
+#   # ask: "<user-facing question>"   (a question to put to the user
+#                                      verbatim, in the user's words)
+#
+#   # default: <safe default>
+#
+#   # validate: <one-line rule the agent applies before writing>
+#
+#   # warning: <high-impact consequence the agent surfaces to the
+#                user before accepting a non-default answer>
+#
+#   # platforms: linux | darwin | windows | all   (comma-sep; absent
+#                                                  = all)
+#
+# Comments outside YAML keys are stripped at parse time; only the
+# field values affect runtime behavior. Edit values to taste.
+#
+# ──────────────────────────────────────────────────────────────────
+# Answers-file shape — for `trollbridge init --answers <file>`
+# ──────────────────────────────────────────────────────────────────
+#
+# When the agent has collected user answers, it writes a separate
+# *answers file* in this shape (NOT the full config below):
+#
+#   # trollbridge-init-answers v1
+#   install_mode: user              # user | daemon
+#   topology: local                 # local | local-vm | remote
+#   mode: default-deny              # default-deny | default-allow | default-ask
+#   interception: false             # true requires CA install
+#   # audit_path: <path>            # optional override
+#   # llm:
+#   #   enabled: true
+#   #   provider: anthropic         # anthropic | aoai | other
+#   #   model: claude-opus-4-7
+#   #   endpoint: https://api.anthropic.com/v1/messages
+#   #   api_key: sk-ant-...         # user-mode only
+#
+# Then `trollbridge init --answers <file>` renders the full
+# trollbridge.yaml below by applying those answers to the static
+# template. The full config below is the *target shape* — what gets
+# rendered.
+
+# ==================================================================
+# 1) PER-SURFACE BIND ADDRESSES
+# ==================================================================
+# agent: required (install_mode + topology drive the right value)
+# ask: "Where does the agent run relative to the proxy?
+#       (local = same host; local-vm = a VM on this host;
+#        remote = a different machine)"
+# default: lo:8080
+# warning: binding to `all:0.0.0.0` exposes the proxy to every
+#          network interface — only do this when the consumer runs
+#          on a different machine.
+# validate: format is `<host>:<port>`; aliases `lo` (=127.0.0.1)
+#           and `all` (=0.0.0.0) accepted; IPv6 literals bracket
+#           ([fd00::1]:8081).
+#
+# Topology → bind:
+#   local       → lo:8080
+#   local-vm    → all:8080
+#   remote      → all:8080
+proxy:   lo:8080
+
+# agent: defer
+# default: lo:8081      (mTLS-protected; only operators reach it)
+# Set `control: 0` to disable when no remote attach is needed.
+control: lo:8081
+
+# agent: defer  (Prometheus surface is unimplemented; leave 0)
+# default: 0
+metrics: 0
+
+# ==================================================================
+# 2) ALLOW / DENY LISTS
+# ==================================================================
+# agent: required (the names depend on the user's goal)
+# ask: "Which hostnames must the agent reach? Which must it never
+#       reach?"
+# Each entry is `[<METHOD>|*] [<scheme>://]host[:port][/path]` with
+# `*` wildcards. Deny wins over allow. trollbridge writes this list
+# back when the operator types `allow X` / `deny X` in the console.
+#
+# Goal mapping:
+#   block-exfiltration      → allow: [], deny: [metadata.*, pastebins]
+#   review-new-destinations → allow: [hosts the user is sure about]
+#   audit-but-not-block     → allow not used (default-allow)
+#   scoped-to-mirrors       → allow: [registry.npmjs.org, pypi.org, ...]
+#
+# warning: a wildcard `*` on allow effectively disables policy.
+lists:
+  allow:
+    - localhost
+    - 127.0.0.1
+  deny:
+    # platforms: all — cloud metadata services are sensitive on
+    # every cloud; deny by default everywhere.
+    - 169.254.169.254
+    - metadata.google.internal
+    - metadata.azure.com
+
+# ==================================================================
+# 3) POLICY MODE
+# ==================================================================
+# agent: required
+# ask: "What posture should the proxy enforce by default?"
+# default: default-deny
+# warning: changing this after deploy can cascade — `default-deny`
+#          breaks the agent until allow rules are in place;
+#          `default-allow` exposes the agent until deny rules cover
+#          known-bad destinations.
+#
+#   default-deny    : only listed hosts forward; everything else
+#                     blocked (HTTP 470).
+#   default-ask     : unmatched requests are held for advisor /
+#                     operator approval. Requires llm.enabled=true
+#                     for tractability.
+#   default-allow   : only deny rules block; audit log captures the
+#                     rest. Lowest friction; audit review is the
+#                     primary control.
+mode: default-deny
+
+# ==================================================================
+# 4) TLS INTERCEPTION
+# ==================================================================
+# agent: required
+# ask: "Should trollbridge intercept TLS so it can see HTTPS request
+#       paths and bodies? Without interception, HTTPS rules can only
+#       match host:port."
+# default: false
+# warning: turning interception on is invasive — the CA cert
+#          MUST be installed in every consumer process's trust
+#          store. Surface the install steps to the user before
+#          flipping this on.
+#
+# When enabled=true, the agent's plan must include:
+#   - `trollbridge ca init` on the proxy host (separate root step;
+#     `trollbridge init` does NOT generate the CA — issue #19).
+#   - `trollbridge ca install --apply` on each consumer host
+#     (Linux/macOS) or `certutil -addstore ...` (Windows).
+interception:
+  enabled: false
+  ca:
+    # platforms: linux,darwin — canonical Unix path; agent must
+    # render the %ProgramData% equivalent on Windows (the binary
+    # does this automatically when writing via `init`).
+    cert_path: /etc/trollbridge/trollbridge-ca.crt
+    key_path:  /etc/trollbridge/trollbridge-ca.key
+  leaf_key_type: rsa-4096
+  # agent: optional — only add a passthrough_hosts entry when the
+  # user reports a service that pins certificates (banking, some
+  # Google APIs, Apple push).
+  passthrough_hosts:
+    - "*.googleapis.com"
+    - login.microsoftonline.com
+  leaf_cert_ttl_hours: 24
+
+# ==================================================================
+# 5) LLM ADVISOR
+# ==================================================================
+# agent: required (enabled is required; sub-fields depend on it)
+# ask: "Enable the LLM advisor for ambiguous requests?"
+# default: enabled=false
+# warning: the advisor cannot elevate above the deterministic
+#          policy. If `mode: default-ask` and `llm.enabled: false`,
+#          every unmatched request blocks until a human approves it.
+#
+# When enabled=true the agent asks:
+#   - provider (anthropic | aoai | other)
+#   - model (provider-specific; see ANTHROPIC-LLM-SETUP-AGENT.md
+#            or AZURE-OPENAI-LLM-SETUP-AGENT.md)
+#   - endpoint (required for aoai; optional for anthropic; required
+#     for other)
+#   - api_key (NEVER inline; written to a separate file with
+#     chmod 600; the path goes in api_key_path below)
+llm:
+  enabled: false
+  provider: anthropic
+  model:    claude-opus-4-7
+  endpoint: https://api.anthropic.com/v1/messages
+  # validate: file path must exist before `trollbridge run` starts;
+  #           mode 0600; UTF-8 contents = the literal key string.
+  api_key_path: /etc/trollbridge/llm.key
+  timeout_seconds: 8
+  cache_ttl_seconds: 300
+  send_body: false
+  # agent: defer (safe defaults)
+  on_unavailable: ask_user        # ask_user | deny | allow
+  confidence_floor: medium
+  mode: review                    # review | research
+
+  # agent: defer (operator's system-prompt for the advisor;
+  # surface only if the user wants to tighten the advisor's policy)
+  directives: |
+    You are trollbridge's security advisor. For each HTTP request
+    decide allow / deny / ask_user. Refuse anything that exfiltrates
+    credentials, contacts cloud metadata services, or looks like
+    data exfiltration to an unfamiliar destination. When uncertain,
+    answer ask_user with a short reason.
+
+# ==================================================================
+# 6) CONTROLLER (operator-facing control plane)
+# ==================================================================
+# agent: defer (mTLS is the only mode)
+controller:
+  auth: mtls
+  # client_ca_path: /etc/trollbridge/different-ca.crt  # optional override
+
+# ==================================================================
+# 7) REDACTION (applied before forward, before LLM input, before audit)
+# ==================================================================
+# agent: defer — the defaults below are conservative; surface to
+# the user only if the user mentions secrets they want redacted
+# beyond Authorization / Cookie / common body shapes.
+redaction:
+  default_modifiers:
+    - redact_authorization_header
+    - redact_cookie
+  body_redactors:
+    - jsonpath: $.password
+    - jsonpath: $.api_key
+    - jsonpath: $.token
+    - regex: "(?i)bearer [A-Za-z0-9._-]+"
+  query_redactors:
+    - regex: "(?i)token|key|secret|password"
+
+# ==================================================================
+# 8) LOGGING
+# ==================================================================
+# agent: optional (only ask if the user mentions log retention)
+# default: install-mode default (init-dir for user-mode, /var/log
+#          for daemon-mode)
+logging:
+  audit_path: /var/log/trollbridge/audit.jsonl
+  audit_buffer_size: 1024
+  # agent: defer — `deny` fails closed when the audit buffer is
+  # full; the alternative `drop` loses entries silently. Default
+  # `deny` is the right answer for security-relevant audit.
+  audit_overflow: deny
+  audit_level: all                # all | decisions | none
+  operational_path: stderr
+
+# ==================================================================
+# 9) APPROVALS QUEUE
+# ==================================================================
+# agent: defer
+approvals:
+  timeout_seconds: 300
+  on_timeout: deny
+  max_pending: 100
+
+# ==================================================================
+# 10) STRUCTURED RULES (advanced)
+# ==================================================================
+# agent: defer — only relevant when the user has multiple agents
+# with different policies, time windows, body-pattern rules, or
+# ask_user / ask_llm effects beyond the simple allow/deny.
+policy:
+  include: []
+  # Example (uncomment to use; create rules/base.yaml first):
+  #   - rules/base.yaml
+
+# ==================================================================
+# 11) UPSTREAM PROXY (chaining trollbridge through another proxy)
+# ==================================================================
+# agent: optional — ask only if the user has an outbound corporate
+# proxy that trollbridge must traverse.
+upstream:
+  proxy: ""
+  no_proxy:
+    - localhost
+    - 127.0.0.1
+    - 169.254.169.254
+
+# ==================================================================
+# 12) FORWARDER + SHUTDOWN + DECISION CACHE (low-level tuning)
+# ==================================================================
+# agent: defer (safe defaults)
+forwarder:
+  max_idle_connections: 256
+  max_idle_connections_per_host: 32
+  connection_acquire_timeout_seconds: 5
+
+shutdown:
+  grace_seconds: 30
+
+decisioncache:
+  ttl_seconds: 60

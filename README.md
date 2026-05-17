@@ -12,12 +12,19 @@ resources under controlled, inspectable, policy-governed conditions.
 The proxy is implemented in Go: a single static binary, no runtime
 deps.
 
+- [`SETUP-AGENT.md`](SETUP-AGENT.md) — **start here if an LLM agent
+  is installing trollbridge for you.** Single entry point for
+  agentic onboarding: one file/URL the agent reads, then it walks
+  you through install → configure → run → verify on Linux, macOS,
+  or Windows. Companion YAML at
+  [`config.agentic.yaml`](config.agentic.yaml).
 - [`DESIGN.md`](DESIGN.md) — full design document.
 - [`AGENTS.md`](AGENTS.md) — for coding agents working *on* the
   trollbridge codebase (build, test, conventions).
 - [`PROXY-SETUP-AGENT.md`](PROXY-SETUP-AGENT.md) — self-contained
   instructions for an agent **installing** the trollbridge proxy
-  on a host.
+  on a host (long-form; the agentic single-entry path lives in
+  `SETUP-AGENT.md`).
 - [`CLIENT-SETUP-AGENT.md`](CLIENT-SETUP-AGENT.md) — self-contained
   instructions for an agent **pointing its own egress** at a
   running trollbridge (also fetchable from the running proxy at
@@ -34,6 +41,33 @@ deps.
 - [`packaging/`](packaging/) — systemd unit, Dockerfile, Incus
   cloud-init, firewall snippets.
 
+## Agentic setup (one file, one URL, one command)
+
+If an LLM agent is doing the work, hand it this one URL:
+**`https://github.com/dandriscoll/trollbridge/blob/main/SETUP-AGENT.md`**
+(or, locally, [`SETUP-AGENT.md`](SETUP-AGENT.md)).
+
+The agent reads that single file, asks you a handful of goal-level
+questions (block exfiltration? review every new destination? audit
+only?), and runs the install / configure / verify flow end-to-end
+on Linux, macOS, or Windows. The annotated YAML template at
+[`config.agentic.yaml`](config.agentic.yaml) is the central
+decision surface — every block is tagged so the agent knows what
+to ask, what to default, and what to skip.
+
+For programmatic use, the same plan is queryable from a built
+binary:
+
+```sh
+trollbridge setup-plan --json     # data
+trollbridge setup-plan --doc      # markdown view
+trollbridge init --answers <file> # apply collected answers, no TTY
+trollbridge verify  --json        # done-check after starting the proxy
+```
+
+The flows below are the underlying human-facing paths; the agentic
+flow wraps them.
+
 ## Install
 
 ```sh
@@ -43,6 +77,14 @@ curl -fsSL https://trollbridge.dev/install.sh | sh
 The script picks the right tarball for your OS and arch, verifies the
 release's SHA256SUMS, and installs `trollbridge` to `/usr/local/bin`.
 Run `trollbridge version` to confirm.
+
+**Windows:** the `curl|sh` installer is Linux/macOS only. On
+Windows, download `trollbridge_<version>_windows_amd64.exe` from
+the [releases page](https://github.com/dandriscoll/trollbridge/releases)
+or use the PowerShell snippet in [`SETUP-AGENT.md`](SETUP-AGENT.md).
+Only user-mode is supported on Windows (daemon-mode requires
+Windows-service integration and NTFS ACL enforcement that have
+not landed yet).
 
 ### Verify and install manually
 
