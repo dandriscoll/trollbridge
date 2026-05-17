@@ -46,7 +46,7 @@
 #   - Build failed AFTER bump commit + tag, BEFORE push:
 #       git tag -d vNEW && git reset --hard HEAD~1
 #   - Build failed AFTER push, BEFORE publish:
-#       gh release create vNEW dist/*.tar.gz dist/SHA256SUMS  # finish the publish
+#       gh release create vNEW dist/trollbridge_*.tar.gz dist/trollbridge_*.exe dist/SHA256SUMS  # finish the publish
 #       OR: gh release upload vNEW dist/*  (if release already exists)
 #   - Full unwind of a published release (DESTRUCTIVE; revert is preferred over force-push):
 #       gh release delete vNEW
@@ -337,10 +337,20 @@ build_matrix() {
     for target in "${TARGETS[@]}"; do
         os="${target%/*}"
         arch="${target#*/}"
-        stage="$(mktemp -d)"
         dirname="trollbridge_v${new}_${os}_${arch}"
+        if [[ "$os" == "windows" ]]; then
+            # Ship Windows as a bare .exe (closes #130). Operators
+            # download a single artifact rather than unpacking a tar.gz
+            # for one file. LICENSE and README.md remain in the repo
+            # for browser-side reference.
+            echo "build: ${dirname}.exe" >&2
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+                go build -trimpath -ldflags="$ldflags" \
+                -o "$DIST/${dirname}.exe" ./cmd/trollbridge
+            continue
+        fi
+        stage="$(mktemp -d)"
         binary="trollbridge"
-        [[ "$os" == "windows" ]] && binary="trollbridge.exe"
         mkdir -p "$stage/$dirname"
         echo "build: $dirname" >&2
         CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
@@ -351,7 +361,7 @@ build_matrix() {
         tar -czf "$DIST/$tarname" -C "$stage" "$dirname"
         rm -rf "$stage"
     done
-    (cd "$DIST" && $SHA256_CMD trollbridge_*.tar.gz > SHA256SUMS)
+    (cd "$DIST" && $SHA256_CMD trollbridge_*.tar.gz trollbridge_*.exe > SHA256SUMS)
 }
 
 # ---------- push + publish ----------
@@ -374,7 +384,7 @@ push_and_publish() {
         gh release delete "v${new}" --yes >/dev/null 2>&1 || true
     fi
     echo "publish: creating release v${new}" >&2
-    gh release create "v${new}" --generate-notes "$DIST"/trollbridge_*.tar.gz "$DIST/SHA256SUMS"
+    gh release create "v${new}" --generate-notes "$DIST"/trollbridge_*.tar.gz "$DIST"/trollbridge_*.exe "$DIST/SHA256SUMS"
     echo "release: $(gh release view "v${new}" --json url -q .url)" >&2
 }
 

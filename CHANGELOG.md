@@ -79,6 +79,12 @@ The full set of commits between any two tags is on GitHub at
   anthropic (unchanged), `gpt-4o-mini` for aoai, empty for `other`.
   Operators who type the model name they actually want are
   unaffected.
+- Windows release artifacts now ship as a bare `.exe` instead of a
+  `.tar.gz` containing `trollbridge.exe` (#130). The Linux/macOS
+  release shape is unchanged — those still get
+  `trollbridge_v<X.Y.Z>_<os>_<arch>.tar.gz`. Windows operators with
+  bookmarked tarball URLs from prior releases will need to point at
+  the new `trollbridge_v<X.Y.Z>_windows_<arch>.exe` asset.
 
 ### Forensics
 
