@@ -285,6 +285,12 @@ func TestRunInteractiveInit_HappyPathAllOff(t *testing.T) {
 }
 
 func TestRunInteractiveInit_AOAIPromptsForEndpoint(t *testing.T) {
+	// Force runAzFlow's azAvailable() to return false so the
+	// manual-prompt path the test scripts is byte-identical to
+	// pre-#132 behavior. Without this stub, a test environment
+	// with `az` in PATH would surface the find/create offer and
+	// the scripted input would be consumed as the action choice.
+	defer overrideAzUnavailable()()
 	endpoint := "https://contoso.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-02-15-preview"
 	in := newReader(strings.Join([]string{
 		"user",
@@ -319,6 +325,7 @@ func TestRunInteractiveInit_AOAIPromptsForEndpoint(t *testing.T) {
 // accepting the prompt's default yields gpt-4o-mini and the prompt's
 // "[default]" text reflects it.
 func TestRunInteractiveInit_AOAIDefaultsModelToGPT4oMini(t *testing.T) {
+	defer overrideAzUnavailable()()
 	endpoint := "https://contoso.openai.azure.com/openai/deployments/gpt4omini/chat/completions?api-version=2024-02-15-preview"
 	in := newReader(strings.Join([]string{
 		"user",

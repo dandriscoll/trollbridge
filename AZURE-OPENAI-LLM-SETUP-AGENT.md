@@ -80,6 +80,28 @@ Surface these questions; do not pick silently:
 
 ## Step 1 — Provision (or confirm) the Azure resource
 
+**Shortcut for users with Azure CLI installed:** `trollbridge
+init` detects `az` and offers to find or create an Azure OpenAI
+deployment automatically (since v0.7.13, closes #132). When the
+user picks `aoai` as the provider, the wizard prompts:
+
+```
+   ── Azure CLI detected. trollbridge can find an existing AOAI
+      deployment or create a new one — or skip if you'd rather
+      type the endpoint and key manually.
+   az action (find / create / skip) [skip]:
+```
+
+`find` lists the user's OpenAI accounts + deployments and
+pre-fills the wizard's endpoint URL / model / API key from the
+selection. `create` walks them through resource group + account
+name + region (default `eastus`) + deployment name and runs the
+provisioning. If they pick `skip` (or `az` is not in PATH, or
+they're not logged in), the rest of this step applies.
+
+**Manual path** — when the user can't or won't use the wizard's
+az integration:
+
 **You cannot create an Azure OpenAI resource from inside this
 agent** unless the user has run `az login` and has a
 permissions-equipped Azure CLI. Surface the steps; the user

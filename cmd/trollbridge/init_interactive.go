@@ -141,15 +141,30 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 		case "other":
 			ans.llmModel = ""
 		}
+		// AOAI az-CLI integration (closes #132). When az is installed
+		// AND the operator is logged in, offer to find or create an
+		// Azure OpenAI deployment. On success this pre-fills
+		// llmEndpoint, llmModel, and (user-mode) llmKey; the
+		// subsequent prompts then show the discovered values as
+		// their defaults and the operator presses return to accept.
+		if ans.llmProvider == "aoai" {
+			runAzFlow(r, out, &ans)
+		}
 		ans.llmModel = promptString(r, out, "   model", ans.llmModel)
 		// Endpoint: anthropic uses the template default; aoai/other
-		// have no useful default and must be supplied.
+		// have no useful default and must be supplied. When the az
+		// flow above pre-filled an endpoint, the operator sees it
+		// as the default and can accept or override.
 		if ans.llmProvider != "anthropic" {
-			ep, err := promptRequiredString(r, out, "   endpoint URL")
-			if err != nil {
-				return ans, err
+			if ans.llmEndpoint != "" {
+				ans.llmEndpoint = promptString(r, out, "   endpoint URL", ans.llmEndpoint)
+			} else {
+				ep, err := promptRequiredString(r, out, "   endpoint URL")
+				if err != nil {
+					return ans, err
+				}
+				ans.llmEndpoint = ep
 			}
-			ans.llmEndpoint = ep
 		}
 		// In user-mode init writes the key file inline (no privilege
 		// needed). In daemon-mode the key file lives at /etc/
@@ -157,11 +172,16 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 		// (next-steps document the recipe) — `init` itself runs at no
 		// privilege, regardless of mode.
 		if ans.installMode == "user" {
-			key, err := promptSecret(in, r, out, "   API key (paste; will not be echoed back)")
-			if err != nil {
-				return ans, err
+			// When the az-CLI flow (#132) populated ans.llmKey, skip
+			// the manual paste — the operator already provided
+			// equivalent credentials by way of az.
+			if ans.llmKey == "" {
+				key, err := promptSecret(in, r, out, "   API key (paste; will not be echoed back)")
+				if err != nil {
+					return ans, err
+				}
+				ans.llmKey = key
 			}
-			ans.llmKey = key
 		} else {
 			fmt.Fprintln(out, "   → daemon-mode: write the API key separately on the proxy host as the")
 			fmt.Fprintln(out, "     `trollbridge` user. See the next-steps for the exact recipe.")

@@ -100,6 +100,19 @@ The full set of commits between any two tags is on GitHub at
   `server` / `lists`). Operators alerting on "daemon failed to
   start" should extend their `config_load_failure` query to
   include `startup_failure`.
+- `trollbridge init` interactive wizard now offers to find or
+  create an Azure OpenAI deployment via the `az` CLI when the
+  operator picks `aoai` as the provider (#132). Detection: `az`
+  in PATH AND `az account show` succeeds; otherwise the wizard
+  silently falls back to the manual endpoint / key prompts. The
+  `find` branch lists the operator's existing OpenAI accounts and
+  deployments and pre-fills endpoint / model / (user-mode) API
+  key from the selection. The `create` branch walks them through
+  resource-group + account-name + region (default `eastus`) +
+  deployment-name and provisions via `az cognitiveservices`
+  commands. Operators who want the manual flow pick `skip`. Az
+  must be logged in to the desired subscription before init
+  starts (`az account set --subscription <id>` if multiple).
 
 ### Forensics
 
