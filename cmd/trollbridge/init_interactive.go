@@ -149,6 +149,11 @@ func runInteractiveInit(in io.Reader, out io.Writer) (initAnswers, error) {
 		// their defaults and the operator presses return to accept.
 		if ans.llmProvider == "aoai" {
 			runAzFlow(r, out, &ans)
+			// AOAI routes on the deployment-name component of the
+			// endpoint URL; the `model:` field is informational only.
+			// New AOAI operators conflate the two and pick a model
+			// name the deployment does not serve (#158).
+			fmt.Fprintln(out, "   note: aoai routes on the deployment name in your endpoint URL; the `model:` field is informational.")
 		}
 		ans.llmModel = promptString(r, out, "   model", ans.llmModel)
 		// Endpoint: anthropic uses the template default; aoai/other

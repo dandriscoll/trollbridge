@@ -317,6 +317,19 @@ func TestRunInteractiveInit_AOAIPromptsForEndpoint(t *testing.T) {
 	if ans.llmKey != "sk-azure-test" {
 		t.Errorf("user-mode AOAI flow should collect the API key inline; got %q", ans.llmKey)
 	}
+	// #158: AOAI flow surfaces a one-line note clarifying that the
+	// deployment name in the endpoint URL drives routing, not the
+	// model field. The note must appear between the provider choice
+	// and the model prompt so the operator reads it before answering.
+	transcript := out.String()
+	noteIdx := strings.Index(transcript, "aoai routes on the deployment name")
+	modelIdx := strings.Index(transcript, "   model")
+	if noteIdx < 0 {
+		t.Errorf("AOAI flow missing deployment-vs-model note (#158); transcript:\n%s", transcript)
+	}
+	if modelIdx < 0 || (noteIdx >= 0 && noteIdx >= modelIdx) {
+		t.Errorf("note should precede the model prompt (#158); note=%d model=%d", noteIdx, modelIdx)
+	}
 }
 
 // TestRunInteractiveInit_AOAIDefaultsModelToGPT4oMini closes #131:
