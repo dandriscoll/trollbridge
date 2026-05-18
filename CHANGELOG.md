@@ -9,6 +9,57 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Policy
+
+- `prior_decision` rule clause now matches only human + static-policy
+  prior decisions; LLM-advisor verdicts are filtered out at the
+  recording boundary (#141 — see v0.7.15 entry for the original
+  closure; this release adds the audit-side complement).
+
+### Audit / observability
+
+- `audit.Logger.Close` emits an INFO `audit_logger_close_summary`
+  line at shutdown when the OverflowDrop or level-filter counters
+  are non-zero (#143 part d / #167). Quiet on clean shutdown.
+- `trollbridge decisions` CLI now applies the live `audit_level`
+  filter when reading the audit log (#143 part c / #167). Pre-
+  existing static-policy entries from a prior run with
+  `audit_level=all` are no longer shown when the current setting
+  is `decisions`.
+
+### Telemetry
+
+- `advisor_classified` INFO log line carries `latency_ms` — the
+  provider-side classify-call duration (#137 side item).
+- Digest-ring entries carry `llm_input_hash` so the audit log and
+  digest ring share a single correlation key (#137 side item).
+
+### Reload status
+
+- `reloadstatus.Tracker` keeps per-source state; `Status` gains a
+  `failing_sources` slice (json, omitempty); the TUI badge stacks
+  one entry per failing source when multiple sources are
+  simultaneously failing (#165). `/v1/rules` JSON gains
+  `failing_sources` under the same omitempty rule.
+
+### Test coverage
+
+- E2E tests for the remaining startup_failure branches (audit_level
+  / server / lists) via the `TROLLBRIDGE_TEST_FAIL_STAGE=<stage>`
+  env hook (#146 / #166).
+- Subprocess e2e: `trollbridge logs review` filters static-policy
+  entries (#162).
+- E2E: `audit_level: decisions` filters static-policy entries on
+  disk (#161).
+
+### CI
+
+- New scheduled workflow `install-smoke.yml` walks the README's
+  `curl | sh` install path on Linux + macOS weekly (#152).
+- Cross-platform e2e scratch lane on Windows / macOS via
+  `continue-on-error: true` to surface what fixing the suite there
+  would require (#163 Phase 1).
+
 ## v0.7.15 — 2026-05-18
 
 ### Audit shape
