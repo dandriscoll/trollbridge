@@ -1,0 +1,69 @@
+name: install-smoke
+
+# First-time-reader install smoke test (#152). Walks the README's
+# documented `curl ... install.sh` path against a clean runner so a
+# regression in the installer (trollbridge.dev's install.sh, the
+# release tarball naming, the installed binary's exit behavior)
+# fails CI before it fails an operator.
+#
+# Scheduled weekly + manual; the daily / per-PR matrix would inflate
+# CI cost without adding signal (the README's install command does
+# not change per-PR).
+
+on:
+  schedule:
+    - cron: "0 12 * * 1"  # 12:00 UTC Monday
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install-smoke:
+    name: install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: curl | sh install
+        run: curl -fsSL https://trollbridge.dev/install.sh | sh
+
+      - name: PATH check + version
+        run: |
+          which trollbridge
+          trollbridge version
+
+      - name: quickstart writes yaml + starts proxy
+        run: |
+          set -e
+          # `quickstart` writes a minimal trollbridge.yaml and starts
+          # the proxy. Run it in the background with a deadline so a
+          # hang surfaces as a CI timeout, not a stuck job.
+          ( trollbridge quickstart & echo $! > /tmp/trollbridge.pid ) &
+          QSPID=$!
+          # The daemon binds within ~1s on a clean install; give it
+          # 10s of polling room before giving up.
+          for i in $(seq 1 20); do
+            if nc -z 127.0.0.1 8080 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          # Verify the proxy is listening.
+          nc -z 127.0.0.1 8080 || { echo "proxy did not bind on 127.0.0.1:8080 within 10s"; exit 1; }
+          # Stop the daemon — tear down before the verify step so
+          # subsequent steps run against a known-clean process state.
+          kill $(cat /tmp/trollbridge.pid) 2>/dev/null || true
+          wait $QSPID 2>/dev/null || true
+
+      - name: verify reaches the documented happy-path
+        run: |
+          set -e
+          ( trollbridge quickstart & echo $! > /tmp/trollbridge.pid ) &
+          for i in $(seq 1 20); do
+            if nc -z 127.0.0.1 8080 2>/dev/null; then break; fi
+            sleep 0.5
+          done
+          trollbridge verify --json -c trollbridge.yaml
+          # Cleanup.
+          kill $(cat /tmp/trollbridge.pid) 2>/dev/null || true
