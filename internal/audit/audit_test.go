@@ -2,10 +2,13 @@ package audit
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -362,6 +365,62 @@ func TestLogger_LevelChangeIsObservable(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != "before" {
 		t.Errorf("want exactly the pre-SetLevel entry, got %v", ids)
+	}
+}
+
+// TestLogger_CloseSummaryWhenCountersNonzero closes #143 part d:
+// Logger.Close emits an INFO audit_logger_close_summary line on the
+// operational log when either the OverflowDrop or level-filter
+// counter ended up non-zero, so an operator reading the oplog at
+// shutdown sees the cumulative loss without scraping.
+func TestLogger_CloseSummaryWhenCountersNonzero(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(filepath.Join(dir, "audit.jsonl"), 16, OverflowBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	lg := slog.New(slog.NewTextHandler(&buf, nil))
+	l.SetOpLog(lg)
+
+	// Drive the level-filter counter to a non-zero value.
+	l.SetLevel(LevelDecisions)
+	for i := 0; i < 3; i++ {
+		if err := l.Write(Entry{RequestID: "r", DecisionSource: string(types.SourceRule), Decision: "allow"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "event=audit_logger_close_summary") {
+		t.Errorf("Close did not emit close-summary event:\n%s", got)
+	}
+	if !strings.Contains(got, "level_filtered=3") {
+		t.Errorf("close summary should carry level_filtered=3:\n%s", got)
+	}
+}
+
+// TestLogger_CloseSummaryQuietWhenAllCountersZero — clean shutdown
+// (no drops, no filters) should NOT spam the operational log with
+// a summary entry. Operators tail oplog; the summary is signal only
+// when it carries non-zero numbers.
+func TestLogger_CloseSummaryQuietWhenAllCountersZero(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(filepath.Join(dir, "audit.jsonl"), 16, OverflowBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	lg := slog.New(slog.NewTextHandler(&buf, nil))
+	l.SetOpLog(lg)
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "audit_logger_close_summary") {
+		t.Errorf("close-summary should be quiet when counters are zero; got:\n%s", buf.String())
 	}
 }
 

@@ -264,13 +264,28 @@ func (l *Logger) Dropped() int64 { return l.droppedCounter.Load() }
 // and wonders where the static-policy entries went."
 func (l *Logger) LevelFiltered() int64 { return l.levelFilteredCounter.Load() }
 
-// Close flushes the buffer and closes the underlying file.
+// Close flushes the buffer and closes the underlying file. Emits a
+// final summary log entry naming the counters so an operator
+// reviewing the operational log sees how many entries were dropped
+// (OverflowDrop budget exceeded) or filtered (audit_level) over the
+// daemon's lifetime, without polling /metrics or scraping individual
+// audit-write-failure lines (#143 part d).
 func (l *Logger) Close() error {
 	if l.closed.Swap(true) {
 		return nil
 	}
 	close(l.ch)
 	l.wg.Wait()
+	if lg := l.opLog.Load(); lg != nil {
+		dropped := l.droppedCounter.Load()
+		filtered := l.levelFilteredCounter.Load()
+		if dropped > 0 || filtered > 0 {
+			lg.Info("audit logger closed",
+				"event", "audit_logger_close_summary",
+				"overflow_dropped", dropped,
+				"level_filtered", filtered)
+		}
+	}
 	return nil
 }
 
