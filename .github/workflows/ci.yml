@@ -44,11 +44,18 @@ jobs:
         run: go test ./...
 
       # e2e tests build and exercise the trollbridge binary as a
-      # subprocess. Linux-only for now: the suite is verified there,
-      # not yet on the Windows/macOS runners (#124). Extending it to
-      # the full matrix is a tracked follow-up.
+      # subprocess. Linux is the canonical lane (the suite is
+      # verified there). Windows/macOS run an `continue-on-error`
+      # scratch lane below to surface what fixing the suite there
+      # would require — promotion to the canonical matrix is gated
+      # on observed-green at least once (#163).
       - name: go test (e2e)
         if: matrix.os == 'ubuntu-latest'
+        run: go test -tags=e2e ./...
+
+      - name: go test (e2e, scratch — Windows/macOS, #163)
+        if: matrix.os != 'ubuntu-latest'
+        continue-on-error: true
         run: go test -tags=e2e ./...
 
       # Hardcoded-model-string lint (#155). Linux only — the check
