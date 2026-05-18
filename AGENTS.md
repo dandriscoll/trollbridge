@@ -66,6 +66,8 @@ go test -tags=e2e ./cmd/trollbridge/...       # full CLI E2E: compiles binary, s
                                               #   sends real proxied requests, checks audit log
 go test -tags=twinslive ./internal/advisor/   # wire-layer against anthropic.twins.la / aoai.twins.la
                                               #   needs ANTHROPIC_TWIN_API_KEY (and AOAI_TWIN_*)
+go test -tags=live_az ./cmd/trollbridge/      # live `az` CLI shape pin (#148)
+                                              #   needs az on PATH + `az login`
 make vet
 make tidy
 make check-model-strings                      # lint hardcoded model strings (#155)
