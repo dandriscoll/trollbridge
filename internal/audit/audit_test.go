@@ -364,3 +364,51 @@ func TestLogger_LevelChangeIsObservable(t *testing.T) {
 		t.Errorf("want exactly the pre-SetLevel entry, got %v", ids)
 	}
 }
+
+// TestLogger_LevelFilteredCounter closes #143 part a: an operator
+// can observe how many entries the audit-level filter dropped, so
+// "where did my static-policy entries go?" is one read away from a
+// real number.
+func TestLogger_LevelFilteredCounter(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(filepath.Join(dir, "audit.jsonl"), 16, OverflowBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	if got := l.LevelFiltered(); got != 0 {
+		t.Errorf("zero state: LevelFiltered = %d, want 0", got)
+	}
+
+	// LevelDecisions filters out static-policy entries.
+	l.SetLevel(LevelDecisions)
+	if err := l.Write(Entry{RequestID: "r1", DecisionSource: string(types.SourceRule), Decision: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Write(Entry{RequestID: "r2", DecisionSource: string(types.SourceAllowList), Decision: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.LevelFiltered(); got != 2 {
+		t.Errorf("after 2 static-policy drops: LevelFiltered = %d, want 2", got)
+	}
+
+	// LevelNone drops everything.
+	l.SetLevel(LevelNone)
+	if err := l.Write(Entry{RequestID: "r3", DecisionSource: string(types.SourceLLMAdvisor), Decision: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.LevelFiltered(); got != 3 {
+		t.Errorf("after LevelNone drop: LevelFiltered = %d, want 3", got)
+	}
+
+	// Back to LevelAll — counter does not retroactively change; new
+	// writes don't increment.
+	l.SetLevel(LevelAll)
+	if err := l.Write(Entry{RequestID: "r4", DecisionSource: string(types.SourceRule), Decision: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := l.LevelFiltered(); got != 3 {
+		t.Errorf("after LevelAll write: LevelFiltered = %d, want 3 (counter must not retro-increment)", got)
+	}
+}

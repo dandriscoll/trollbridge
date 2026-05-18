@@ -141,6 +141,16 @@ func newRunCmd() *cobra.Command {
 				return &runtimeErr{err}
 			}
 			auditLogger.SetLevel(lvl)
+			// #143 part b: when the audit-level filter is engaged,
+			// emit one INFO startup notice so an operator who later
+			// looks at the audit log and sees fewer entries than
+			// expected sees the cause inline.
+			if lvl != audit.LevelAll {
+				opLog.Info("audit-level filter engaged",
+					"event", "audit_level_filter_active",
+					"audit_level", lvl.String(),
+					"note", "static-policy entries are filtered out; see audit.LevelFiltered() / `trollbridge logs review` for the full set")
+			}
 			srv, err := server.NewWithLoggers(cfg, engine, auditLogger, opLog)
 			if err != nil {
 				opLog.Error("startup failed",

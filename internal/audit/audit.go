@@ -148,6 +148,14 @@ type Logger struct {
 
 	droppedCounter atomic.Int64
 
+	// levelFilteredCounter counts entries dropped by the audit-level
+	// filter (#143 part a). Distinct from droppedCounter, which
+	// tracks OverflowDrop budget-exceeded drops — level-filter drops
+	// are policy-driven, not buffer-pressure-driven, so an operator
+	// triaging "where did my audit entries go?" needs to see them
+	// separately.
+	levelFilteredCounter atomic.Int64
+
 	opLog atomic.Pointer[slog.Logger]
 
 	// level is the operator-controlled emission filter (#113).
@@ -207,11 +215,15 @@ func (l *Logger) Write(e Entry) error {
 	}
 	// Level filter (#113). Drop before enqueue so the buffer
 	// budget is not spent on entries that will never be written.
+	// Filter-drops increment levelFilteredCounter so an operator
+	// can confirm filtering is active vs. silently lost (#143).
 	switch Level(l.level.Load()) {
 	case LevelNone:
+		l.levelFilteredCounter.Add(1)
 		return nil
 	case LevelDecisions:
 		if !types.DecisionSource(e.DecisionSource).IsHumanOrLLM() {
+			l.levelFilteredCounter.Add(1)
 			return nil
 		}
 	}
@@ -244,6 +256,13 @@ func (l *Logger) Write(e Entry) error {
 
 // Dropped returns the number of dropped entries (for OverflowDrop).
 func (l *Logger) Dropped() int64 { return l.droppedCounter.Load() }
+
+// LevelFiltered returns the number of entries dropped by the
+// audit-level filter (#143 part a). Distinct from Dropped(), which
+// is buffer-pressure-driven; this counter is policy-driven and is
+// the right metric for "operator changed audit_level to decisions
+// and wonders where the static-policy entries went."
+func (l *Logger) LevelFiltered() int64 { return l.levelFilteredCounter.Load() }
 
 // Close flushes the buffer and closes the underlying file.
 func (l *Logger) Close() error {
