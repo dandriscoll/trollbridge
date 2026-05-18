@@ -34,8 +34,19 @@ func NewHistory(capacity int) *History {
 
 // Record appends a decision to the history. Oldest entries are
 // dropped when the buffer is full.
+//
+// LLM-sourced decisions are deliberately NOT recorded (#141): the
+// prior_decision match clause reads this surface, and matching a
+// prior LLM verdict would create a second unaudited LLM-feedback
+// path (the advisor decides once, a deterministic rule re-applies
+// that decision later without re-consulting). prior_decision is
+// scoped to human + static-policy decisions; the digest ring is
+// the audit surface for LLM verdicts.
 func (h *History) Record(req *types.RequestEvent, d types.Decision, when time.Time) {
 	if h == nil {
+		return
+	}
+	if d.Source == types.SourceLLMAdvisor {
 		return
 	}
 	e := HistoryEntry{
