@@ -232,6 +232,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		KnownModifiers:  modifierSetForAdvisor(),
 		Directives:      cfg.LLM.Directives,
 		Mode:            advisorMode,
+		ModelIdentifier: advisorModelIdentifier(cfg.LLM),
 	}
 	var prov advisor.Provider
 	if cfg.LLM.Enabled {
@@ -1297,6 +1298,22 @@ func buildAdvisorProvider(llm config.LLM, opLog *slog.Logger) advisor.Provider {
 		Translator: translator,
 		OpLog:      opLog,
 	}
+}
+
+// advisorModelIdentifier returns the operator-visible identifier the
+// advisor logs as the `model` attribute on consulted / classified
+// lines (#157). For AOAI the canonical answer is the deployment name
+// embedded in the endpoint URL — routing happens on the deployment,
+// not the `model:` config field. For every other provider, `llm.Model`
+// is the right identifier. Falls back to `llm.Model` for AOAI when
+// the deployment cannot be parsed (Responses API, bare resource).
+func advisorModelIdentifier(llm config.LLM) string {
+	if strings.EqualFold(strings.TrimSpace(llm.Provider), "aoai") {
+		if dep := advisor.AOAIDeploymentFromURL(llm.Endpoint); dep != "" {
+			return dep
+		}
+	}
+	return strings.TrimSpace(llm.Model)
 }
 
 // rawPatterns returns the raw line text of every pattern on the

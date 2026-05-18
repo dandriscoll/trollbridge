@@ -94,3 +94,27 @@ func NormalizeAOAIEndpoint(raw string) (canonical, hint string, kind AOAIEndpoin
 	}
 	return canonical, hint, kind
 }
+
+// AOAIDeploymentFromURL returns the deployment name embedded in an
+// AOAI chat-completions URL, e.g. "gpt-4o-mini" for
+// `https://<resource>.openai.azure.com/openai/deployments/gpt-4o-mini/chat/completions`.
+// Returns "" when the URL has no deployment segment (Responses API,
+// bare resource, malformed input). Used by the advisor's log lines
+// to attribute requests to a deployment when an operator runs
+// multiple deployments (#157).
+func AOAIDeploymentFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	const marker = "/openai/deployments/"
+	i := strings.Index(u.Path, marker)
+	if i < 0 {
+		return ""
+	}
+	rest := u.Path[i+len(marker):]
+	if j := strings.Index(rest, "/"); j >= 0 {
+		return rest[:j]
+	}
+	return rest
+}

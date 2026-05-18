@@ -96,6 +96,16 @@ type Config struct {
 	// from cfg.LLM.Mode (with AOAI research-mode fallback applied
 	// at server bootstrap). Defaults to ModeReview when empty.
 	Mode string
+
+	// ModelIdentifier names the upstream model or AOAI deployment
+	// the advisor talks to. Surfaced as the `model` attribute on
+	// `advisor_consulted` / `advisor_classified` log lines so an
+	// operator running multiple deployments (or multiple advisor
+	// configs across reloads) can attribute each entry (#157). For
+	// AOAI this is the deployment-name parsed from the endpoint
+	// URL; for Anthropic / other providers it is `llm.Model`.
+	// Empty string omits the attribute.
+	ModelIdentifier string
 }
 
 // Service is the concrete component the server consults. It owns
@@ -238,14 +248,19 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 	}
 
 	if s.opLog != nil {
-		s.opLog.Info("advisor consulted",
+		args := []any{
 			"event", oplog.EventAdvisorConsulted,
 			"request_id", req.ID,
 			"identity", req.IdentityID,
 			"method", req.Method,
 			"scheme", req.Scheme,
 			"host", req.Host,
-			"port", req.Port)
+			"port", req.Port,
+		}
+		if s.cfg.ModelIdentifier != "" {
+			args = append(args, "model", s.cfg.ModelIdentifier)
+		}
+		s.opLog.Info("advisor consulted", args...)
 	}
 	cctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
@@ -268,7 +283,7 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 		}, ""
 	}
 	if s.opLog != nil {
-		s.opLog.Info("advisor classified",
+		args := []any{
 			"event", oplog.EventAdvisorClassified,
 			"request_id", req.ID,
 			"host", req.Host,
@@ -276,7 +291,12 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 			"confidence", string(out.Confidence),
 			"scope", out.Scope,
 			"advisor_id", advisorID,
-			"reason", out.Reason)
+			"reason", out.Reason,
+		}
+		if s.cfg.ModelIdentifier != "" {
+			args = append(args, "model", s.cfg.ModelIdentifier)
+		}
+		s.opLog.Info("advisor classified", args...)
 	}
 	s.recordDigest(req, DigestOutcomeClassified, string(d.Effect), string(out.Confidence), advisorID, out.Reason)
 	s.cache.put(cacheKey, cacheValue{decision: d, advisorID: advisorID})

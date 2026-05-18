@@ -190,6 +190,60 @@ func TestService_LogsConsultedAndClassified(t *testing.T) {
 	}
 }
 
+// TestService_LogsCarryModelIdentifierWhenConfigured asserts that
+// when Config.ModelIdentifier is set, both `advisor_consulted` and
+// `advisor_classified` carry the value as the `model` attribute
+// (#157). Without an identifier, the attribute is omitted.
+func TestService_LogsCarryModelIdentifierWhenConfigured(t *testing.T) {
+	t.Run("identifier-set", func(t *testing.T) {
+		log := &recordingLogger{}
+		prov := &stubProvider{out: Output{Effect: "allow", Scope: "once", Confidence: "high"}}
+		s := New(Config{
+			Enabled:         true,
+			KnownModifiers:  map[string]bool{},
+			Timeout:         time.Second,
+			CacheTTL:        time.Minute,
+			ModelIdentifier: "gpt-4o-mini-deploy",
+		}, prov)
+		s.SetLogger(log)
+		req := &types.RequestEvent{ID: "req-id-1", Method: "GET", Host: "example.com", Path: "/", IdentityID: "id-1"}
+		_, _ = s.Classify(context.Background(), req, "v1", nil, nil)
+		infoCalls := log.callsAtLevel("info")
+		if len(infoCalls) != 2 {
+			t.Fatalf("want 2 Info calls, got %d (%v)", len(infoCalls), log.calls)
+		}
+		for i, c := range infoCalls {
+			if !hasArg(c.args, "model", "gpt-4o-mini-deploy") {
+				t.Errorf("Info[%d]: missing model=gpt-4o-mini-deploy; args=%v", i, c.args)
+			}
+		}
+	})
+	t.Run("identifier-empty-omits-attribute", func(t *testing.T) {
+		log := &recordingLogger{}
+		prov := &stubProvider{out: Output{Effect: "allow", Scope: "once", Confidence: "high"}}
+		s := New(Config{
+			Enabled:        true,
+			KnownModifiers: map[string]bool{},
+			Timeout:        time.Second,
+			CacheTTL:       time.Minute,
+		}, prov)
+		s.SetLogger(log)
+		req := &types.RequestEvent{ID: "req-id-2", Method: "GET", Host: "example.com", Path: "/", IdentityID: "id-1"}
+		_, _ = s.Classify(context.Background(), req, "v1", nil, nil)
+		infoCalls := log.callsAtLevel("info")
+		if len(infoCalls) != 2 {
+			t.Fatalf("want 2 Info calls, got %d (%v)", len(infoCalls), log.calls)
+		}
+		for i, c := range infoCalls {
+			for j := 0; j+1 < len(c.args); j += 2 {
+				if k, ok := c.args[j].(string); ok && k == "model" {
+					t.Errorf("Info[%d]: unexpected model attribute when identifier empty; args=%v", i, c.args)
+				}
+			}
+		}
+	})
+}
+
 // TestService_LogsConsultedButNotClassifiedOnFailure asserts that
 // a wire failure produces consulted+warn but not classified.
 func TestService_LogsConsultedButNotClassifiedOnFailure(t *testing.T) {
