@@ -72,3 +72,70 @@ func TestTracker_GetIsCopyOut(t *testing.T) {
 		t.Error("Get returned an aliased pointer; tracker state was mutated by caller")
 	}
 }
+
+// TestTracker_MultiSourceFailingSources closes #165: when two
+// sources fail simultaneously (config first, then rules), neither
+// failure overwrites the other — both surface in FailingSources()
+// and in Get().FailingSources. When a later success clears one
+// source, the surviving failure stays in the list.
+func TestTracker_MultiSourceFailingSources(t *testing.T) {
+	var tr Tracker
+
+	tr.Record("config", errors.New("bad yaml"))
+	tr.Record("rules", errors.New("invalid host pattern"))
+
+	got := tr.FailingSources()
+	if len(got) != 2 || got[0] != "config" || got[1] != "rules" {
+		t.Fatalf("FailingSources after config+rules fail: got %v, want [config rules]", got)
+	}
+
+	snap := tr.Get()
+	if len(snap.FailingSources) != 2 || snap.FailingSources[0] != "config" || snap.FailingSources[1] != "rules" {
+		t.Errorf("Get().FailingSources: got %v, want [config rules]", snap.FailingSources)
+	}
+	// Legacy single-source fields reflect the most-recent record.
+	if snap.LastSource != "rules" {
+		t.Errorf("LastSource = %q, want rules", snap.LastSource)
+	}
+
+	// Fix `config`; rules stays failing.
+	tr.Record("config", nil)
+	got = tr.FailingSources()
+	if len(got) != 1 || got[0] != "rules" {
+		t.Errorf("after config success: FailingSources = %v, want [rules]", got)
+	}
+
+	// Fix rules too; everything clean.
+	tr.Record("rules", nil)
+	got = tr.FailingSources()
+	if got != nil {
+		t.Errorf("after all-clean: FailingSources = %v, want nil", got)
+	}
+	if snap := tr.Get(); snap.FailingSources != nil {
+		t.Errorf("Get().FailingSources after all-clean = %v, want nil", snap.FailingSources)
+	}
+}
+
+// TestTracker_SourcesSnapshot confirms the per-source map is a
+// caller-owned copy that surfaces every source the tracker has
+// recorded, regardless of whether they're currently failing.
+func TestTracker_SourcesSnapshot(t *testing.T) {
+	var tr Tracker
+	tr.Record("config", nil)
+	tr.Record("rules", errors.New("oops"))
+	src := tr.Sources()
+	if len(src) != 2 {
+		t.Fatalf("Sources len = %d, want 2", len(src))
+	}
+	if src["config"].LastError != "" {
+		t.Errorf("config entry should be clean")
+	}
+	if src["rules"].LastError != "oops" {
+		t.Errorf("rules entry should carry the error")
+	}
+	// Mutating the copy must not affect the tracker.
+	src["rules"] = Status{LastError: "MUTATED"}
+	if tr.Sources()["rules"].LastError != "oops" {
+		t.Error("Sources() returned an aliased map")
+	}
+}

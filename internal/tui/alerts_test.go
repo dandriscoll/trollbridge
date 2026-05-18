@@ -170,6 +170,19 @@ func TestAlerts_PaneLabelCarriesReloadFailedBadge(t *testing.T) {
 			t.Errorf("source=%q badge missing %q: %q", src, want, named)
 		}
 	}
+
+	// #165: when multiple sources fail simultaneously, the badge
+	// stacks one entry per failing source. Tracker's FailingSources
+	// is pre-sorted; the badge preserves order.
+	stacked := formatOpsPaneLabelText(5, 0, true, "rules", "config", "rules")
+	for _, want := range []string{"config reload failed", "rules reload failed"} {
+		if !strings.Contains(stacked, want) {
+			t.Errorf("multi-source badge missing %q in: %q", want, stacked)
+		}
+	}
+	if strings.Count(stacked, "reload failed") != 2 {
+		t.Errorf("multi-source badge should stack exactly two entries, got: %q", stacked)
+	}
 }
 
 func TestAlerts_DefaultOptionsChimeOn(t *testing.T) {

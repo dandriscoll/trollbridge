@@ -796,7 +796,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			pending++
 		}
 	}
-	label := formatPaneLabel(formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != "", m.ReloadStatus.LastSource), focused)
+	label := formatPaneLabel(formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != "", m.ReloadStatus.LastSource, m.ReloadStatus.FailingSources...), focused)
 	rightHint := ""
 	if focused {
 		// Panel-discovery hint when the bottom is hidden; Tab/hide cue
@@ -984,18 +984,34 @@ func colorizeURLForRow(cell, url string) string {
 // from the file on disk. Both badges can fire together.
 // formatPaneLabel further wraps the result with the pane's focus
 // styling.
-func formatOpsPaneLabelText(total, pending int, reloadFailed bool, reloadSource string) string {
+// reloadStatusForBadge captures the data the badge needs without
+// pulling reloadstatus.Status into the format-function's signature.
+// failingSources is non-nil when multiple sources are simultaneously
+// failing (#165); the legacy reloadSource + reloadFailed pair
+// remains so single-source render still works for callers that
+// don't have the multi-source surface yet.
+func formatOpsPaneLabelText(total, pending int, reloadFailed bool, reloadSource string, failingSources ...string) string {
 	label := fmt.Sprintf("trollbridge operations — %d total · %d pending", total, pending)
 	if pending > 0 {
 		// \x1b[1;31m = bold red. The bell-glyph prefix doubles as a
 		// no-color affordance for terminals that strip ANSI.
 		label = fmt.Sprintf("trollbridge operations — %d total · \x1b[1;31m␇ %d pending\x1b[22;39m", total, pending)
 	}
+	// Multi-source path (#165): when the Tracker reports several
+	// simultaneously-failing sources, stack one badge per source so
+	// the operator triages from the badge alone instead of opening
+	// the oplog. The list is pre-sorted by the Tracker.
+	if len(failingSources) > 1 {
+		for _, src := range failingSources {
+			label += fmt.Sprintf(" · \x1b[1;31m␇ %s reload failed\x1b[22;39m", src)
+		}
+		return label
+	}
 	if reloadFailed {
-		// Embed the failing source name when known so the operator
-		// can triage without digging into the oplog (#145). Falls
-		// back to the bare badge for legacy call paths or when the
-		// Tracker did not record a source.
+		// Single-source path: embed the failing source name when
+		// known so the operator can triage without digging into the
+		// oplog (#145). Falls back to the bare badge for legacy
+		// call paths or when the Tracker did not record a source.
 		switch reloadSource {
 		case "config", "rules", "lists":
 			label += fmt.Sprintf(" · \x1b[1;31m␇ %s reload failed\x1b[22;39m", reloadSource)
@@ -1086,7 +1102,7 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			pending++
 		}
 	}
-	header := formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != "", m.ReloadStatus.LastSource)
+	header := formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != "", m.ReloadStatus.LastSource, m.ReloadStatus.FailingSources...)
 	if m.Focused == PaneApprovals {
 		b.WriteString(boldLine("▶ "+header, m.Cols))
 	} else {
