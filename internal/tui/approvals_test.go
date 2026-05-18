@@ -696,3 +696,37 @@ func first(s string, n int) string {
 	}
 	return s[:n]
 }
+
+// TestFormatOpRow_StructureAndContent locks the column structure of
+// the shared formatOpRow helper (#142). Both renderApprovalsPane and
+// renderApprovalsPaneNoBorder call this helper; a regression that
+// drops, reorders, or swaps a column fails this test before the
+// visual render tests do.
+func TestFormatOpRow_StructureAndContent(t *testing.T) {
+	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
+	op := DisplayedOp{
+		Op: opstream.Op{
+			Method:    "GET",
+			URL:       "https://example.com/path",
+			Status:    "200",
+			UpdatedAt: now.Add(-2 * time.Second),
+		},
+		Count: 1,
+	}
+	row := formatOpRow(op, 7, 30, 11, now)
+	if !strings.Contains(row, "GET") {
+		t.Errorf("missing method; row=%q", row)
+	}
+	if !strings.Contains(row, "example.com/path") {
+		t.Errorf("missing URL; row=%q", row)
+	}
+	if !strings.Contains(row, "200") {
+		t.Errorf("missing status code 200; row=%q", row)
+	}
+	mi := strings.Index(row, "GET")
+	ui := strings.Index(row, "example.com")
+	si := strings.Index(row, "200")
+	if !(mi < ui && ui < si) {
+		t.Errorf("column ordering broken: method=%d url=%d status=%d row=%q", mi, ui, si, row)
+	}
+}

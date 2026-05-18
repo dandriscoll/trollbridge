@@ -838,15 +838,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			if used >= bodyLines {
 				break
 			}
-			urlCell := runeTrunc(o.URL, urlW)
-			urlCellPadded := padRight(urlCell, urlW)
-			row := fmt.Sprintf(" %-*s %s %s %-*s %s",
-				methodW, runeTrunc(o.Method, methodW),
-				colorizeURLForRow(urlCellPadded, o.URL),
-				brailleCounter(o.Count),
-				statusW+8, runeTrunc(colorizeStatus(o.Status), statusW+8),
-				formatOpTime(o.UpdatedAt, now),
-			)
+			row := formatOpRow(o, methodW, urlW, statusW+8, now)
 			row = padRightVisible(row, inner)
 			if i == m.Selected {
 				row = "\x1b[7m" + row + "\x1b[0m"
@@ -894,6 +886,32 @@ func formatGeneralizeOffer(o GeneralizeOffer) string {
 	return fmt.Sprintf(
 		"allowed %s %s — generalize? [1]all methods  [2]all URLs on host  [3]both  (any other key skips)",
 		o.Method, o.URL)
+}
+
+// formatOpRow renders one approvals-pane row for op `o` with the
+// given per-column widths. Both the bordered and no-border render
+// paths call this — extracting the shared format prevents the
+// drift the two render functions accumulated before (#142). The
+// caller is responsible for outer padding (`padRightVisible` or
+// `bodyLine`) and for the inverse-highlight wrap on the selected
+// row; this helper produces only the column-formatted row content.
+//
+// `statusW` is the *byte* width passed to the `%-*s` verb that
+// formats the colorized status cell; ANSI escapes inflate the
+// byte length beyond the visible width, so the bordered path
+// passes `statusW+8` (visible width plus typical ANSI overhead)
+// while the no-border path passes `statusW` (visible width only)
+// and relies on `padRightVisible` to fix outer padding.
+func formatOpRow(o DisplayedOp, methodW, urlW, statusW int, now time.Time) string {
+	urlCell := runeTrunc(o.URL, urlW)
+	urlCellPadded := padRight(urlCell, urlW)
+	return fmt.Sprintf(" %-*s %s %s %-*s %s",
+		methodW, runeTrunc(o.Method, methodW),
+		colorizeURLForRow(urlCellPadded, o.URL),
+		brailleCounter(o.Count),
+		statusW, runeTrunc(colorizeStatus(o.Status), statusW),
+		formatOpTime(o.UpdatedAt, now),
+	)
 }
 
 // brailleCounter returns a single-rune Braille glyph whose dot count
@@ -1092,15 +1110,7 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			if used >= bodyLines {
 				break
 			}
-			urlCell := runeTrunc(o.URL, urlW)
-			urlCellPadded := padRight(urlCell, urlW)
-			row := fmt.Sprintf(" %-*s %s %s %-*s %s",
-				methodW, runeTrunc(o.Method, methodW),
-				colorizeURLForRow(urlCellPadded, o.URL),
-				brailleCounter(o.Count),
-				statusW, colorizeStatus(o.Status),
-				formatOpTime(o.UpdatedAt, now),
-			)
+			row := formatOpRow(o, methodW, urlW, statusW, now)
 			if i == m.Selected {
 				b.WriteString("\x1b[7m")
 				b.WriteString(padRightVisible(row, m.Cols))
