@@ -39,6 +39,10 @@ llm-test:        ## Run LLM-advisor bundles against the live LLM (set TROLLBRIDG
 vet:             ## go vet
 	$(GO) vet $(PKG)
 
+.PHONY: check-model-strings
+check-model-strings: ## Lint for hardcoded model identifiers (closes #155)
+	scripts/check-model-strings.sh
+
 .PHONY: tidy
 tidy:            ## go mod tidy
 	$(GO) mod tidy

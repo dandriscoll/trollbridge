@@ -50,3 +50,10 @@ jobs:
       - name: go test (e2e)
         if: matrix.os == 'ubuntu-latest'
         run: go test -tags=e2e ./...
+
+      # Hardcoded-model-string lint (#155). Linux only — the check
+      # is shell-script-based and would behave identically on every
+      # runner; one lane is the right scope.
+      - name: lint hardcoded model strings
+        if: matrix.os == 'ubuntu-latest'
+        run: scripts/check-model-strings.sh
