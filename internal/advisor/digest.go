@@ -39,6 +39,11 @@ type Digest struct {
 	AdvisorID  string    `json:"advisor_id,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
 	Outcome    string    `json:"outcome"`
+	// LLMInputHash is the hash of the advisor's request payload,
+	// shared with the audit entry that triggered the Classify call.
+	// Lets an operator grep across the digest ring and the audit
+	// log with a single key to correlate one decision (#137).
+	LLMInputHash string `json:"llm_input_hash,omitempty"`
 }
 
 // DigestRing is a bounded, append-only ring of recent Digest entries.

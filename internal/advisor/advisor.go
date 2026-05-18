@@ -174,19 +174,28 @@ func (s *Service) recordDigest(req *types.RequestEvent, outcome, effect, confide
 	if s == nil || s.digests == nil || req == nil {
 		return
 	}
+	// LLM input hash is set on the request by the server before
+	// calling Classify (see #137 side item). The header carries
+	// the same value the audit entry records, so audit↔digest
+	// correlation is one grep away.
+	inputHash := ""
+	if req.Headers != nil {
+		inputHash = req.Headers.Get("X-Trollbridge-LLM-Input-Hash")
+	}
 	s.digests.Add(Digest{
-		Timestamp:  time.Now().UTC(),
-		RequestID:  req.ID,
-		Method:     req.Method,
-		Scheme:     req.Scheme,
-		Host:       req.Host,
-		Port:       req.Port,
-		Path:       req.Path,
-		Effect:     effect,
-		Confidence: confidence,
-		AdvisorID:  advisorID,
-		Reason:     reason,
-		Outcome:    outcome,
+		Timestamp:    time.Now().UTC(),
+		RequestID:    req.ID,
+		Method:       req.Method,
+		Scheme:       req.Scheme,
+		Host:         req.Host,
+		Port:         req.Port,
+		Path:         req.Path,
+		Effect:       effect,
+		Confidence:   confidence,
+		AdvisorID:    advisorID,
+		Reason:       reason,
+		Outcome:      outcome,
+		LLMInputHash: inputHash,
 	})
 }
 
@@ -264,7 +273,9 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 	}
 	cctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
+	classifyStart := time.Now()
 	out, err := s.prov.Classify(cctx, in)
+	classifyLatency := time.Since(classifyStart)
 	if err != nil {
 		s.logFailure(err, req)
 		d := s.unavailableDecision("advisor unavailable: " + err.Error())
@@ -292,6 +303,10 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 			"scope", out.Scope,
 			"advisor_id", advisorID,
 			"reason", out.Reason,
+			// #137 side item: latency_ms surfaces the classify
+			// round-trip duration so an operator triaging slow
+			// classifications doesn't need to subtract timestamps.
+			"latency_ms", classifyLatency.Milliseconds(),
 		}
 		if s.cfg.ModelIdentifier != "" {
 			args = append(args, "model", s.cfg.ModelIdentifier)

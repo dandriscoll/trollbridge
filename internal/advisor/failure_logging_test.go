@@ -242,6 +242,35 @@ func TestService_LogsCarryModelIdentifierWhenConfigured(t *testing.T) {
 			}
 		}
 	})
+	t.Run("classified-line-carries-latency-ms", func(t *testing.T) {
+		log := &recordingLogger{}
+		prov := &stubProvider{out: Output{Effect: "allow", Scope: "once", Confidence: "high"}}
+		s := New(Config{
+			Enabled:        true,
+			KnownModifiers: map[string]bool{},
+			Timeout:        time.Second,
+			CacheTTL:       time.Minute,
+		}, prov)
+		s.SetLogger(log)
+		req := &types.RequestEvent{ID: "req-latency", Method: "GET", Host: "example.com", Path: "/", IdentityID: "id-1"}
+		_, _ = s.Classify(context.Background(), req, "v1", nil, nil)
+		infoCalls := log.callsAtLevel("info")
+		if len(infoCalls) != 2 {
+			t.Fatalf("want 2 Info calls, got %d", len(infoCalls))
+		}
+		// `advisor_classified` is the second Info line; it must
+		// carry the latency_ms attribute (#137 side item).
+		hasLatency := false
+		for i := 0; i+1 < len(infoCalls[1].args); i += 2 {
+			if k, ok := infoCalls[1].args[i].(string); ok && k == "latency_ms" {
+				hasLatency = true
+				break
+			}
+		}
+		if !hasLatency {
+			t.Errorf("classified line missing latency_ms attribute; args=%v", infoCalls[1].args)
+		}
+	})
 }
 
 // TestService_LogsConsultedButNotClassifiedOnFailure asserts that
