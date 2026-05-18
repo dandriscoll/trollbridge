@@ -106,7 +106,7 @@ func TestAlerts_BellKeyTogglesChime(t *testing.T) {
 // ANSI wrap around the pending count when pending > 0. Closes the
 // #72 "very distinct visual indication" requirement.
 func TestAlerts_PaneLabelCarriesVisualIndicatorWhenPending(t *testing.T) {
-	withPending := formatOpsPaneLabelText(5, 2, false)
+	withPending := formatOpsPaneLabelText(5, 2, false, "")
 	if !strings.Contains(withPending, "\x1b[1;31m") {
 		t.Errorf("label missing bold-red ANSI escape when pending>0: %q", withPending)
 	}
@@ -117,7 +117,7 @@ func TestAlerts_PaneLabelCarriesVisualIndicatorWhenPending(t *testing.T) {
 		t.Errorf("label does not name the count: %q", withPending)
 	}
 
-	noPending := formatOpsPaneLabelText(5, 0, false)
+	noPending := formatOpsPaneLabelText(5, 0, false, "")
 	if strings.Contains(noPending, "\x1b[1;31m") {
 		t.Errorf("label carries bold-red ANSI when pending=0: %q", noPending)
 	}
@@ -132,7 +132,7 @@ func TestAlerts_PaneLabelCarriesVisualIndicatorWhenPending(t *testing.T) {
 // notices their edit did not take. Independent of the pending-count
 // indicator — both can fire together.
 func TestAlerts_PaneLabelCarriesReloadFailedBadge(t *testing.T) {
-	withReloadFail := formatOpsPaneLabelText(5, 0, true)
+	withReloadFail := formatOpsPaneLabelText(5, 0, true, "")
 	if !strings.Contains(withReloadFail, "reload failed") {
 		t.Errorf("label missing `reload failed` text: %q", withReloadFail)
 	}
@@ -144,7 +144,7 @@ func TestAlerts_PaneLabelCarriesReloadFailedBadge(t *testing.T) {
 	}
 
 	// Pending + reload-failed together: both badges present.
-	both := formatOpsPaneLabelText(5, 3, true)
+	both := formatOpsPaneLabelText(5, 3, true, "")
 	if !strings.Contains(both, "3 pending") {
 		t.Errorf("combined label missing pending count: %q", both)
 	}
@@ -153,9 +153,22 @@ func TestAlerts_PaneLabelCarriesReloadFailedBadge(t *testing.T) {
 	}
 
 	// Clean state: no badge in either form.
-	clean := formatOpsPaneLabelText(5, 0, false)
+	clean := formatOpsPaneLabelText(5, 0, false, "")
 	if strings.Contains(clean, "reload failed") {
 		t.Errorf("clean label carries reload-failed text: %q", clean)
+	}
+
+	// #145: when a source name is known, the badge names it inline
+	// so operators can triage without opening the oplog. Cover each
+	// of the three sources the Tracker records ("config", "rules",
+	// "lists"). Unknown / legacy-empty source falls back to the
+	// bare badge (already covered above).
+	for _, src := range []string{"config", "rules", "lists"} {
+		named := formatOpsPaneLabelText(5, 0, true, src)
+		want := src + " reload failed"
+		if !strings.Contains(named, want) {
+			t.Errorf("source=%q badge missing %q: %q", src, want, named)
+		}
 	}
 }
 

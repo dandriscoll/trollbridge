@@ -796,7 +796,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			pending++
 		}
 	}
-	label := formatPaneLabel(formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != ""), focused)
+	label := formatPaneLabel(formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != "", m.ReloadStatus.LastSource), focused)
 	rightHint := ""
 	if focused {
 		// Panel-discovery hint when the bottom is hidden; Tab/hide cue
@@ -984,7 +984,7 @@ func colorizeURLForRow(cell, url string) string {
 // from the file on disk. Both badges can fire together.
 // formatPaneLabel further wraps the result with the pane's focus
 // styling.
-func formatOpsPaneLabelText(total, pending int, reloadFailed bool) string {
+func formatOpsPaneLabelText(total, pending int, reloadFailed bool, reloadSource string) string {
 	label := fmt.Sprintf("trollbridge operations — %d total · %d pending", total, pending)
 	if pending > 0 {
 		// \x1b[1;31m = bold red. The bell-glyph prefix doubles as a
@@ -992,7 +992,16 @@ func formatOpsPaneLabelText(total, pending int, reloadFailed bool) string {
 		label = fmt.Sprintf("trollbridge operations — %d total · \x1b[1;31m␇ %d pending\x1b[22;39m", total, pending)
 	}
 	if reloadFailed {
-		label += " · \x1b[1;31m␇ reload failed\x1b[22;39m"
+		// Embed the failing source name when known so the operator
+		// can triage without digging into the oplog (#145). Falls
+		// back to the bare badge for legacy call paths or when the
+		// Tracker did not record a source.
+		switch reloadSource {
+		case "config", "rules", "lists":
+			label += fmt.Sprintf(" · \x1b[1;31m␇ %s reload failed\x1b[22;39m", reloadSource)
+		default:
+			label += " · \x1b[1;31m␇ reload failed\x1b[22;39m"
+		}
 	}
 	return label
 }
@@ -1077,7 +1086,7 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			pending++
 		}
 	}
-	header := formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != "")
+	header := formatOpsPaneLabelText(len(displayed), pending, m.ReloadStatus.LastError != "", m.ReloadStatus.LastSource)
 	if m.Focused == PaneApprovals {
 		b.WriteString(boldLine("▶ "+header, m.Cols))
 	} else {
