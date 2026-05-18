@@ -60,6 +60,14 @@ const (
 	SourceApprovalTimeout DecisionSource = "approval_timeout"
 	SourceAllowList       DecisionSource = "allowlist"
 	SourceDenyList        DecisionSource = "denylist"
+	// Error-path sources (#139): split out from SourceDefault so the
+	// audit log can distinguish "static-policy default applied" from
+	// "we could not even evaluate." Each names a specific failure
+	// mode the proxy could not finish evaluating; SourceDefault now
+	// retains its narrow meaning of "no rule matched, default mode."
+	SourceTLSHandshakeFail DecisionSource = "tls_handshake_fail"
+	SourceMalformedTunnel  DecisionSource = "malformed_tunnel"
+	SourceBodyReadFail     DecisionSource = "body_read_fail"
 )
 
 // AllDecisionSources is the authoritative list of DecisionSource
@@ -76,6 +84,9 @@ var AllDecisionSources = []DecisionSource{
 	SourceApprovalTimeout,
 	SourceAllowList,
 	SourceDenyList,
+	SourceTLSHandshakeFail,
+	SourceMalformedTunnel,
+	SourceBodyReadFail,
 }
 
 // IsHumanOrLLM reports whether this decision was made by a human

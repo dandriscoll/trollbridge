@@ -9,6 +9,51 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Audit shape
+
+- `decision_source` no longer reads `"default"` on TLS handshake
+  failure, malformed-tunnel HTTP, or body-read-failure paths (#139).
+  Those three paths now carry distinct values: `tls_handshake_fail`,
+  `malformed_tunnel`, and `body_read_fail`. `default` retains its
+  narrow meaning of "no rule matched, default mode applied."
+  Operator dashboards filtering for failure paths by
+  `decision_source=default` must update to the new values.
+- Audit entries from the proxy→origin TLS path now carry
+  `tls_error_category` (#138) — previously only client→proxy TLS
+  failures populated this field. The category distinguishes
+  `upstream_cert_invalid` / `upstream_connect` / `unknown` for
+  operators triaging origin handshake failures.
+
+### Telemetry
+
+- `advisor_consulted` and `advisor_classified` log lines carry a
+  new `model` attribute (#157) — the AOAI deployment name (parsed
+  from the endpoint URL) or the configured `llm.Model` for other
+  providers. Multi-deployment AOAI operators can now attribute
+  log entries by deployment. Attribute is omitted when the
+  advisor service has no configured ModelIdentifier (back-compat).
+
+### TUI
+
+- The approvals-pane reload-failed badge now names the failing
+  source (#145): `␇ config reload failed` / `␇ rules reload failed`
+  / `␇ lists reload failed` instead of the bare `␇ reload failed`.
+  Unknown / legacy-empty source falls back to the bare badge.
+
+### Init
+
+- `init` AOAI provider flow now surfaces a one-line note before
+  the model prompt (#158): the deployment name in the endpoint URL
+  drives routing; the `model:` field is informational for AOAI.
+
+### Release tooling
+
+- `scripts/release.sh --build-only` (#153). Skips clean-tree
+  preflight and the bump/tag/push/publish flow; runs `build_matrix`
+  against the current version so implementers can verify
+  matrix-output without dirtying release semantics. Mutually
+  exclusive with the other release-flow flags.
+
 ### Docs
 
 - README opening rewritten to unify voice with trollbridge.dev: the

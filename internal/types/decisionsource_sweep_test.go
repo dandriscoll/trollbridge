@@ -96,6 +96,12 @@ func decisionSourceSymbolName(src DecisionSource) string {
 		return "SourceAllowList"
 	case SourceDenyList:
 		return "SourceDenyList"
+	case SourceTLSHandshakeFail:
+		return "SourceTLSHandshakeFail"
+	case SourceMalformedTunnel:
+		return "SourceMalformedTunnel"
+	case SourceBodyReadFail:
+		return "SourceBodyReadFail"
 	}
 	return string(src)
 }

@@ -462,7 +462,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		prefix, err := io.ReadAll(io.LimitReader(r.Body, int64(s.MaxBodySampleBytes)+1))
 		if err != nil {
 			http.Error(w, "trollbridge: body read failed", http.StatusBadRequest)
-			s.writeAudit(req, types.Decision{Effect: types.EffectDeny, Source: types.SourceDefault, Reason: "body read failed: " + err.Error()},
+			s.writeAudit(req, types.Decision{Effect: types.EffectDeny, Source: types.SourceBodyReadFail, Reason: "body read failed: " + err.Error()},
 				"", 0, http.StatusBadRequest, 0, time.Since(start), err.Error())
 			return
 		}

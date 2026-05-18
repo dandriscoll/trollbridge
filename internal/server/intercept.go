@@ -115,7 +115,7 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 			ClientAddr: clientConn.RemoteAddr().String(),
 		}, types.Decision{
 			Effect: types.EffectDeny,
-			Source: types.SourceDefault,
+			Source: types.SourceTLSHandshakeFail,
 			Reason: "TLS handshake failed (" + string(category) + "): " + err.Error(),
 		}, category, hello, http.StatusBadGateway, time.Since(handshakeStart), err.Error())
 		return fmt.Errorf("tls server handshake: %w", err)
@@ -148,7 +148,7 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 				ClientAddr: clientConn.RemoteAddr().String(),
 			}, types.Decision{
 				Effect: types.EffectDeny,
-				Source: types.SourceDefault,
+				Source: types.SourceMalformedTunnel,
 				Reason: "malformed HTTP/1.1 request inside intercepted TLS tunnel",
 			}, "", 0, http.StatusBadRequest, 0, 0, err.Error())
 			return nil

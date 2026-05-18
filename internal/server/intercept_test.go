@@ -22,6 +22,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/audit"
 	"github.com/dandriscoll/trollbridge/internal/ca"
 	"github.com/dandriscoll/trollbridge/internal/config"
+	"github.com/dandriscoll/trollbridge/internal/types"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 )
 
@@ -476,6 +477,12 @@ func TestIntercept_ClientRejectsCA_ClassifiedAndAudited(t *testing.T) {
 	}
 	if tlsFail.Host != "127.0.0.1" {
 		t.Errorf("host = %q, want 127.0.0.1", tlsFail.Host)
+	}
+	// #139: TLS-handshake-failure audit entries now record the
+	// distinct SourceTLSHandshakeFail rather than the overloaded
+	// SourceDefault.
+	if tlsFail.DecisionSource != string(types.SourceTLSHandshakeFail) {
+		t.Errorf("decision_source = %q, want %q (issue #139 split)", tlsFail.DecisionSource, types.SourceTLSHandshakeFail)
 	}
 	// SNI is intentionally empty for IP literals (RFC 6066 §3), and
 	// the harness uses 127.0.0.1. The ClientHello capture is

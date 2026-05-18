@@ -25,6 +25,12 @@ func TestDecisionSource_IsHumanOrLLMCategorization(t *testing.T) {
 		{SourceApprovalTimeout, true},
 		{SourceAllowList, false},
 		{SourceDenyList, false},
+		// Error-path sources (#139): neither human nor LLM decided —
+		// the proxy failed before evaluation. Audit-level `decisions`
+		// excludes them (they ARE relevant for `errors`/`all`).
+		{SourceTLSHandshakeFail, false},
+		{SourceMalformedTunnel, false},
+		{SourceBodyReadFail, false},
 	}
 	if len(cases) != len(AllDecisionSources) {
 		t.Fatalf("categorization table has %d rows, AllDecisionSources has %d — keep them in lockstep; a new DecisionSource was added without categorization", len(cases), len(AllDecisionSources))
