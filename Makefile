@@ -43,6 +43,10 @@ vet:             ## go vet
 check-model-strings: ## Lint for hardcoded model identifiers (closes #155)
 	scripts/check-model-strings.sh
 
+.PHONY: check-doc-links
+check-doc-links: ## Validate relative links across all *.md files (closes #151)
+	scripts/check-doc-links.sh
+
 .PHONY: tidy
 tidy:            ## go mod tidy
 	$(GO) mod tidy

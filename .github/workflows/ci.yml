@@ -57,3 +57,11 @@ jobs:
       - name: lint hardcoded model strings
         if: matrix.os == 'ubuntu-latest'
         run: scripts/check-model-strings.sh
+
+      # Markdown doc-link gate (#151). Validates every relative
+      # markdown link across the repo's *.md files; catches dead
+      # cross-doc references that accumulate silently. Linux only;
+      # the check is python3-based and identical on every runner.
+      - name: check doc links
+        if: matrix.os == 'ubuntu-latest'
+        run: scripts/check-doc-links.sh
