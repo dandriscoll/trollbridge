@@ -10,7 +10,7 @@
 #
 # Usage:
 #   scripts/release.sh [--bump <major|minor|patch>] [--prerelease <suffix>]
-#                      [--yes] [--dry-run] [--force] [--help]
+#                      [--yes] [--dry-run] [--force] [--build-only] [--help]
 #
 # Examples:
 #   scripts/release.sh                                  # interactive: prompts for kind, then [y/N]
@@ -20,6 +20,7 @@
 #   scripts/release.sh --bump minor --prerelease rc.1   # pre-release, e.g., v0.1.0 -> v0.2.0-rc.1
 #   scripts/release.sh --dry-run                        # apply bumps to working tree, build dist/, skip commit/tag/push/publish
 #   scripts/release.sh --bump major --force             # overwrite an already-published release at the new tag
+#   scripts/release.sh --build-only                     # build_matrix only against the current version, skip preflight/bump/tag/push/publish
 #
 # Pre-release semantics (MVP — see issue #2 for limitations):
 #   - --prerelease <suffix> appends "-<suffix>" to the bumped version.
@@ -63,6 +64,7 @@ PRERELEASE=""
 YES=0
 DRY_RUN=0
 FORCE=0
+BUILD_ONLY=0
 
 usage() {
     sed -n '2,/^set -euo/p' "$0" | sed -e 's/^# \{0,1\}//' -e '/^set -euo/d'
@@ -86,9 +88,10 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2
             ;;
-        --yes)     YES=1; shift ;;
-        --dry-run) DRY_RUN=1; shift ;;
-        --force)   FORCE=1; shift ;;
+        --yes)        YES=1; shift ;;
+        --dry-run)    DRY_RUN=1; shift ;;
+        --force)      FORCE=1; shift ;;
+        --build-only) BUILD_ONLY=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *)
             echo "release failed: unexpected argument '$1'; fix: see --help" >&2
@@ -477,6 +480,23 @@ push_and_publish() {
 
 CURRENT="$(discover_current_version)"
 echo "discover: current version v${CURRENT}" >&2
+
+# --build-only short-circuits the normal release flow. Used during
+# development of build_matrix or signing changes: skip preflight
+# (dirty tree allowed), skip the bump/commit/tag/push/publish path
+# entirely, and run build_matrix against the CURRENT version so the
+# implementer can verify matrix output without dirtying release
+# semantics or needing --bump (#153).
+if [[ $BUILD_ONLY -eq 1 ]]; then
+    if [[ -n "$BUMP" || -n "$PRERELEASE" || $YES -eq 1 || $DRY_RUN -eq 1 || $FORCE -eq 1 ]]; then
+        echo "release failed: --build-only is exclusive with --bump / --prerelease / --yes / --dry-run / --force; fix: pass --build-only alone (or with no other release-flow flags)" >&2
+        exit 2
+    fi
+    echo "build-only: skipping preflight; building matrix for current v${CURRENT}" >&2
+    build_matrix "$CURRENT"
+    echo "build-only: artifacts under $DIST/" >&2
+    exit 0
+fi
 
 KIND="$(prompt_bump_kind)"
 NEW="$(compute_new_version "$CURRENT" "$KIND")"
