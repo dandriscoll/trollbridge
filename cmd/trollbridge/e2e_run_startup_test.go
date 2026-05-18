@@ -114,6 +114,42 @@ policy:
 	}
 }
 
+// TestE2E_RunStartup_AuditInitFailureIsLogged closes one branch of
+// #146: when audit.New() cannot construct (e.g. unwriteable audit
+// path), the operational log emits `event=startup_failure
+// stage=audit` before the process exits.
+func TestE2E_RunStartup_AuditInitFailureIsLogged(t *testing.T) {
+	dir := t.TempDir()
+	// Make a subdirectory we'll point audit_path at, then remove
+	// write permission so audit.New's mkdir + open both fail. The
+	// parent has to exist so the path-validator (which probably
+	// only checks the parent's existence) passes — the failure
+	// surfaces at audit.New().
+	auditDir := filepath.Join(dir, "no-write")
+	if err := os.Mkdir(auditDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	auditPath := filepath.Join(auditDir, "audit.jsonl")
+	yamlPath := filepath.Join(dir, "trollbridge.yaml")
+	body := "proxy: lo:8080\nlogging:\n  audit_path: " + auditPath + "\n  operational_path: stderr\n"
+	if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(e2eBinary, "run", "-c", yamlPath)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("trollbridge run with an unwriteable audit_path should exit non-zero\n%s", out)
+	}
+	combined := string(out)
+	if !strings.Contains(combined, "event=startup_failure") {
+		t.Errorf("audit-init failure should carry structured startup_failure event:\n%s", combined)
+	}
+	if !strings.Contains(combined, "stage=audit") {
+		t.Errorf("audit-init failure should name stage=audit:\n%s", combined)
+	}
+}
+
 // TestE2E_VerifyAgainstRunningDaemon closes #149: spawn the binary
 // with a minimal config, wait for the proxy port, then run
 // `trollbridge verify --json -c <cfg>` and assert ok=true plus the
