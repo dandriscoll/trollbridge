@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.7.15 — 2026-05-18
+
 ### Audit shape
 
 - `decision_source` no longer reads `"default"` on TLS handshake
