@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.7.16 — 2026-05-18
+
 ### Policy
 
 - `prior_decision` rule clause now matches only human + static-policy
