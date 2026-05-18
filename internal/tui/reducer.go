@@ -10,6 +10,7 @@ package tui
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -144,6 +145,15 @@ type Model struct {
 	// operator can read the info pane without the list churning
 	// under them (closes #89).
 	OpsPausedTicks int
+
+	// LastInputTicks counts ticks since the operator's last key
+	// event. Reset to 0 on every keypress; incremented in
+	// applyOpsTick. When it reaches idleSnapTicks AND a pending
+	// row exists AND the cursor is NOT already on a pending row,
+	// the cursor snaps to the bottommost row (newest pending) so
+	// idle operators don't miss new work (#156). One-shot per
+	// idle window — the counter resets to 0 after a snap.
+	LastInputTicks int
 
 	// GeneralizeOffer, when non-nil, surfaces the post-approve
 	// "make this more general?" prompt: a specific allow entry
@@ -372,6 +382,14 @@ type CmdRepaint struct{}
 // for the row they just landed on (#89).
 const opsPauseTicks = 2
 
+// idleSnapTicks is how long the operator must be idle (no key
+// events) before the cursor snaps to the newest pending row. At
+// the ~1.5s tick cadence, 4 ticks ≈ 6s — long enough that an
+// operator actively navigating doesn't get yanked, short enough
+// that returning attention to the pane finds the cursor already
+// on actionable work (#156).
+const idleSnapTicks = 4
+
 // CmdURLsRefresh asks the runtime to re-read the allow/deny lists
 // from trollbridge.yaml and emit a URLsTickResult. Emitted on '4'
 // open and after any console exec while the URLs pane is open
@@ -476,6 +494,27 @@ func applyOpsTick(m Model, e OpsTickResult) (Model, Cmd) {
 	preserveSelection(&m, prevGroup, prevReq)
 	clampSelection(&m)
 
+	// #156: idle-snap. Increment LastInputTicks; when it crosses the
+	// threshold AND a pending row exists AND the cursor isn't
+	// already on a pending row, snap to the bottommost row (= newest
+	// pending) and reset the counter so the snap doesn't keep firing
+	// every subsequent tick. Cursor-already-on-pending is the
+	// "don't move the cursor on the pending stack" invariant — the
+	// operator is already on actionable work; don't yank them.
+	m.LastInputTicks++
+	if m.LastInputTicks >= idleSnapTicks {
+		displayed := DisplayedOps(m)
+		if len(displayed) > 0 {
+			last := len(displayed) - 1
+			onPending := m.Selected >= 0 && m.Selected < len(displayed) &&
+				displayed[m.Selected].Status == opstream.StatusPending
+			if !onPending && displayed[last].Status == opstream.StatusPending {
+				m.Selected = last
+				m.LastInputTicks = 0
+			}
+		}
+	}
+
 	// Pending-rose detection. PendingCount surveys the same
 	// displayed-ops list the renderer's label uses, so the chime is
 	// in lockstep with what the operator visually counts. Fire only
@@ -570,6 +609,11 @@ func preserveSelection(m *Model, prevGroup, prevReq string) {
 }
 
 func applyKey(m Model, e KeyEvent) (Model, Cmd) {
+	// #156: any key event resets the idle counter so the cursor
+	// idle-snap (in applyOpsTick) doesn't fire while the operator
+	// is actively driving the UI. Reset first thing — the rest of
+	// this function may early-return.
+	m.LastInputTicks = 0
 	// Global keys — fire regardless of focus.
 	if e.Key == KeyCtrlC {
 		m.Quit = true
@@ -1536,7 +1580,27 @@ func DisplayedOps(m Model) []DisplayedOp {
 			GroupKey: "g\x00" + o.Method + "\x00" + host + "\x00" + dir + "\x00" + o.Status,
 		})
 	}
-	return out
+	// #156: partition into [resolved | pending] so the operator's
+	// eye lands at the bottom of the pane on a pending row. Within
+	// pending, sort by StartedAt ascending — oldest at the top of
+	// the pending region, newest at the very bottom. Resolved
+	// ordering is preserved (newest-UpdatedAt-first per the ops
+	// ring's iteration order). On idle the cursor snaps to the
+	// last row in the slice, which is the newest pending — see
+	// applyOpsTick.
+	resolved := out[:0:0]
+	var pending []DisplayedOp
+	for _, o := range out {
+		if opIsResolved(o.Status) {
+			resolved = append(resolved, o)
+		} else {
+			pending = append(pending, o)
+		}
+	}
+	sort.SliceStable(pending, func(i, j int) bool {
+		return pending[i].StartedAt.Before(pending[j].StartedAt)
+	})
+	return append(resolved, pending...)
 }
 
 // opIsResolved reports whether an op has reached a final outcome and
