@@ -68,12 +68,33 @@ go test -tags=twinslive ./internal/advisor/   # wire-layer against anthropic.twi
                                               #   needs ANTHROPIC_TWIN_API_KEY (and AOAI_TWIN_*)
 make vet
 make tidy
+make check-model-strings                      # lint hardcoded model strings (#155)
+make check-doc-links                          # validate relative *.md links (#151)
 ```
 
 The binary embeds its version via ldflags (`-X
 github.com/dandriscoll/trollbridge/internal/server.Version=…`).
 `make build` derives the version from `git describe`; release
 builds use the script.
+
+### Pre-commit hook (optional)
+
+`scripts/precommit-check.sh` refuses to add any staged file larger
+than 5 MiB without an explicit override (#154). Install it as a git
+hook:
+
+```sh
+ln -s ../../scripts/precommit-check.sh .git/hooks/pre-commit
+```
+
+When a legitimate large addition is needed (tagged binary artifact,
+vendored test fixture), override per-commit:
+
+```sh
+TROLLBRIDGE_LARGE_FILE_OK=1 git commit ...
+```
+
+Set `TROLLBRIDGE_LARGE_FILE_LIMIT=<bytes>` to change the default.
 
 ## Wire contract — do not change without intent
 
