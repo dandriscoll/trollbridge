@@ -913,7 +913,13 @@ func setReadDeadlineNow(c net.Conn) error {
 
 // writeAuditWithBody is like writeAudit but also redacts and stores a
 // body sample (used by the interception path).
-func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, body []byte, status int, size int64, latency time.Duration, errStr string) {
+// writeAuditWithBody writes a per-request audit entry with the
+// request body sampled and redacted. tlsCategory is the optional
+// TLSErrorCategory (#138) for origin-TLS-handshake-failure paths;
+// pass "" for non-TLS or post-handshake failure call sites so the
+// entry's TLSErrorCategory field stays empty (its JSON omitempty
+// preserves backward-compatible audit output).
+func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, body []byte, status int, size int64, latency time.Duration, errStr, tlsCategory string) {
 	llmInputHash := req.Headers.Get("X-Trollbridge-LLM-Input-Hash")
 	queryRedacted, _ := s.redactor.Query(req.Headers.Get("X-Original-Query"))
 	headers, headerCount := s.redactor.Headers(req.Headers, d.Modifiers)
@@ -949,6 +955,7 @@ func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, b
 		ResponseSizeBytes:    size,
 		LatencyMS:            latency.Milliseconds(),
 		Error:                errStr,
+		TLSErrorCategory:     tlsCategory,
 	}
 	if err := s.audit.Write(entry); err != nil {
 		s.opLog.Warn("audit write failure",

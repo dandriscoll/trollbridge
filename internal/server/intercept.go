@@ -283,7 +283,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		_ = resp.Write(tlsConn)
 		rlog.Debug("response", "phase", oplog.PhaseResponse,
 			"status", status, "bytes", len(body), "latency_ms", time.Since(start).Milliseconds())
-		s.writeAuditWithBody(req, decision, bodyBuf, status, 0, time.Since(start), "")
+		s.writeAuditWithBody(req, decision, bodyBuf, status, 0, time.Since(start), "", "")
 		return nil
 	}
 
@@ -302,17 +302,20 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		RootCAs:    s.originRoots,
 	})
 	dialMS := time.Since(dialStart).Milliseconds()
+	var dialCategory TLSErrorCategory
 	if err != nil {
 		// Origin TLS dial failed — classify so an operator can
 		// distinguish "upstream cert untrusted" from "host
 		// unreachable" without parsing crypto/tls error strings.
-		category := ClassifyOriginTLSError(err)
+		// The category also rides on the audit entry's
+		// TLSErrorCategory field (#138).
+		dialCategory = ClassifyOriginTLSError(err)
 		rlog.Warn("upstream_dial",
 			"phase", oplog.PhaseUpstreamDial,
 			"event", oplog.EventInterceptUpstreamTLSFail,
 			"ok", false,
 			"duration_ms", dialMS,
-			"tls_error_category", string(category),
+			"tls_error_category", string(dialCategory),
 			"sni", host,
 			"error", err.Error(),
 		)
@@ -340,7 +343,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 			ContentLength: int64(len(body)),
 		}
 		_ = resp.Write(tlsConn)
-		s.writeAuditWithBody(req, decision, bodyBuf, http.StatusBadGateway, 0, time.Since(start), err.Error())
+		s.writeAuditWithBody(req, decision, bodyBuf, http.StatusBadGateway, 0, time.Since(start), err.Error(), string(dialCategory))
 		return nil
 	}
 	defer originConn.Close()
@@ -359,7 +362,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 
 	// Write the request to the origin TLS connection directly.
 	if err := outbound.Write(originConn); err != nil {
-		s.writeAuditWithBody(req, decision, bodyBuf, http.StatusBadGateway, 0, time.Since(start), err.Error())
+		s.writeAuditWithBody(req, decision, bodyBuf, http.StatusBadGateway, 0, time.Since(start), err.Error(), "")
 		return err
 	}
 
@@ -367,7 +370,7 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	originBR := bufio.NewReader(originConn)
 	resp, err := http.ReadResponse(originBR, outbound)
 	if err != nil {
-		s.writeAuditWithBody(req, decision, bodyBuf, http.StatusBadGateway, 0, time.Since(start), err.Error())
+		s.writeAuditWithBody(req, decision, bodyBuf, http.StatusBadGateway, 0, time.Since(start), err.Error(), "")
 		return err
 	}
 	defer resp.Body.Close()
@@ -378,11 +381,11 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	resp.Header.Set(HeaderRequestID, req.ID)
 
 	if err := resp.Write(tlsConn); err != nil {
-		s.writeAuditWithBody(req, decision, bodyBuf, resp.StatusCode, 0, time.Since(start), err.Error())
+		s.writeAuditWithBody(req, decision, bodyBuf, resp.StatusCode, 0, time.Since(start), err.Error(), "")
 		return err
 	}
 	rlog.Debug("response", "phase", oplog.PhaseResponse,
 		"status", resp.StatusCode, "bytes", resp.ContentLength, "latency_ms", time.Since(start).Milliseconds())
-	s.writeAuditWithBody(req, decision, bodyBuf, resp.StatusCode, resp.ContentLength, time.Since(start), "")
+	s.writeAuditWithBody(req, decision, bodyBuf, resp.StatusCode, resp.ContentLength, time.Since(start), "", "")
 	return nil
 }

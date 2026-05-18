@@ -487,6 +487,67 @@ func TestIntercept_ClientRejectsCA_ClassifiedAndAudited(t *testing.T) {
 	}
 }
 
+// TestIntercept_OriginTLSFail_AuditCarriesCategory closes #138:
+// when proxy→origin TLS verification fails (origin presents a cert
+// trollbridge does not trust), the resulting audit entry written by
+// writeAuditWithBody carries the TLSErrorCategory so operators can
+// distinguish handshake failure shapes in the audit log.
+func TestIntercept_OriginTLSFail_AuditCarriesCategory(t *testing.T) {
+	rules := `
+- id: a
+  match: {host: 127.0.0.1}
+  effect: allow
+`
+	h := bootInterceptProxy(t, rules, "")
+	defer h.close()
+
+	// Strip trust of the origin's CA so trollbridge's TLS dial-out
+	// to the test origin fails verification on the next request.
+	h.srv.originRoots = x509.NewCertPool()
+
+	c := h.clientWithOurCA()
+	resp, err := c.Get(h.originURL + "/anything")
+	if err != nil {
+		t.Fatalf("client GET errored at transport level (want 502 response with TLS-failure body): %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("response status = %d, want %d (origin TLS verification should surface as 502)", resp.StatusCode, http.StatusBadGateway)
+	}
+
+	// Audit is async-buffered; poll briefly.
+	deadline := time.Now().Add(3 * time.Second)
+	var tlsFail *audit.Entry
+	for time.Now().Before(deadline) {
+		entries := h.auditEntries()
+		for i := range entries {
+			if entries[i].Scheme == "https-intercepted" && entries[i].TLSErrorCategory != "" {
+				tlsFail = &entries[i]
+				break
+			}
+		}
+		if tlsFail != nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if tlsFail == nil {
+		t.Fatalf("no audit entry with proxy→origin TLS error category; entries=%+v", h.auditEntries())
+	}
+	switch tlsFail.TLSErrorCategory {
+	case string(TLSErrUpstreamCertInvalid), string(TLSErrUpstreamConnect), string(TLSErrUnknown):
+		// All three are plausible classifications for the
+		// untrusted-origin-cert path; ClassifyOriginTLSError races
+		// on the exact tls.Conn error string seen.
+	default:
+		t.Errorf("tls_error_category = %q, want %q (or upstream_connect / unknown)",
+			tlsFail.TLSErrorCategory, TLSErrUpstreamCertInvalid)
+	}
+	if tlsFail.ResponseStatus != http.StatusBadGateway {
+		t.Errorf("response_status = %d, want %d", tlsFail.ResponseStatus, http.StatusBadGateway)
+	}
+}
+
 // TestIntercept_ClientRejectsCA_SurfacesInOpStream verifies the
 // failing handshake produces an OpStream row with StatusTLSFailed.
 // The TUI reads from this ring, so the row is the operator-visible
