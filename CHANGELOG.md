@@ -24,6 +24,40 @@ The full set of commits between any two tags is on GitHub at
   `upstream_cert_invalid` / `upstream_connect` / `unknown` for
   operators triaging origin handshake failures.
 
+### Policy
+
+- `prior_decision` rule clause no longer matches prior LLM advisor
+  verdicts (#141). The match surface is scoped to human +
+  static-policy decisions; an LLM verdict that resolved a previous
+  request cannot be silently re-applied by a deterministic rule
+  without re-consulting the advisor.
+
+### Observability
+
+- `audit.Logger.LevelFiltered()` returns a per-process counter of
+  entries the audit-level filter dropped (#143 part a). Distinct from
+  `Dropped()` (OverflowDrop budget-exceeded drops). Lets an operator
+  confirm filtering is engaged vs. silently losing entries.
+- On startup, when `audit_level != all`, the operational log emits
+  `event=audit_level_filter_active` once (#143 part b) so an operator
+  seeing fewer audit entries than expected reads the cause inline.
+
+### CI / tooling
+
+- New CI lanes (Linux): `scripts/check-model-strings.sh` catches
+  hardcoded model identifiers outside the wizard / translator
+  allowlist (#155); `scripts/check-doc-links.sh` validates every
+  relative markdown link across the repo's `*.md` files (#151).
+  Both are exposed as `make` targets.
+- Optional pre-commit hook (#154): `scripts/precommit-check.sh`
+  refuses to add staged files over 5 MiB. Override per-commit with
+  `TROLLBRIDGE_LARGE_FILE_OK=1`. Install via
+  `ln -s ../../scripts/precommit-check.sh .git/hooks/pre-commit`.
+- New gated test lane: `go test -tags=live_az ./cmd/trollbridge/`
+  exercises the real `az` CLI's JSON shape so the wizard's
+  Cognitive-Services parsers stay locked to Azure's actual
+  responses (#148).
+
 ### Telemetry
 
 - `advisor_consulted` and `advisor_classified` log lines carry a
@@ -39,6 +73,19 @@ The full set of commits between any two tags is on GitHub at
   source (#145): `␇ config reload failed` / `␇ rules reload failed`
   / `␇ lists reload failed` instead of the bare `␇ reload failed`.
   Unknown / legacy-empty source falls back to the bare badge.
+- Internal refactor: shared `formatOpRow` helper consolidates the
+  approvals-pane row formatting that bordered and no-border
+  renderers previously duplicated (#142). No visual change.
+
+### Test coverage
+
+- `internal/control/control_test.go` gains HTTP integration tests
+  for `/v1/rules` across the three reload-status states (#144).
+- Subprocess pty test for Ctrl-L hard-clear sequence (#159).
+- E2E test exercising `trollbridge verify --json` against a running
+  daemon (#149).
+- E2E test exercising the audit-init startup_failure branch (#146
+  partial). Remaining branches tracked in #166.
 
 ### Init
 
