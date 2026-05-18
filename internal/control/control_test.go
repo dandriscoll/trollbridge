@@ -15,6 +15,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/ca"
 	"github.com/dandriscoll/trollbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/reloadstatus"
 	"github.com/dandriscoll/trollbridge/internal/sessions"
 )
 
@@ -230,6 +231,126 @@ func TestControl_LLMDigestsEndpoint_NoProviderReturnsEmpty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("expected empty array; got %v", got)
+	}
+}
+
+// stubReloadStatus implements ReloadStatusProvider for /v1/rules
+// tests (closes #144). Returns whatever Status the test pre-loaded.
+type stubReloadStatus struct{ st reloadstatus.Status }
+
+func (s stubReloadStatus) ReloadStatus() reloadstatus.Status { return s.st }
+
+// TestControl_RulesEndpoint_CleanState: with no reload attempt
+// recorded, /v1/rules answers 200 and the JSON carries
+// rule_set_version + rules but omits the reload-status fields (their
+// JSON tags use omitempty on a zero-time LastAt / empty LastError).
+func TestControl_RulesEndpoint_CleanState(t *testing.T) {
+	s, addr, caObj, cancel := bootControl(t)
+	defer cancel()
+
+	s.SetReloadStatusProvider(stubReloadStatus{}) // zero-value Status
+
+	c := clientWithCert(t, caObj, "operator-1")
+	resp, err := c.Get("https://" + addr + "/v1/rules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var got map[string]any
+	if err := jsonUnmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v: %s", err, body)
+	}
+	if _, ok := got["rule_set_version"]; !ok {
+		t.Errorf("response missing rule_set_version; body=%s", body)
+	}
+	if _, ok := got["rules"]; !ok {
+		t.Errorf("response missing rules; body=%s", body)
+	}
+	if _, ok := got["last_reload_at"]; ok {
+		t.Errorf("clean state should omit last_reload_at; body=%s", body)
+	}
+	if _, ok := got["last_reload_error"]; ok {
+		t.Errorf("clean state should omit last_reload_error; body=%s", body)
+	}
+}
+
+// TestControl_RulesEndpoint_FailedReload: with a reload error
+// recorded, /v1/rules carries last_reload_at, last_reload_source,
+// and last_reload_error.
+func TestControl_RulesEndpoint_FailedReload(t *testing.T) {
+	s, addr, caObj, cancel := bootControl(t)
+	defer cancel()
+
+	failed := reloadstatus.Status{
+		LastError:  "bad yaml: ...",
+		LastAt:     time.Now().UTC(),
+		LastSource: "rules",
+	}
+	s.SetReloadStatusProvider(stubReloadStatus{st: failed})
+
+	c := clientWithCert(t, caObj, "operator-1")
+	resp, err := c.Get("https://" + addr + "/v1/rules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200; body=%s", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var got map[string]any
+	if err := jsonUnmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v: %s", err, body)
+	}
+	if got["last_reload_error"] != "bad yaml: ..." {
+		t.Errorf("last_reload_error = %v, want %q", got["last_reload_error"], "bad yaml: ...")
+	}
+	if got["last_reload_source"] != "rules" {
+		t.Errorf("last_reload_source = %v, want %q", got["last_reload_source"], "rules")
+	}
+	if _, ok := got["last_reload_at"]; !ok {
+		t.Errorf("last_reload_at missing on failed-reload state; body=%s", body)
+	}
+}
+
+// TestControl_RulesEndpoint_CleanReload: a successful reload sets
+// LastAt + LastSource but leaves LastError empty; the JSON carries
+// the at/source fields but omits the error.
+func TestControl_RulesEndpoint_CleanReload(t *testing.T) {
+	s, addr, caObj, cancel := bootControl(t)
+	defer cancel()
+
+	clean := reloadstatus.Status{
+		LastAt:     time.Now().UTC(),
+		LastSource: "config",
+	}
+	s.SetReloadStatusProvider(stubReloadStatus{st: clean})
+
+	c := clientWithCert(t, caObj, "operator-1")
+	resp, err := c.Get("https://" + addr + "/v1/rules")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status: got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var got map[string]any
+	if err := jsonUnmarshal(body, &got); err != nil {
+		t.Fatalf("decode: %v: %s", err, body)
+	}
+	if got["last_reload_source"] != "config" {
+		t.Errorf("last_reload_source = %v, want config", got["last_reload_source"])
+	}
+	if _, ok := got["last_reload_error"]; ok {
+		t.Errorf("successful-reload state should omit last_reload_error; body=%s", body)
 	}
 }
 
