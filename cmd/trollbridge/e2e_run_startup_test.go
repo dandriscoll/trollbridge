@@ -150,6 +150,51 @@ func TestE2E_RunStartup_AuditInitFailureIsLogged(t *testing.T) {
 	}
 }
 
+// testInjectStartupFailure invokes the binary with
+// TROLLBRIDGE_TEST_FAIL_STAGE=<stage> set and asserts the resulting
+// operational-log stream carries `event=startup_failure stage=<stage>`
+// before the process exits non-zero (#166). The minimal config used
+// here passes all earlier stages so each named stage is reached.
+func testInjectStartupFailure(t *testing.T, stage string) {
+	t.Helper()
+	dir := t.TempDir()
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	yamlPath := filepath.Join(dir, "trollbridge.yaml")
+	yaml := "proxy: lo:8080\ncontrol: 0\nmode: default-deny\nlogging:\n  audit_path: " + auditPath + "\n  operational_path: stderr\n"
+	if err := os.WriteFile(yamlPath, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(e2eBinary, "run", "-c", yamlPath)
+	cmd.Env = append(os.Environ(), "TROLLBRIDGE_TEST_FAIL_STAGE="+stage)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("forced %s-stage failure should exit non-zero:\n%s", stage, out)
+	}
+	combined := string(out)
+	if !strings.Contains(combined, "event=startup_failure") {
+		t.Errorf("forced %s-stage failure should carry structured startup_failure event:\n%s", stage, combined)
+	}
+	if !strings.Contains(combined, "stage="+stage) {
+		t.Errorf("forced %s-stage failure should name stage=%s:\n%s", stage, stage, combined)
+	}
+}
+
+// TestE2E_RunStartup_AuditLevelInjected closes #166's audit_level
+// branch via TROLLBRIDGE_TEST_FAIL_STAGE=audit_level.
+func TestE2E_RunStartup_AuditLevelInjected(t *testing.T) {
+	testInjectStartupFailure(t, "audit_level")
+}
+
+// TestE2E_RunStartup_ServerInjected closes #166's server branch.
+func TestE2E_RunStartup_ServerInjected(t *testing.T) {
+	testInjectStartupFailure(t, "server")
+}
+
+// TestE2E_RunStartup_ListsInjected closes #166's lists branch.
+func TestE2E_RunStartup_ListsInjected(t *testing.T) {
+	testInjectStartupFailure(t, "lists")
+}
+
 // TestE2E_VerifyAgainstRunningDaemon closes #149: spawn the binary
 // with a minimal config, wait for the proxy port, then run
 // `trollbridge verify --json -c <cfg>` and assert ok=true plus the

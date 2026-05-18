@@ -129,8 +129,15 @@ func newRunCmd() *cobra.Command {
 			auditLogger.SetOpLog(opLog)
 			// Config validator already ensured the level string is
 			// legal; a parse error here would be a programmer
-			// mistake, not an operator one.
-			lvl, err := audit.ParseLevel(cfg.Logging.AuditLevel)
+			// mistake, not an operator one. The test-only
+			// TROLLBRIDGE_TEST_FAIL_STAGE=audit_level env hook
+			// (#166) lets the e2e suite exercise the post-validator
+			// branch by forcing an unparseable level here.
+			levelStr := cfg.Logging.AuditLevel
+			if os.Getenv("TROLLBRIDGE_TEST_FAIL_STAGE") == "audit_level" {
+				levelStr = "__test_invalid_level__"
+			}
+			lvl, err := audit.ParseLevel(levelStr)
 			if err != nil {
 				opLog.Error("startup failed",
 					"event", oplog.EventStartupFailure,
@@ -151,6 +158,18 @@ func newRunCmd() *cobra.Command {
 					"audit_level", lvl.String(),
 					"note", "static-policy entries are filtered out; see audit.LevelFiltered() / `trollbridge logs review` for the full set")
 			}
+			// #166: test-only hook lets the e2e suite exercise the
+			// stage=server branch without crafting a config that
+			// passes earlier stages but fails server.New*.
+			if os.Getenv("TROLLBRIDGE_TEST_FAIL_STAGE") == "server" {
+				err := fmt.Errorf("forced server-stage failure via TROLLBRIDGE_TEST_FAIL_STAGE")
+				opLog.Error("startup failed",
+					"event", oplog.EventStartupFailure,
+					"stage", "server",
+					"error", err.Error(),
+				)
+				return &runtimeErr{err}
+			}
 			srv, err := server.NewWithLoggers(cfg, engine, auditLogger, opLog)
 			if err != nil {
 				opLog.Error("startup failed",
@@ -168,6 +187,20 @@ func newRunCmd() *cobra.Command {
 			// `lists.allow` / `lists.deny`. The console pane writes
 			// new patterns back to the file via configwrite and
 			// triggers an in-process re-parse via the OnReload hook.
+			// #166: test-only hook forces a lists-stage failure for
+			// the e2e suite without needing a malformed pattern that
+			// the config-load also rejects.
+			if os.Getenv("TROLLBRIDGE_TEST_FAIL_STAGE") == "lists" {
+				err := fmt.Errorf("forced lists-stage failure via TROLLBRIDGE_TEST_FAIL_STAGE")
+				opLog.Error("startup failed",
+					"event", oplog.EventStartupFailure,
+					"stage", "lists",
+					"allow_count", len(cfg.Lists.Allow),
+					"deny_count", len(cfg.Lists.Deny),
+					"error", err.Error(),
+				)
+				return &configErr{err}
+			}
 			if err := srv.SetLists(cfg.Lists.Allow, cfg.Lists.Deny); err != nil {
 				opLog.Error("startup failed",
 					"event", oplog.EventStartupFailure,
