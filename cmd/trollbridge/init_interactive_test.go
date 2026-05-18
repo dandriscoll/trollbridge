@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/dandriscoll/trollbridge/internal/config"
 )
 
 func TestApplyAnswers_LocalDefaults(t *testing.T) {
@@ -329,6 +331,53 @@ func TestRunInteractiveInit_AOAIPromptsForEndpoint(t *testing.T) {
 	}
 	if modelIdx < 0 || (noteIdx >= 0 && noteIdx >= modelIdx) {
 		t.Errorf("note should precede the model prompt (#158); note=%d model=%d", noteIdx, modelIdx)
+	}
+}
+
+// TestDefaultConfigYAML_LockInvariants closes #147 by pinning the
+// invariants the brittle-substitution refactor would have given for
+// free: the rendered yaml must (a) round-trip through config.Load,
+// (b) carry every documented default (provider/proxy bind/etc.),
+// and (c) leave no unix-canonical path behind that should have been
+// substituted to the platform default. Together these tests catch
+// the failure shape "a path or default went un-substituted" without
+// needing a structural rewrite of the substitution surface.
+func TestDefaultConfigYAML_LockInvariants(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trollbridge.yaml")
+	if err := os.WriteFile(path, []byte(defaultConfigYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("round-trip Load() failed on the default-rendered yaml: %v\nrendered yaml:\n%s", err, defaultConfigYAML)
+	}
+
+	// (b) Documented defaults appear (rendered scalar form).
+	if cfg.Proxy.Raw != "lo:8080" {
+		t.Errorf("proxy default raw = %q, want lo:8080", cfg.Proxy.Raw)
+	}
+	if cfg.Control.Raw != "lo:8081" {
+		t.Errorf("control default raw = %q, want lo:8081", cfg.Control.Raw)
+	}
+
+	// (c) No untranslated unix paths survive. The substitution surface
+	// rewrites these on Windows; on unix the canonical paths ARE the
+	// substituted form. Either way, the rendered yaml's path values
+	// must point at the platform-correct defaults; a missed
+	// substitution would leave one of the unix literals on Windows.
+	if runtime.GOOS == "windows" {
+		survivors := []string{
+			"/etc/trollbridge/llm.key",
+			"/etc/trollbridge/trollbridge-ca.crt",
+			"/var/log/trollbridge/audit.jsonl",
+		}
+		for _, lit := range survivors {
+			if strings.Contains(defaultConfigYAML, lit) {
+				t.Errorf("unix-canonical path %q survived substitution on Windows; rendered yaml:\n%s", lit, defaultConfigYAML)
+			}
+		}
 	}
 }
 
