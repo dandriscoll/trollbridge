@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.7.17 — 2026-05-19
+
 ### Pair-with-a-sandbox documentation (closes #169)
 
 - **README.** New "Pair with a sandbox" section between "What it
