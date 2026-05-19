@@ -8,18 +8,32 @@ points to adapt to your environment.
 
 ## Topology choice
 
+**The load-bearing axis here is *agent isolation*.** trollbridge
+gates outbound HTTP/HTTPS; it does NOT gate the local filesystem
+or processes. The topology you pick chooses how strongly the
+agent's local environment is bounded — and therefore how much
+trollbridge's gating actually buys you. Pick the row whose
+isolation profile matches the threat you are willing to run.
+
 Per `DESIGN.md` §14 the four supported topologies are:
 
-| Topology | Best for | Strength |
-|---|---|---|
-| User-mode local | Developer flow | Audit log; weak isolation |
-| Incus VM, host-side proxy | Coding agents in dev/CI | Strong isolation if firewall is binding |
-| Sidecar container | CI runners, ephemeral agents | Strong isolation via internal: true network |
-| System-wide host daemon | Shared agent network | Isolation only as good as per-agent identity |
+| Topology | Best for | Local-isolation profile | Network-isolation strength |
+|---|---|---|---|
+| User-mode local | Developer flow | None — agent shares the host's filesystem and processes | Audit log + hold-and-approve; weak network isolation |
+| Incus VM, host-side proxy | Coding agents in dev/CI | **Strong** — agent confined to the VM | **Strong** if the VM's egress firewall is binding |
+| Sidecar container | CI runners, ephemeral agents | Strong — agent confined to the container | **Strong** via `internal: true` network |
+| System-wide host daemon | Shared agent network | Per-agent (depends on each agent's identity boundary) | Isolation only as good as per-agent identity |
 
 **The proxy is theatrical without a binding firewall.** The
 agent's environment MUST be configured so direct network egress
 goes nowhere except trollbridge.
+
+**Not sure which to pick?** Start with the Incus VM topology
+below — it's the documented happy-path and the operational
+artifacts (`packaging/incus/launch.sh`) walk the install. The
+README's "[Pair with a sandbox](../README.md#pair-with-a-sandbox)"
+section names lighter-weight alternatives (Podman, Lima, OrbStack,
+WSL2, Hyper-V).
 
 ## Quickstart: user-mode local
 

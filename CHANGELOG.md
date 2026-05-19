@@ -9,6 +9,24 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Pair-with-a-sandbox documentation (closes #169)
+
+- **README.** New "Pair with a sandbox" section between "What it
+  does" and "Get started." Names the trollbridge × agent-isolation
+  pairing explicitly, lists Incus / Podman / Lima / OrbStack / Tart
+  / Multipass / WSL2 / Hyper-V as starting options, and respects
+  the operator who has already chosen not to sandbox by naming the
+  hold-and-approve + audit log as the safety net.
+- **`docs/deploy.md`.** Topology-choice table now leads with the
+  isolation framing and gains an explicit "local-isolation profile"
+  column distinct from network-isolation strength. The Incus VM
+  topology stays the recommended happy path.
+- **`/src/dan/TROLLBRIDGE_DESIGN.md`** (private design doc) gains
+  `S8` (deploy-side directive for trollbridge.dev) and `R6`
+  (records the README + deploy.md changes). The deploy-side
+  trollbridge.dev "Pair with a sandbox" section is filed for the
+  deploy-repo author to land.
+
 ### Generalization → quiet-moment suggestion mode (closes #168)
 
 - **Removed.** The post-approve `[1]all methods [2]all URLs on host

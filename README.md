@@ -28,6 +28,21 @@ approval. Single static Go binary, no runtime deps.
   pause and surface in the operator UI. Press `a` to approve, `d`
   to deny. The held request resumes — no agent restart.
 
+## Pair with a sandbox
+
+**Worried about running your agent in yolo mode? Pair trollbridge with a sandbox.**
+
+trollbridge gates *network egress* — what your agent reaches over HTTP and HTTPS. It does NOT gate the local filesystem or processes; the agent reads, writes, and runs anything on the machine it's on. That is the trade you make for keeping the agent productive. The matching half of the trade is bounding what "the machine it's on" means.
+
+A handful of starting points, ordered by how directly trollbridge supports them:
+
+- **[Incus VM (Linux)](docs/deploy.md#incus-vm-with-host-side-proxy-recommended)** — the documented happy path. Run the agent inside the VM; run trollbridge on the host; firewall the VM so its only egress is the proxy. `packaging/incus/launch.sh` walks the setup.
+- **Linux containers** ([Podman rootless](https://podman.io/) or [LXC](https://linuxcontainers.org/)) — when "VM" is overkill and a container's isolation profile is enough. CI runners often land here.
+- **macOS** — [Lima](https://lima-vm.io/), [OrbStack](https://orbstack.dev/), [Tart](https://tart.run/), or [Multipass](https://multipass.run/) all give you a Linux VM to run the agent in; trollbridge runs on the macOS host.
+- **Windows** — [WSL2](https://learn.microsoft.com/windows/wsl/) is the common path (run the agent in a WSL distro, run trollbridge on Windows). For stronger isolation, use a Hyper-V VM.
+
+Already running your agent under isolation you trust? trollbridge layers on top — point the agent's `HTTPS_PROXY` at the daemon and the existing isolation stays load-bearing. Already chose not to use a sandbox? That's a real choice; trollbridge's hold-and-approve flow and the audit log are the safety net for that path. Either way, the link to follow next is [`docs/deploy.md`](docs/deploy.md).
+
 ## Get started
 
 **Try it** — install and run on your own machine (Linux or macOS):
