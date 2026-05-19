@@ -227,21 +227,15 @@ func TestApply_KeyCtrlL_Repaint(t *testing.T) {
 	}
 }
 
-// TestApply_KeyCtrlL_BypassesGeneralizeOffer pins that Ctrl-L is
-// dispatched before the GeneralizeOffer block, so a stuck offer
-// cannot swallow the operator's repaint request (#115).
-func TestApply_KeyCtrlL_BypassesGeneralizeOffer(t *testing.T) {
-	offer := GeneralizeOffer{Method: "GET", URL: "https://example.com/a"}
-	m := Model{
-		Focused:         PaneApprovals,
-		GeneralizeOffer: &offer,
-	}
-	got, cmd := Apply(m, KeyEvent{Key: KeyCtrlL})
+// TestApply_KeyCtrlL_RepaintsImmediately pins #115's repaint
+// shortcut. The pre-#168 test asserted Ctrl-L did not swallow a
+// pending GeneralizeOffer; the offer machinery was removed in #168,
+// so the test simplifies to: Ctrl-L always emits CmdRepaint.
+func TestApply_KeyCtrlL_RepaintsImmediately(t *testing.T) {
+	m := Model{Focused: PaneApprovals}
+	_, cmd := Apply(m, KeyEvent{Key: KeyCtrlL})
 	if _, ok := cmd.(CmdRepaint); !ok {
 		t.Fatalf("cmd = %T, want CmdRepaint", cmd)
-	}
-	if got.GeneralizeOffer == nil {
-		t.Errorf("GeneralizeOffer cleared by Ctrl-L; should remain set so a subsequent digit can still accept the offer")
 	}
 }
 

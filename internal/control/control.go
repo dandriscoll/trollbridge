@@ -66,6 +66,30 @@ type ReloadStatusProvider interface {
 	ReloadStatus() reloadstatus.Status
 }
 
+// SuggestionProvider exposes the quiet-moment generalization
+// suggestion lifecycle on /v1/suggestion (closes #168). The
+// concrete provider lives in internal/suggestion; control takes an
+// interface to avoid an import cycle.
+type SuggestionProvider interface {
+	Active() *SuggestionRow
+	Accept(ctx context.Context, id string) error
+	Decline(ctx context.Context, id string) error
+}
+
+// SuggestionRow is the wire-shape returned by GET /v1/suggestion.
+// suggestion.Manager satisfies SuggestionProvider by translating
+// its internal Suggestion type into this struct.
+type SuggestionRow struct {
+	SuggestionID     string   `json:"suggestion_id"`
+	Axis             string   `json:"axis"`
+	List             string   `json:"list"`
+	SourceEntries    []string `json:"source_entries"`
+	SuggestedPattern string   `json:"suggested_pattern"`
+	Reason           string   `json:"reason"`
+	AxesRemaining    int      `json:"axes_remaining"`
+	OfferedAt        string   `json:"offered_at"`
+}
+
 // Server is the control-plane HTTPS listener.
 type Server struct {
 	addr         string
@@ -79,6 +103,7 @@ type Server struct {
 	ca           CAOps
 	tlsProv      TLSProvider
 	srv          *http.Server
+	suggestion   SuggestionProvider
 
 	opLog *slog.Logger
 }
@@ -124,6 +149,12 @@ func (s *Server) SetReloadStatusProvider(p ReloadStatusProvider) { s.reloadStatu
 // SetTLS wires the TLS-issuing provider used to bring up the mTLS
 // listener.
 func (s *Server) SetTLS(p TLSProvider) { s.tlsProv = p }
+
+// SetSuggestion wires the quiet-moment suggestion lifecycle so
+// /v1/suggestion can return the active row and accept/decline
+// arrives at the right manager. nil disables the endpoint surface
+// (404). Closes #168.
+func (s *Server) SetSuggestion(p SuggestionProvider) { s.suggestion = p }
 
 // ListenAndServe starts the control plane on addr; returns the
 // concrete bound address (helpful when addr=":0").
@@ -184,6 +215,9 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	mux.HandleFunc("/v1/sessions", authd(s.listSessions))
 	mux.HandleFunc("/v1/rules", authd(s.rulesInfo))
 	mux.HandleFunc("/v1/rules/reload", authd(s.rulesReload))
+	mux.HandleFunc("/v1/suggestion", authd(s.suggestionGet))                  // closes #168
+	mux.HandleFunc("/v1/suggestion/accept", authd(s.suggestionAccept))        // closes #168
+	mux.HandleFunc("/v1/suggestion/decline", authd(s.suggestionDecline))      // closes #168
 	// /v1/healthz is intentionally unauthenticated for monitoring.
 	mux.HandleFunc("/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -348,6 +382,103 @@ func (s *Server) rulesReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "reloaded", "rule_set_version": s.engine.RuleSetVersion()})
+}
+
+// suggestionGet returns the daemon's active suggestion (200) or
+// 204 when none. Closes part of #168.
+func (s *Server) suggestionGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.suggestion == nil {
+		http.Error(w, "suggestion mode not configured", http.StatusNotFound)
+		return
+	}
+	row := s.suggestion.Active()
+	if row == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, row)
+}
+
+// suggestionAccept resolves the named suggestion by persisting its
+// pattern to the allow/deny list. 200 on success, 409 when the id
+// is stale, 410 when there is no active suggestion.
+func (s *Server) suggestionAccept(w http.ResponseWriter, r *http.Request) {
+	id, err := readSuggestionID(w, r)
+	if err != nil {
+		return
+	}
+	if s.suggestion == nil {
+		http.Error(w, "suggestion mode not configured", http.StatusNotFound)
+		return
+	}
+	if err := s.suggestion.Accept(r.Context(), id); err != nil {
+		mapSuggestionErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "accepted", "suggestion_id": id})
+}
+
+// suggestionDecline rotates to the next axis OR writes the YAML
+// decline row, depending on the manager's session state.
+func (s *Server) suggestionDecline(w http.ResponseWriter, r *http.Request) {
+	id, err := readSuggestionID(w, r)
+	if err != nil {
+		return
+	}
+	if s.suggestion == nil {
+		http.Error(w, "suggestion mode not configured", http.StatusNotFound)
+		return
+	}
+	if err := s.suggestion.Decline(r.Context(), id); err != nil {
+		mapSuggestionErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "declined", "suggestion_id": id})
+}
+
+func readSuggestionID(w http.ResponseWriter, r *http.Request) (string, error) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return "", errMethod
+	}
+	var body struct {
+		SuggestionID string `json:"suggestion_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return "", err
+	}
+	if body.SuggestionID == "" {
+		http.Error(w, "suggestion_id is required", http.StatusBadRequest)
+		return "", errBadID
+	}
+	return body.SuggestionID, nil
+}
+
+var (
+	errMethod = errorsNew("method-not-allowed")
+	errBadID  = errorsNew("bad-id")
+)
+
+func errorsNew(s string) error { return controlErr(s) }
+
+type controlErr string
+
+func (e controlErr) Error() string { return string(e) }
+
+func mapSuggestionErr(w http.ResponseWriter, err error) {
+	switch err.Error() {
+	case "no active suggestion":
+		http.Error(w, err.Error(), http.StatusGone) // 410
+	case "suggestion id mismatch":
+		http.Error(w, err.Error(), http.StatusConflict) // 409
+	default:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

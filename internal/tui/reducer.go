@@ -8,7 +8,6 @@
 package tui
 
 import (
-	"fmt"
 	"net/url"
 	"sort"
 	"strconv"
@@ -155,13 +154,14 @@ type Model struct {
 	// idle window — the counter resets to 0 after a snap.
 	LastInputTicks int
 
-	// GeneralizeOffer, when non-nil, surfaces the post-approve
-	// "make this more general?" prompt: a specific allow entry
-	// was just written for the named method+URL, and the operator
-	// can press 1/2/3 to append a broader pattern (or any other
-	// key to dismiss). Cleared after the next reducer step that
-	// consumes or dismisses the offer (closes #85).
-	GeneralizeOffer *GeneralizeOffer
+	// GeneralizeOffer was the post-approve 1/2/3 keystroke prompt
+	// added by #85 and removed by #168 (the daemon-owned quiet-
+	// moment suggestion lifecycle replaced it). The field is gone;
+	// the struct definition and helper functions are also gone.
+	// Suggestion is the active row offered in the pending area
+	// when the daemon's detector finds an opportunity at a quiet
+	// moment. Hidden whenever Holds is non-empty.
+	Suggestion *Suggestion
 
 	// ReloadStatus carries the daemon's most-recent hot-reload
 	// outcome (closes #129). Polled from /v1/rules on each refresh
@@ -178,17 +178,19 @@ type URLsUndoEntry struct {
 	Side    string // "allow" or "deny"
 }
 
-// GeneralizeOffer carries the method+URL components of the
-// just-approved request so the renderer can name the candidate
-// broader patterns to the operator and the reducer can construct
-// the chosen pattern (closes #85).
-type GeneralizeOffer struct {
-	Method string // uppercase HTTP verb
-	URL    string // the specific URL just allowed
-	Scheme string // "http" / "https" / "" (CONNECT)
-	Host   string
-	Port   int
-	Path   string // including leading slash; "" for CONNECT
+// Suggestion is the TUI's view of the daemon's currently-offered
+// quiet-moment generalization suggestion (#168). The full lifecycle
+// lives in internal/suggestion; the TUI is a viewer. The Suggestion
+// row is rendered in the approvals pane below any pending holds
+// and hidden when Holds is non-empty.
+type Suggestion struct {
+	ID               string
+	Axis             string
+	List             string // "allow" or "deny"
+	SourceEntries    []string
+	SuggestedPattern string
+	Reason           string
+	AxesRemaining    int
 }
 
 // AlertsState carries the chime toggle plus the last pending count
@@ -620,47 +622,14 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 		return m, CmdQuit{}
 	}
 	// Ctrl-L is a hard repaint (#115). Global, state-preserving:
-	// no focus change, no panel toggle, no console emission. Sits
-	// above the GeneralizeOffer block so a stuck offer cannot
-	// swallow the operator's redraw request.
+	// no focus change, no panel toggle, no console emission.
 	if e.Key == KeyCtrlL {
 		return m, CmdRepaint{}
 	}
-	// Generalize-offer prompt (#85): when set, intercept the
-	// keystroke. 1/2/3 emit the broader pattern; any other key
-	// (Esc, Enter, j/k, navigation) dismisses without writing.
-	// The intent is "press a digit to take the offer; press
-	// anything else to skip" — operators must not be trapped.
-	if m.GeneralizeOffer != nil {
-		offer := *m.GeneralizeOffer
-		m.GeneralizeOffer = nil
-		switch e.Rune {
-		case '1':
-			pat := generalizeAllMethodsForURL(offer)
-			m.LastInfo = "appending allow: " + pat
-			return m, CmdConsoleExec{Line: "allow " + pat}
-		case '2':
-			pat := generalizeAllURLsForMethod(offer)
-			m.LastInfo = "appending allow: " + pat
-			return m, CmdConsoleExec{Line: "allow " + pat}
-		case '3':
-			pat := generalizeAnyMethodAnyURL(offer)
-			m.LastInfo = "appending allow: " + pat
-			return m, CmdConsoleExec{Line: "allow " + pat}
-		default:
-			// Dismissed; fall through to normal dispatch so the
-			// keystroke still does its usual thing (operator
-			// doesn't lose a Tab / j / Esc to the prompt).
-			//
-			// Exception: Esc alone should NOT also close the bottom
-			// panel (#87) — a single Esc dismisses the offer; a
-			// second Esc closes the panel.
-			m.LastInfo = "generalize prompt dismissed"
-			if e.Key == KeyEsc {
-				return m, CmdNone{}
-			}
-		}
-	}
+	// Pre-#168 the 1/2/3 generalize-offer prompt was intercepted
+	// here. The prompt was removed in #168 in favor of the
+	// daemon-owned quiet-moment suggestion lifecycle, so the
+	// keystroke flows straight to the normal dispatch.
 	// Esc closes the bottom panel when one is open; never quits the
 	// app (#87). Quit is `q` or Ctrl-C only.
 	if e.Key == KeyEsc {
@@ -1072,66 +1041,17 @@ func urlsEnterEditMode(m Model) (Model, Cmd) {
 	return m, CmdConsoleExec{Line: "remove " + pattern}
 }
 
+// urlsGeneralize was the URLs-pane "generalize this entry" command
+// added by #85 and removed by #168. The quiet-moment suggestion
+// lifecycle in internal/suggestion is the sole generalization
+// surface now; if the operator wants to generalize a specific
+// entry, the daemon's detector will find the opportunity at the
+// next quiet moment (or they can edit the YAML directly). Kept as
+// a stub that surfaces the change to anyone still pressing the
+// old keybinding.
 func urlsGeneralize(m Model) (Model, Cmd) {
-	pattern, _, ok := urlsSelectedPattern(m)
-	if !ok {
-		m.LastErr = "no entry selected"
-		return m, CmdNone{}
-	}
-	offer, ok := buildGeneralizeOfferFromPattern(pattern)
-	if !ok {
-		m.LastErr = "generalize requires a concrete method+URL entry"
-		return m, CmdNone{}
-	}
-	m.GeneralizeOffer = offer
+	m.LastErr = "generalize is now suggestion-driven (#168); the daemon offers candidates at quiet moments"
 	return m, CmdNone{}
-}
-
-// buildGeneralizeOfferFromPattern parses a stored URL-list pattern
-// of the form `[METHOD ]URL` (with `*` allowed in the METHOD slot)
-// into a GeneralizeOffer the existing approve-flow generalize code
-// can consume. Patterns containing wildcards in the URL are
-// rejected — the three generalize axes are only well-defined for
-// concrete URLs.
-func buildGeneralizeOfferFromPattern(pat string) (*GeneralizeOffer, bool) {
-	pat = strings.TrimSpace(pat)
-	if pat == "" {
-		return nil, false
-	}
-	method := "*"
-	url := pat
-	if i := strings.IndexByte(pat, ' '); i > 0 {
-		head := pat[:i]
-		if head == "*" || isAllUpperASCII(head) {
-			method = head
-			url = strings.TrimSpace(pat[i+1:])
-		}
-	}
-	if url == "" {
-		return nil, false
-	}
-	// Require a scheme — CONNECT-style host:port patterns don't have
-	// a path axis to generalize.
-	if !strings.Contains(url, "://") {
-		return nil, false
-	}
-	// Reject wildcards in the URL — generalize is for concrete entries.
-	if strings.Contains(url, "*") {
-		return nil, false
-	}
-	scheme, hostport, path := splitURL(url)
-	host, port := splitHostPort(hostport)
-	if host == "" {
-		return nil, false
-	}
-	return &GeneralizeOffer{
-		Method: method,
-		URL:    url,
-		Scheme: scheme,
-		Host:   host,
-		Port:   port,
-		Path:   path,
-	}, true
 }
 
 func isAllUpperASCII(s string) bool {
@@ -1232,43 +1152,14 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		}
 		specific := method + " " + op.URL
 		m.LastInfo = verb + "ing " + specific + "…"
-		// On allow, queue the generalize-offer prompt — operator
-		// can press 1/2/3 on the next keystroke to also write a
-		// broader pattern. Deny does not get the offer (denies are
-		// usually intentional and operator-narrow); revisit if
-		// requested.
-		if e.Rune == 'a' {
-			if offer, ok := buildGeneralizeOffer(op); ok {
-				m.GeneralizeOffer = offer
-			}
-		}
+		// Pre-#168 the approve branch queued a 1/2/3 generalize-offer
+		// prompt here; #168 removed that surface in favor of the
+		// quiet-moment suggestion lifecycle owned by the daemon. The
+		// pattern persists and the next quiet moment will run the
+		// detector across the (now larger) list.
 		return m, CmdConsoleExec{Line: verb + " " + specific}
 	}
 	return m, CmdNone{}
-}
-
-// buildGeneralizeOffer parses the op's URL into its components so
-// the generalize-prompt renderer can name the broader patterns
-// and the reducer can construct them. Returns (nil, false) when
-// the URL is empty or unparseable — the prompt is skipped.
-func buildGeneralizeOffer(op DisplayedOp) (*GeneralizeOffer, bool) {
-	if op.URL == "" {
-		return nil, false
-	}
-	method := strings.ToUpper(strings.TrimSpace(op.Method))
-	if method == "" {
-		method = "*"
-	}
-	scheme, hostport, path := splitURL(op.URL)
-	host, port := splitHostPort(hostport)
-	return &GeneralizeOffer{
-		Method: method,
-		URL:    op.URL,
-		Scheme: scheme,
-		Host:   host,
-		Port:   port,
-		Path:   path,
-	}, true
 }
 
 // splitURL breaks "scheme://host[:port]/path" or "host[:port]"
@@ -1300,42 +1191,6 @@ func splitHostPort(hp string) (host string, port int) {
 		}
 	}
 	return host, port
-}
-
-// generalizeAllMethodsForURL returns the pattern that allows any
-// method on the same URL — i.e., replaces the method prefix with
-// `*` while keeping scheme/host/port/path unchanged.
-func generalizeAllMethodsForURL(o GeneralizeOffer) string {
-	return "* " + o.URL
-}
-
-// generalizeAllURLsForMethod returns the pattern that allows any
-// URL on the same host:port (path becomes `/*`) with the original
-// method retained.
-func generalizeAllURLsForMethod(o GeneralizeOffer) string {
-	return o.Method + " " + formatHostBase(o) + "/*"
-}
-
-// generalizeAnyMethodAnyURL returns the pattern that allows any
-// method on any URL of the same host:port.
-func generalizeAnyMethodAnyURL(o GeneralizeOffer) string {
-	return "* " + formatHostBase(o) + "/*"
-}
-
-// formatHostBase returns "<scheme>://<host>:<port>" or its
-// CONNECT-style equivalent "<host>:<port>" when the original URL
-// had no scheme.
-func formatHostBase(o GeneralizeOffer) string {
-	if o.Scheme == "" {
-		if o.Port == 0 {
-			return o.Host
-		}
-		return fmt.Sprintf("%s:%d", o.Host, o.Port)
-	}
-	if o.Port == 0 {
-		return fmt.Sprintf("%s://%s", o.Scheme, o.Host)
-	}
-	return fmt.Sprintf("%s://%s:%d", o.Scheme, o.Host, o.Port)
 }
 
 func applyKeyConsole(m Model, e KeyEvent) (Model, Cmd) {

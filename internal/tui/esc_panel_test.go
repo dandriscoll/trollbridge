@@ -110,23 +110,7 @@ func TestApplyKey_CtrlCStillQuitsAlways(t *testing.T) {
 	}
 }
 
-// TestApplyKey_EscDismissesGeneralizeOfferWithoutClosingPanel pins
-// that a pending generalize-offer (#85) absorbs the first Esc to
-// dismiss itself; the panel does not also close in the same step.
-// A second Esc would then close the panel.
-func TestApplyKey_EscDismissesGeneralizeOfferWithoutClosingPanel(t *testing.T) {
-	m := Model{
-		Cols: 100, Rows: 30,
-		Focused:         PaneApprovals,
-		BottomPanel:     BottomPanelConsole,
-		BottomPanelOpen: true,
-		GeneralizeOffer: &GeneralizeOffer{Method: "GET", URL: "https://x/"},
-	}
-	got, _ := Apply(m, KeyEvent{Key: KeyEsc})
-	if got.GeneralizeOffer != nil {
-		t.Errorf("GeneralizeOffer not cleared by Esc")
-	}
-	if !got.BottomPanelOpen {
-		t.Errorf("BottomPanelOpen = false; first Esc with pending offer should only dismiss the offer")
-	}
-}
+// (The GeneralizeOffer Esc-dismissal test was removed in #168 along
+// with the GeneralizeOffer field. The quiet-moment suggestion is a
+// daemon-side entity; the TUI no longer holds state for it that Esc
+// could dismiss.)

@@ -227,69 +227,17 @@ func TestApplyConsoleExec_URLsPendingReturnSnapsBack(t *testing.T) {
 	}
 }
 
-// TestApplyKeyURLs_GeneralizeOnConcreteEntryRaisesOffer pins 'g' on
-// a concrete `METHOD URL` entry: m.GeneralizeOffer becomes populated
-// so the existing approve-flow generalize prompt fires.
-func TestApplyKeyURLs_GeneralizeOnConcreteEntryRaisesOffer(t *testing.T) {
+// TestApplyKeyURLs_GeneralizeNowRedirectsToSuggestionMode pins the
+// post-#168 behavior of the 'g' keybinding: the URLs-pane
+// generalize command is no longer a synchronous keystroke prompt
+// (#85's GeneralizeOffer was removed in #168). Pressing 'g' now
+// shows an informational LastErr pointing at the daemon-owned
+// quiet-moment suggestion lifecycle.
+func TestApplyKeyURLs_GeneralizeNowRedirectsToSuggestionMode(t *testing.T) {
 	m := urlsModel(0)
 	got, _ := Apply(m, KeyEvent{Rune: 'g'})
-	if got.GeneralizeOffer == nil {
-		t.Fatalf("GeneralizeOffer nil; want populated")
-	}
-	if got.GeneralizeOffer.Method != "GET" {
-		t.Errorf("Method = %q, want GET", got.GeneralizeOffer.Method)
-	}
-	if got.GeneralizeOffer.Host != "api.example.com" {
-		t.Errorf("Host = %q", got.GeneralizeOffer.Host)
-	}
-	if got.GeneralizeOffer.Port != 443 {
-		t.Errorf("Port = %d, want 443", got.GeneralizeOffer.Port)
-	}
-	if got.GeneralizeOffer.Scheme != "https" {
-		t.Errorf("Scheme = %q, want https", got.GeneralizeOffer.Scheme)
-	}
-}
-
-// TestApplyKeyURLs_GeneralizeOnMethodlessEntryDefaultsToStar pins
-// that an entry without an explicit method prefix is treated as
-// `* URL` for generalize purposes.
-func TestApplyKeyURLs_GeneralizeOnMethodlessEntryDefaultsToStar(t *testing.T) {
-	m := urlsModel(1) // "https://docs.example.com:443/"
-	got, _ := Apply(m, KeyEvent{Rune: 'g'})
-	if got.GeneralizeOffer == nil {
-		t.Fatalf("GeneralizeOffer nil")
-	}
-	if got.GeneralizeOffer.Method != "*" {
-		t.Errorf("Method = %q, want *", got.GeneralizeOffer.Method)
-	}
-}
-
-// TestApplyKeyURLs_GeneralizeOnWildcardedEntryRefuses pins the
-// reject-with-LastErr path for non-concrete patterns.
-func TestApplyKeyURLs_GeneralizeOnWildcardedEntryRefuses(t *testing.T) {
-	m := urlsModel(0)
-	m.AllowList = []string{"GET https://*/v1/things"}
-	got, _ := Apply(m, KeyEvent{Rune: 'g'})
-	if got.GeneralizeOffer != nil {
-		t.Errorf("GeneralizeOffer populated for wildcarded entry")
-	}
 	if got.LastErr == "" {
-		t.Errorf("LastErr empty; want refusal message")
-	}
-}
-
-// TestApplyKeyURLs_GeneralizeOnConnectStyleRefuses pins that a
-// host:port pattern (no scheme) is rejected — generalize needs a
-// URL with scheme/path axis.
-func TestApplyKeyURLs_GeneralizeOnConnectStyleRefuses(t *testing.T) {
-	m := urlsModel(0)
-	m.AllowList = []string{"api.example.com:443"}
-	got, _ := Apply(m, KeyEvent{Rune: 'g'})
-	if got.GeneralizeOffer != nil {
-		t.Errorf("GeneralizeOffer populated for CONNECT-style entry")
-	}
-	if got.LastErr == "" {
-		t.Errorf("LastErr empty; want refusal message")
+		t.Errorf("LastErr empty; want explanatory message")
 	}
 }
 

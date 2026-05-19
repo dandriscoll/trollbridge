@@ -66,6 +66,21 @@ const (
 	// reading trollbridge's wire contract — typically post-deny
 	// bootstrap. Closes #95.
 	EventDiscoveryFetch = "discovery_fetch" // INFO; #95
+
+	// Suggestion-mode lifecycle (closes #168). The seven phases
+	// mirror the ask-case completeness rule from #25/#33/#34/#35 —
+	// every phase emits an INFO-level structured entry from day one,
+	// because partial coverage is the known recurrent failure shape
+	// for multi-phase flows.
+	EventSuggestionDetectorRan     = "suggestion_detector_ran"     // INFO when opportunity exists, DEBUG when quiet predicate false
+	EventSuggestionAskStarted      = "suggestion_ask_started"      // INFO
+	EventSuggestionClassified      = "suggestion_classified"       // INFO
+	EventSuggestionAskFailed       = "suggestion_ask_failed"       // WARN; kind=wire|schema|unknown
+	EventSuggestionOffered         = "suggestion_offered"          // INFO
+	EventSuggestionAccepted        = "suggestion_accepted"         // INFO
+	EventSuggestionDeclined        = "suggestion_declined"         // INFO; per-cycle final decline (decline-row written)
+	EventSuggestionDeclineFiltered = "decline_filter_suppressed"   // INFO; a candidate matched an existing decline row
+	EventSuggestionSuperseded      = "suggestion_superseded"       // INFO; lists changed under the active suggestion
 )
 
 // Phase-name constants for the operational log's `phase=` field on

@@ -9,6 +9,41 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Generalization → quiet-moment suggestion mode (closes #168)
+
+- **Removed.** The post-approve `[1]all methods [2]all URLs on host
+  [3]both` keystroke prompt that fired immediately after pressing
+  `a` to approve a hold. The interruption competed with the
+  operator's primary task; the URL pane's explicit `g` "generalize
+  this entry" command was also retired.
+- **Added.** A daemon-owned quiet-moment suggestion lifecycle.
+  When the proxy has been idle (queue empty AND no inbound request)
+  for `approvals.suggestion.quiet_idle_seconds` (default 30), a
+  deterministic detector scans the allow and deny lists
+  independently for any of four closed-set axes — hostname below
+  the TLD, IP block (/24), URL segments, or HTTP methods — and
+  offers one suggestion per quiet moment. Accept persists the
+  pattern via the existing `configwrite` path; decline either
+  rotates to the next applicable axis for the same source set OR
+  writes a row to the new auto-managed `lists.declined_suggestions`
+  section so the same set is never re-offered.
+- **YAML schema.** New `lists.declined_suggestions` section with a
+  header comment marking it auto-managed. Each row records the
+  sorted `source_entries` set, the `axes_declined` during the
+  cycle, and a `declined_at` RFC3339 timestamp.
+- **Telemetry.** Nine new event constants in `internal/oplog/events.go`
+  cover every phase at INFO (DEBUG when the quiet predicate doesn't
+  fire). Mirror of the ask-case completeness rule from #25/#33/#34/#35.
+- **Control plane.** New endpoints `GET /v1/suggestion`,
+  `POST /v1/suggestion/accept`, `POST /v1/suggestion/decline`.
+- **Alignment principle preserved.** The LLM advisor (when wired)
+  only ranks and narrates among candidates the deterministic
+  detector has already produced; the advisor cannot invent a pattern
+  not in the input. `docs/alignment-principles.md` §1 (allow/deny
+  lists are human-only) remains intact because the mutation gate is
+  the operator's explicit Accept. v1 ships the deterministic
+  ranking path; LLM-translator integration is a follow-up.
+
 ## v0.7.16 — 2026-05-18
 
 ### Policy

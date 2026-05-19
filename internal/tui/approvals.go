@@ -854,12 +854,13 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 
 	// Status row (lives inside the border, above the bottom border).
 	switch {
-	case m.GeneralizeOffer != nil:
-		// Post-approve prompt: name the specific entry just
-		// written and the three broader options (#85). Cyan so
-		// the operator notices a new-keystroke-expected state
-		// without it reading like an error.
-		text := formatGeneralizeOffer(*m.GeneralizeOffer)
+	case m.Suggestion != nil && len(m.Holds) == 0:
+		// Quiet-moment suggestion (#168). Cyan so the operator
+		// notices a new-keystroke-expected state without it reading
+		// like an error. Hidden whenever any real hold is in the
+		// queue — the literal "hidden if any real pending requests
+		// come in" requirement from the issue body.
+		text := formatSuggestion(*m.Suggestion)
 		row := "\x1b[36m" + padRight(runeTrunc(text, inner), inner) + "\x1b[0m"
 		b.WriteString(bodyLine(row, m.Cols, focused))
 	case m.LastErr != "":
@@ -877,15 +878,21 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	b.WriteString(bottomBorder("", keys, m.Cols, focused))
 }
 
-// formatGeneralizeOffer formats the post-approve "make this more
-// general?" prompt shown in the approvals-pane status row
-// (closes #85). The prompt names the specific entry that was just
-// written, lists the three broader patterns, and reminds the
-// operator that any other keystroke dismisses.
-func formatGeneralizeOffer(o GeneralizeOffer) string {
+// formatSuggestion formats the quiet-moment generalization-
+// suggestion prompt shown in the approvals-pane status row when
+// the daemon's detector finds an opportunity (#168). The prompt
+// names the proposed pattern, the LLM-narrated reason, the axis
+// of generalization, and the accept/decline keybindings. Hidden
+// whenever any real hold is in the queue (literal interpretation
+// of "hidden if any real pending requests come in").
+func formatSuggestion(s Suggestion) string {
+	remaining := ""
+	if s.AxesRemaining > 0 {
+		remaining = fmt.Sprintf("  (axis 1 of %d)", s.AxesRemaining+1)
+	}
 	return fmt.Sprintf(
-		"allowed %s %s — generalize? [1]all methods  [2]all URLs on host  [3]both  (any other key skips)",
-		o.Method, o.URL)
+		"suggest %s: %s — %s  [shift+a]ccept  [shift+d]ecline%s",
+		s.Axis, s.SuggestedPattern, s.Reason, remaining)
 }
 
 // formatOpRow renders one approvals-pane row for op `o` with the

@@ -20,7 +20,10 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/console"
 	"github.com/dandriscoll/trollbridge/internal/oplog"
 	"github.com/dandriscoll/trollbridge/internal/policy"
+	"github.com/dandriscoll/trollbridge/internal/advisor"
+	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/server"
+	"github.com/dandriscoll/trollbridge/internal/suggestion"
 	"github.com/dandriscoll/trollbridge/internal/tui"
 	"github.com/dandriscoll/trollbridge/internal/types"
 	"github.com/spf13/cobra"
@@ -352,6 +355,45 @@ func newRunCmd() *cobra.Command {
 				})
 			}()
 
+			// Quiet-moment suggestion lifecycle (#168). The Manager
+			// owns the detector + advisor ask + accept/decline +
+			// decline-row YAML write. Tick every 5s; the manager's
+			// quiet predicate gates the expensive work.
+			sugMgr := suggestion.New(
+				absPersistPath,
+				srv.Cfg,
+				queueAdapter{q: srv.Queue()},
+				listsAdapter{cfgGetter: srv.Cfg},
+				advisorAdapter{srv.Advisor()},
+				writerAdapter{},
+				func() {
+					freshCfg, lerr := config.Load(configPath)
+					if lerr != nil {
+						opLog.Error("post-suggestion reload re-parse failed",
+							"event", oplog.EventAllowlistReloadFailure,
+							"error", lerr.Error())
+						return
+					}
+					_ = srv.ReloadListsFromConfig(freshCfg)
+					yamlWatcher.MarkReloaded()
+				},
+				opLog,
+			)
+			srv.SetInboundHook(sugMgr.NoteInbound)
+			srv.Control().SetSuggestion(suggestion.ControlAdapter{M: sugMgr})
+			go func() {
+				t := time.NewTicker(5 * time.Second)
+				defer t.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-t.C:
+						sugMgr.Tick(ctx)
+					}
+				}
+			}()
+
 			// Operator UI: the unified two-pane TUI when stdin is a
 			// tty. The console pane reuses the same Backend that drove
 			// the line-based REPL; it now runs character-by-character
@@ -653,4 +695,62 @@ func derivePersistPattern(req *types.RequestEvent) string {
 		return fmt.Sprintf("%s %s://%s:%d%s", method, scheme, host, port, req.Path)
 	}
 	return fmt.Sprintf("%s %s://%s%s", method, scheme, host, req.Path)
+}
+
+
+// queueAdapter satisfies suggestion.QueueProvider with the daemon's
+// approvals queue.
+type queueAdapter struct{ q *approvals.Queue }
+
+func (a queueAdapter) Pending() []suggestion.QueueSnapshot {
+	pending := a.q.Pending()
+	out := make([]suggestion.QueueSnapshot, 0, len(pending))
+	for _, p := range pending {
+		out = append(out, suggestion.QueueSnapshot{ID: p.ID})
+	}
+	return out
+}
+
+// listsAdapter exposes the daemon's live config.Lists to the
+// suggestion package via a config getter — re-reads every Tick so
+// external edits land without a restart.
+type listsAdapter struct{ cfgGetter func() *config.Config }
+
+func (a listsAdapter) CurrentLists() ([]string, []string, []config.DeclinedSuggestion) {
+	c := a.cfgGetter()
+	if c == nil {
+		return nil, nil, nil
+	}
+	return c.Lists.Allow, c.Lists.Deny, c.Lists.DeclinedSuggestions
+}
+
+// writerAdapter wraps internal/configwrite for the suggestion
+// package — keeps the package free of a direct configwrite import.
+type writerAdapter struct{}
+
+func (writerAdapter) AddAllow(path, pat string) (bool, error) {
+	return configwrite.AddAllow(path, pat)
+}
+func (writerAdapter) AddDeny(path, pat string) (bool, error) {
+	return configwrite.AddDeny(path, pat)
+}
+func (writerAdapter) AddDeclinedSuggestion(path string, src, axes []string, at string) (bool, error) {
+	return configwrite.AddDeclinedSuggestion(path, configwrite.DeclinedSuggestion{
+		SourceEntries: src,
+		AxesDeclined:  axes,
+		DeclinedAt:    at,
+	})
+}
+
+// advisorAdapter wraps advisor.Service so the suggestion package
+// can mock it. Pre-existing Service methods are unchanged.
+type advisorAdapter struct{ svc *advisor.Service }
+
+func (a advisorAdapter) Suggest(ctx context.Context, in advisor.SuggestionInput) (advisor.SuggestionOutput, time.Duration, error) {
+	if a.svc == nil {
+		// No advisor configured — fall back to the deterministic
+		// path (mirrors the in-service nil-provider behavior).
+		return advisor.SuggestionOutput{}, 0, advisor.ErrDisabled
+	}
+	return a.svc.Suggest(ctx, in)
 }

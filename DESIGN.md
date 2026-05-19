@@ -993,6 +993,84 @@ re-run policy decisions over a past audit log under a new rule set,
 including re-consulting the LLM advisor (if the operator opts in),
 and produce a report of which past decisions would change.
 
+### 9.6 Quiet-moment generalization suggestion (closes #168)
+
+Independent of the per-request advisor path, the daemon runs a
+quiet-moment **suggestion lifecycle** that proposes generalizations
+across the operator's existing allow / deny entries. The flow is
+deliberately decoupled from request gating so it never interrupts
+the operator during a burst of pending approvals.
+
+**Quiet predicate.** The lifecycle fires only when (a) the
+approvals queue is empty and (b) no inbound proxy request has
+arrived for `approvals.suggestion.quiet_idle_seconds` (default
+30 s).
+
+**Deterministic detector.** When the predicate fires, `internal/
+generalize` scans the allow list and the deny list independently
+for any of four closed-set axes:
+
+- **hostname below the TLD** — two or more hosts in the same list
+  that share a common registrable-domain parent (computed via
+  `golang.org/x/net/publicsuffix`, so `co.uk` is never wildcarded).
+- **IP block** — two or more IPv4 literals in the same list whose
+  /24 covers them both.
+- **URL segment** — two or more entries sharing scheme+host+port+
+  method and differing only in their final path segment.
+- **method** — two or more entries sharing scheme+host+port+path
+  and differing only in HTTP method.
+
+Each candidate is `{axis, list (allow|deny), source_entries,
+suggested_pattern}`. Single-entry inputs never produce a candidate
+(the directive's "two or more" rule). The detector emits no LLM
+call.
+
+**Decline filter.** Each candidate's sorted source-entry set is
+canonical-keyed and matched against `lists.declined_suggestions`
+(see below). Matches are suppressed and emit
+`decline_filter_suppressed` at INFO.
+
+**LLM rank-and-narrate.** When ≥1 candidate survives the filter,
+the advisor's `Suggest` shape (a SIBLING of the request-classifier
+`Classify` shape — not an extension) ranks the candidate axes and
+produces a one-line operator-facing reason. Per alignment principle
+§1, the LLM's response is REJECTED if the ranking names an axis
+not present in the input; the LLM cannot smuggle a pattern past
+the deterministic detector. v1 ships a deterministic ranker as the
+mainline; LLM-translator integration is a follow-up.
+
+**TUI surface.** A single suggestion row appears in the approvals
+pane below any pending holds. When a real hold arrives, the row is
+hidden from the render tree; when the queue drains, the row
+reappears. The TUI's accept / decline keystrokes POST to the
+control plane's `/v1/suggestion/accept` / `/v1/suggestion/decline`.
+
+**Accept path.** The chosen pattern is appended to `lists.allow`
+or `lists.deny` via `internal/configwrite` (the same write path as
+manual approve/deny persistence). The lifecycle never writes
+directly; the operator's keystroke is the sole mutation trigger.
+
+**Decline path.** When the suggestion's source-entry set has more
+applicable axes left in the cycle, the row rotates to the
+next-ranked axis (still the same source set). When all applicable
+axes have been declined, ONE row is appended to
+`lists.declined_suggestions` keyed on the sorted source-entry set,
+and the same set is never re-offered until the operator removes
+the row by hand.
+
+**Telemetry.** Nine event constants in `internal/oplog/events.go`
+cover every phase (detector ran, ask started, classified, ask
+failed, offered, accepted, declined, decline-filter suppressed,
+superseded) at INFO. The completeness rule mirrors the ask-case
+coverage from #25/#33/#34/#35.
+
+**Alignment principle.** The flow does NOT violate §1
+("allow/deny lists are human-only"). The advisor cannot invent a
+pattern — only rank within the deterministic detector's candidate
+set — and the mutation gate is the operator's explicit Accept.
+The import graph stays clean: `internal/advisor` does not import
+`internal/configwrite`.
+
 ---
 
 ## 10. Deterministic rule engine

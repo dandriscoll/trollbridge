@@ -63,6 +63,12 @@ type Server struct {
 	allowList *hostlist.HostList
 	denyList  *hostlist.HostList
 
+	// inboundHook is invoked on every inbound request (both HTTP
+	// and CONNECT). Used by the quiet-moment suggestion lifecycle
+	// (#168) to update its idle-tracking timestamp. Lock-free —
+	// callers must be atomic-only.
+	inboundHook func()
+
 	listsMu      sync.Mutex
 
 	transport    *http.Transport
@@ -329,6 +335,22 @@ func (s *Server) Ops() *opstream.Ring { return s.ops }
 // not configured.
 func (s *Server) Advisor() *advisor.Service { return s.advisor }
 
+// Cfg returns the daemon's current config (live pointer; do not
+// mutate). Re-read after a hot-reload reflects the new values.
+func (s *Server) Cfg() *config.Config { return s.cfg }
+
+// Control returns the control-plane server so external wiring can
+// register additional providers (e.g. the suggestion lifecycle for
+// #168).
+func (s *Server) Control() *control.Server { return s.control }
+
+// SetInboundHook registers a callback invoked on every inbound
+// request (HTTP and CONNECT). The callback runs on the hot path —
+// implementations MUST be lock-free / atomic-only. Used by the
+// quiet-moment suggestion lifecycle (#168) to refresh its idle
+// timestamp. Pass nil to unregister.
+func (s *Server) SetInboundHook(f func()) { s.inboundHook = f }
+
 // SessionsTracker returns the per-client session tracker.
 func (s *Server) SessionsTracker() *sessions.Tracker { return s.sessions }
 
@@ -436,6 +458,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		"port", port,
 	)
 	rlog.Debug("received", "phase", oplog.PhaseReceived, "path", r.URL.Path)
+	if s.inboundHook != nil {
+		s.inboundHook()
+	}
 	req := &types.RequestEvent{
 		ID:         requestID,
 		SessionID:  sess.ID,
@@ -775,6 +800,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		"port", port,
 	)
 	rlog.Debug("received", "phase", oplog.PhaseReceived, "path", "")
+	if s.inboundHook != nil {
+		s.inboundHook()
+	}
 	// CONNECT only carries host:port, no path. Use "/" as the
 	// path for fast-path matching; only patterns with no path or
 	// path "/" or path-prefix can fire here. Scheme is unknown at

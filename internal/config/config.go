@@ -226,6 +226,24 @@ func (b Bind) ClientAddr() string {
 type Lists struct {
 	Allow []string `yaml:"allow"`
 	Deny  []string `yaml:"deny"`
+
+	// DeclinedSuggestions records source-entry sets the operator
+	// has declined to generalize. The section is automatically
+	// managed by trollbridge: rows are appended when the operator
+	// rejects every applicable axis for a given source set, and
+	// the detector consults the section on every wake so the same
+	// set is never re-offered. Closes part of #168.
+	DeclinedSuggestions []DeclinedSuggestion `yaml:"declined_suggestions,omitempty"`
+}
+
+// DeclinedSuggestion is one row in lists.declined_suggestions. The
+// canonical key (for de-duplication and detector filtering) is the
+// sorted SourceEntries slice; axes_declined and declined_at are
+// record-keeping fields, not part of the key.
+type DeclinedSuggestion struct {
+	SourceEntries []string `yaml:"source_entries"`
+	AxesDeclined  []string `yaml:"axes_declined,omitempty"`
+	DeclinedAt    string   `yaml:"declined_at,omitempty"` // RFC3339; string to keep YAML round-trips clean
 }
 
 // Controller carries the control-plane mTLS configuration. mTLS is
@@ -324,6 +342,39 @@ type Approvals struct {
 	// disconnected consumer. 0 (the default) preserves the
 	// pre-#43 behavior of blocking until timeout_seconds.
 	SignalAfterSeconds int `yaml:"signal_after_seconds"`
+
+	// Suggestion governs the quiet-moment generalization-suggestion
+	// flow (closes #168). When enabled and the proxy is idle (no
+	// inbound traffic and no pending holds), trollbridge runs a
+	// deterministic detector across the current allow/deny lists;
+	// when an opportunity exists, the LLM ranks/narrates the
+	// candidate and one row appears in the pending area.
+	Suggestion ApprovalsSuggestion `yaml:"suggestion"`
+}
+
+// ApprovalsSuggestion carries the operator-tunable knobs for the
+// quiet-moment suggestion detector.
+type ApprovalsSuggestion struct {
+	// Enabled gates the whole flow. nil → default true when
+	// llm.enabled is true; false explicitly disables.
+	Enabled *bool `yaml:"enabled"`
+	// QuietIdleSeconds is the minimum duration the proxy must be
+	// idle (queue empty AND no inbound request received) before
+	// the detector wakes. Default 30.
+	QuietIdleSeconds int `yaml:"quiet_idle_seconds"`
+	// MaxCandidates caps the number of detector candidates passed
+	// to the LLM in one ask. Default 8.
+	MaxCandidates int `yaml:"max_candidates"`
+}
+
+// EnabledFor reports whether the suggestion flow should run given
+// the LLM config. Nil Enabled defaults to true when llm.enabled is
+// true; an explicit false in YAML disables regardless.
+func (s ApprovalsSuggestion) EnabledFor(llm LLM) bool {
+	if s.Enabled != nil {
+		return *s.Enabled
+	}
+	return llm.Enabled
 }
 
 type Forwarder struct {
@@ -452,6 +503,12 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Approvals.MaxPending == 0 {
 		c.Approvals.MaxPending = 100
+	}
+	if c.Approvals.Suggestion.QuietIdleSeconds == 0 {
+		c.Approvals.Suggestion.QuietIdleSeconds = 30
+	}
+	if c.Approvals.Suggestion.MaxCandidates == 0 {
+		c.Approvals.Suggestion.MaxCandidates = 8
 	}
 	if c.Forwarder.MaxIdleConns == 0 {
 		c.Forwarder.MaxIdleConns = 256

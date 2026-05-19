@@ -14,6 +14,8 @@ The flat allow/deny patterns in `trollbridge.yaml` (`lists.allow`, `lists.deny`)
 
 **What would violate it.** Any code path that writes to `lists.allow` / `lists.deny` from a callsite reached during advisor processing; any response field whose name or semantics implies "add this to the list" / "the LLM wants this approved."
 
+**Interaction with the quiet-moment suggestion lifecycle (#168).** The suggestion flow asks the LLM to *rank and narrate* generalization candidates the deterministic detector has already produced. This does not violate §1 because (a) the LLM cannot invent a pattern outside the candidate set — `advisor.Service.Suggest` rejects any response whose ranking names an axis not present in `SuggestionInput`, and (b) the mutation gate remains the operator's explicit Accept keystroke: `internal/advisor` has no import path to `internal/configwrite`, and the suggestion row's accept-action handler in `internal/suggestion` is the sole code path that translates an accepted candidate into a list write.
+
 ## 2. The LLM considers items not yet on the lists
 
 The LLM is consulted only when the deterministic engine has already established that the request does not match any list pattern. By the time the advisor sees the request, the engine has confirmed: *the operator's existing policy does not decide this one.*

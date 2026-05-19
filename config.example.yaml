@@ -56,6 +56,15 @@ lists:
     - 169.254.169.254
     - metadata.google.internal
     - metadata.azure.com
+  # declined_suggestions: rows the operator declined when the
+  # quiet-moment generalization-suggestion flow (issue #168) offered
+  # them. Automatically managed — do not edit by hand.
+  # declined_suggestions:
+  #   - source_entries:
+  #       - "GET https://api.example.com/v1/users/123"
+  #       - "GET https://api.example.com/v1/users/456"
+  #     axes_declined: [url_segment]
+  #     declined_at: 2026-05-19T14:00:00Z
 
 # 3. LLM — the advisor consulted on ambiguous requests.
 #    Trollbridge speaks each provider's native API directly, forcing

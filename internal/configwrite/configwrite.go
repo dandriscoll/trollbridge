@@ -52,6 +52,152 @@ func RemoveDeny(path, pattern string) (bool, error) {
 	})
 }
 
+// DeclinedSuggestion is the on-disk shape recorded by
+// AddDeclinedSuggestion. Mirrors config.DeclinedSuggestion (kept
+// local to avoid an import cycle between configwrite and config).
+type DeclinedSuggestion struct {
+	SourceEntries []string
+	AxesDeclined  []string
+	DeclinedAt    string // RFC3339
+}
+
+// AddDeclinedSuggestion appends one row to `lists.declined_suggestions`,
+// or no-ops if a row with the same canonical source-entry set already
+// exists. The auto-managed marker comment is attached to the section
+// the first time it is created. Returns (changed, err).
+func AddDeclinedSuggestion(path string, set DeclinedSuggestion) (bool, error) {
+	if len(set.SourceEntries) == 0 {
+		return false, errors.New("declined suggestion has no source entries")
+	}
+	canonical := append([]string(nil), set.SourceEntries...)
+	sort.Strings(canonical)
+	set.SourceEntries = canonical
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return false, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return false, fmt.Errorf("%s: top-level is not a mapping", path)
+	}
+	doc := root.Content[0]
+
+	listsNode := findOrCreateMappingChild(doc, "lists")
+	// Locate the existing declined_suggestions sequence, or create
+	// it. New section gets the auto-managed marker comment so a
+	// human opening the YAML knows not to hand-edit.
+	seqNode, created := findOrCreateSeqChildWithComment(
+		listsNode,
+		"declined_suggestions",
+		"Automatically managed — do not edit by hand.\n"+
+			"trollbridge appends one row per declined generalization\n"+
+			"suggestion so the same source-entry set is never re-offered.",
+	)
+
+	if !created {
+		for _, existing := range seqNode.Content {
+			if existing.Kind != yaml.MappingNode {
+				continue
+			}
+			if sameCanonicalSourceEntries(existing, canonical) {
+				return false, nil
+			}
+		}
+	}
+
+	rowNode := buildDeclinedRow(set)
+	seqNode.Content = append(seqNode.Content, rowNode)
+
+	blanks := captureBlankLines(data)
+
+	out, err := encodeNode(&root)
+	if err != nil {
+		return false, fmt.Errorf("encode: %w", err)
+	}
+	out = reinsertBlankLines(out, blanks)
+	return true, atomicWrite(path, out, 0o600)
+}
+
+func findOrCreateSeqChildWithComment(parent *yaml.Node, key, comment string) (*yaml.Node, bool) {
+	for i := 0; i < len(parent.Content)-1; i += 2 {
+		if parent.Content[i].Value == key {
+			child := parent.Content[i+1]
+			if child.Kind != yaml.SequenceNode {
+				child.Kind = yaml.SequenceNode
+				child.Tag = "!!seq"
+				child.Value = ""
+				child.Content = nil
+			}
+			return child, false
+		}
+	}
+	keyNode := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key, HeadComment: comment}
+	valNode := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	parent.Content = append(parent.Content, keyNode, valNode)
+	return valNode, true
+}
+
+func sameCanonicalSourceEntries(row *yaml.Node, canonical []string) bool {
+	for i := 0; i < len(row.Content)-1; i += 2 {
+		if row.Content[i].Value != "source_entries" {
+			continue
+		}
+		seq := row.Content[i+1]
+		if seq.Kind != yaml.SequenceNode {
+			return false
+		}
+		existing := stringsFromSeq(seq)
+		sorted := append([]string(nil), existing...)
+		sort.Strings(sorted)
+		if len(sorted) != len(canonical) {
+			return false
+		}
+		for j := range sorted {
+			if sorted[j] != canonical[j] {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+func buildDeclinedRow(set DeclinedSuggestion) *yaml.Node {
+	row := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	addPair := func(k string, v *yaml.Node) {
+		row.Content = append(row.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k},
+			v,
+		)
+	}
+	seSeq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, e := range set.SourceEntries {
+		seSeq.Content = append(seSeq.Content, &yaml.Node{
+			Kind: yaml.ScalarNode, Tag: "!!str", Value: e,
+		})
+	}
+	addPair("source_entries", seSeq)
+	if len(set.AxesDeclined) > 0 {
+		axSeq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle}
+		for _, a := range set.AxesDeclined {
+			axSeq.Content = append(axSeq.Content, &yaml.Node{
+				Kind: yaml.ScalarNode, Tag: "!!str", Value: a,
+			})
+		}
+		addPair("axes_declined", axSeq)
+	}
+	if set.DeclinedAt != "" {
+		addPair("declined_at", &yaml.Node{
+			Kind: yaml.ScalarNode, Tag: "!!str", Value: set.DeclinedAt,
+		})
+	}
+	return row
+}
+
 // mutate is the common path: parse the file as a Node, find or
 // create lists.<which>, apply transform, encode, and atomically
 // rewrite. Returns (changed, err).
