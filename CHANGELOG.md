@@ -9,6 +9,31 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Generalize accept now prunes the specifics it replaces (closes #173)
+
+- **Changed.** Accepting a generalization (manual card or daemon
+  suggestion) now removes the more-specific entries it replaces and
+  adds the wildcard, in one atomic write — so the allow/deny list
+  shrinks instead of growing. Previously the wildcard was added but the
+  specifics were left behind. The confirmation names how many entries
+  were pruned.
+
+### TUI surfaces daemon generalization suggestions (#172)
+
+- **Added.** The daemon's quiet-moment generalization suggestions now
+  appear as a card in the operations pane. Accept with `shift+a` or
+  decline with `shift+d`. The card is width-fit (no off-screen text) and
+  is hidden whenever a request is pending approval, so it never competes
+  with approve/deny. Works in both `trollbridge run` and `attach`.
+
+### On-demand "suggest now" (#174)
+
+- **Added.** Press `s` in the URL pane to ask the daemon to scan the
+  allow/deny lists for a generalization immediately, rather than waiting
+  for a quiet moment; the result appears in the suggestion card. An empty
+  scan reports "no generalization opportunities found". Backed by a new
+  `POST /v1/suggestion/scan` control endpoint.
+
 ## v0.7.18 — 2026-05-20
 
 ### TUI: modifier-arrow keys no longer hijack the panel (closes #171)
