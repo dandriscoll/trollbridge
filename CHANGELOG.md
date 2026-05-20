@@ -9,6 +9,34 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### TUI: modifier-arrow keys no longer hijack the panel (closes #171)
+
+- **Fixed.** Pressing Shift-Up (or any modified arrow) in the URL pane
+  no longer opens an inescapable info panel. The terminal sends
+  Shift-Up as a modifier escape sequence (`ESC [ 1 ; 2 A`); the input
+  parser used to leak its tail as the keystrokes `;`, `2`, `A`, and the
+  stray `2` opened the info panel. The parser now consumes the whole
+  sequence; unknown sequences are swallowed instead of leaking.
+- **Fixed.** The info panel is no longer a dead end. Opening it from the
+  URL or LLM pane left keyboard focus on the bottom pane, where the
+  number keys did nothing and only Esc closed the panel. The info panel
+  now behaves like every other panel — `0`-`4` switch panels and Esc
+  closes, from any entry point.
+
+### TUI: usable generalize workflow in the operations pane (#170)
+
+- **Added.** Pressing `g` in the URL pane opens a generalization card in
+  the operations pane (no more options pushed off-screen). On a single
+  selected URL it proposes generalizations across axes — path segment,
+  hostname-below-TLD, IP /24, and method — and `tab` rotates between
+  them. Shift-Up / Shift-Down select a contiguous range of URLs, and
+  `g` then runs the deterministic detector over just that selection.
+- **Card keys.** `a` accepts (adds the pattern to the allow/deny list),
+  `d` or Esc dismisses, `tab` rotates the axis. The selected range is
+  dimmed in the URL list.
+- The LLM-backed "suggest generalizations" entry point is tracked
+  separately in #172.
+
 ## v0.7.17 — 2026-05-19
 
 ### Pair-with-a-sandbox documentation (closes #169)
