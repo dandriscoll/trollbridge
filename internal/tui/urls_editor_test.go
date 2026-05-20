@@ -227,17 +227,26 @@ func TestApplyConsoleExec_URLsPendingReturnSnapsBack(t *testing.T) {
 	}
 }
 
-// TestApplyKeyURLs_GeneralizeNowRedirectsToSuggestionMode pins the
-// post-#168 behavior of the 'g' keybinding: the URLs-pane
-// generalize command is no longer a synchronous keystroke prompt
-// (#85's GeneralizeOffer was removed in #168). Pressing 'g' now
-// shows an informational LastErr pointing at the daemon-owned
-// quiet-moment suggestion lifecycle.
-func TestApplyKeyURLs_GeneralizeNowRedirectsToSuggestionMode(t *testing.T) {
-	m := urlsModel(0)
+// TestApplyKeyURLs_GeneralizeSingleSelectOpensCard pins #170: pressing
+// 'g' on a single concrete URL opens the unified generalization card
+// with the axis candidates for that entry (replacing the post-#168
+// error stub). The card, not a LastErr, is the surface now.
+func TestApplyKeyURLs_GeneralizeSingleSelectOpensCard(t *testing.T) {
+	m := urlsModel(0) // GET https://api.example.com:443/v1/things
+	m.URLsAnchor = -1
 	got, _ := Apply(m, KeyEvent{Rune: 'g'})
-	if got.LastErr == "" {
-		t.Errorf("LastErr empty; want explanatory message")
+	if got.GenCard == nil {
+		t.Fatalf("g did not open a generalize card (LastErr=%q)", got.LastErr)
+	}
+	if len(got.GenCard.Candidates) == 0 {
+		t.Fatalf("card has no candidates")
+	}
+	if got.LastErr != "" {
+		t.Errorf("LastErr = %q; want empty when a card opens", got.LastErr)
+	}
+	// The single source entry is the selected URL.
+	if c := got.GenCard.Current(); len(c.SourceEntries) != 1 {
+		t.Errorf("single-select card SourceEntries = %v; want one", c.SourceEntries)
 	}
 }
 

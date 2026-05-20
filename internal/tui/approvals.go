@@ -329,12 +329,13 @@ func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, 
 // (the parent is already shutting down for another reason).
 func runLoop(ctx context.Context, client ControlClient, backend *console.Backend, in io.Reader, out io.Writer, resize *os.File, cols, rows int, welcome string, requestShutdown func(), opts Options) error {
 	model := Model{
-		Selected: -1,
-		Cols:     cols,
-		Rows:     rows,
-		Focused:  PaneApprovals,
-		Console:  ConsoleModel{Prompt: "trollbridge> "},
-		Alerts:   AlertsState{ChimeEnabled: opts.ChimeEnabled},
+		Selected:   -1,
+		URLsAnchor: -1,
+		Cols:       cols,
+		Rows:       rows,
+		Focused:    PaneApprovals,
+		Console:    ConsoleModel{Prompt: "trollbridge> "},
+		Alerts:     AlertsState{ChimeEnabled: opts.ChimeEnabled},
 	}
 	if welcome != "" {
 		for _, line := range splitLines(welcome) {
@@ -861,6 +862,17 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	if inner < 1 {
 		inner = 1
 	}
+	// The generalization card (#170) occupies the bottom of the body
+	// when active; op rows fill the remainder above it. Each card line
+	// is width-fitted so nothing renders off-screen (the reported bug).
+	var cardRows []string
+	if m.GenCard != nil {
+		cardRows = formatGeneralizeCard(*m.GenCard, inner)
+		if max := bodyLines - 1; len(cardRows) > max && max >= 0 {
+			cardRows = cardRows[:max]
+		}
+	}
+	listLines := bodyLines - len(cardRows)
 	used := 0
 	if len(displayed) == 0 {
 		b.WriteString(bodyLine(padRight(runeTrunc("  (no recent operations — waiting for traffic)", inner), inner), m.Cols, focused))
@@ -877,7 +889,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		used++
 		now := time.Now()
 		for i, o := range displayed {
-			if used >= bodyLines {
+			if used >= listLines {
 				break
 			}
 			row := formatOpRow(o, methodW, urlW, statusW+8, now)
@@ -889,9 +901,12 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			used++
 		}
 	}
-	for used < bodyLines {
+	for used < listLines {
 		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
 		used++
+	}
+	for _, cr := range cardRows {
+		b.WriteString(bodyLine(cr, m.Cols, focused))
 	}
 
 	// Status row (lives inside the border, above the bottom border).
@@ -915,9 +930,35 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
 	}
 
-	// Bottom border carries the keybindings on the right.
+	// Bottom border carries the keybindings on the right. While the
+	// generalization card is modal (#170), a/d mean accept/decline —
+	// reflect that so the border hint matches the live key effect.
 	keys := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [q] quit"
+	if m.GenCard != nil {
+		keys = "[a]ccept  [d]ecline  [tab] next axis  [esc] dismiss"
+	}
 	b.WriteString(bottomBorder("", keys, m.Cols, focused))
+}
+
+// formatGeneralizeCard renders the unified generalization candidate
+// card (#170) shown in the operations pane. Returns inner-width,
+// colorized content lines (the caller wraps each in the pane border).
+// Every line is runeTrunc'd to inner so the accept/decline keys can
+// never be pushed off the right edge — the literal #170 defect.
+func formatGeneralizeCard(card GeneralizeCard, inner int) []string {
+	c := card.Current()
+	axis := fmt.Sprintf("%d/%d", card.AxisIndex+1, len(card.Candidates))
+	raw := []string{
+		fmt.Sprintf("generalize (%s)  axis %s", c.Axis, axis),
+		"  pattern: " + c.SuggestedPattern,
+		"  from: " + card.SourceDesc + "  →  " + c.List,
+		"  [a]ccept  [d]ecline  [tab] next axis  [esc] dismiss",
+	}
+	out := make([]string, len(raw))
+	for i, l := range raw {
+		out[i] = "\x1b[36m" + padRight(runeTrunc(l, inner), inner) + "\x1b[0m"
+	}
+	return out
 }
 
 // formatSuggestion formats the quiet-moment generalization-
@@ -1901,6 +1942,21 @@ func renderLLMModal(b *strings.Builder, m Model, rows int) {
 type urlsLine struct {
 	text     string
 	selected bool
+	marked   bool // within the shift-select multi-selection range (#170)
+}
+
+// inGeneralizeSelection reports whether combined-list index idx is
+// inside the active shift-select range (#170). False when no
+// multi-selection is in progress.
+func inGeneralizeSelection(m Model, idx int) bool {
+	if m.URLsAnchor < 0 {
+		return false
+	}
+	lo, hi := m.URLsAnchor, m.URLsSelected
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	return idx >= lo && idx <= hi
 }
 
 // buildURLsLines flattens the allow/deny lists into the logical
@@ -1915,7 +1971,7 @@ func buildURLsLines(m Model) []urlsLine {
 		lines = append(lines, urlsLine{text: "    (empty)"})
 	} else {
 		for i, p := range m.AllowList {
-			lines = append(lines, urlsLine{text: "    " + p, selected: m.URLsSelected == i})
+			lines = append(lines, urlsLine{text: "    " + p, selected: m.URLsSelected == i, marked: inGeneralizeSelection(m, i)})
 		}
 	}
 	lines = append(lines, urlsLine{text: fmt.Sprintf("  DENY (%d)", len(m.DenyList))})
@@ -1924,7 +1980,7 @@ func buildURLsLines(m Model) []urlsLine {
 	} else {
 		allowLen := len(m.AllowList)
 		for i, p := range m.DenyList {
-			lines = append(lines, urlsLine{text: "    " + p, selected: m.URLsSelected == allowLen+i})
+			lines = append(lines, urlsLine{text: "    " + p, selected: m.URLsSelected == allowLen+i, marked: inGeneralizeSelection(m, allowLen+i)})
 		}
 	}
 	return lines
@@ -1976,20 +2032,24 @@ func renderURLsPane(b *strings.Builder, m Model, rows int) {
 		inner = 1
 	}
 	used := 0
-	writeRow := func(text string, selected bool) {
+	writeRow := func(text string, selected, marked bool) {
 		if used >= bodyLines {
 			return
 		}
 		cell := padRight(runeTrunc(text, inner), inner)
 		if selected {
 			cell = "\x1b[7m" + cell + "\x1b[0m"
+		} else if marked {
+			// Shift-select range member (#170): dim so the operator
+			// sees what `g` will consume.
+			cell = "\x1b[2m" + cell + "\x1b[0m"
 		}
 		b.WriteString(bodyLine(cell, m.Cols, focused))
 		used++
 	}
 
 	if !m.URLsLocal {
-		writeRow("  (allow/deny editing runs on the proxy host — open `trollbridge run` there)", false)
+		writeRow("  (allow/deny editing runs on the proxy host — open `trollbridge run` there)", false, false)
 	} else {
 		lines := buildURLsLines(m)
 		cursorRow := -1
@@ -2008,7 +2068,7 @@ func renderURLsPane(b *strings.Builder, m Model, rows int) {
 			end = len(lines)
 		}
 		for i := first; i < end; i++ {
-			writeRow(lines[i].text, lines[i].selected)
+			writeRow(lines[i].text, lines[i].selected, lines[i].marked)
 		}
 	}
 	for used < bodyLines {
@@ -2058,6 +2118,10 @@ func renderURLsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 		text := lines[i].text
 		if lines[i].selected {
 			b.WriteString("\x1b[7m")
+			b.WriteString(padRight(runeTrunc(text, m.Cols), m.Cols))
+			b.WriteString("\x1b[0m")
+		} else if lines[i].marked {
+			b.WriteString("\x1b[2m")
 			b.WriteString(padRight(runeTrunc(text, m.Cols), m.Cols))
 			b.WriteString("\x1b[0m")
 		} else {

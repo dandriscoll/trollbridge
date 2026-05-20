@@ -500,6 +500,58 @@ func DetectIPBlock(entries []string, list string) []Candidate {
 	return out
 }
 
+// GeneralizeOne emits one Candidate per applicable generalization axis
+// for a SINGLE concrete entry, in stable axis order (url_segment,
+// hostname_below_tld, ip_block, method). Unlike the DetectAll detectors
+// — which require ≥2 grouped entries — this powers the URLs-pane
+// single-select `g` (#170): the operator selects one entry and rotates
+// the axis options. SourceEntries is the single entry. Returns nil for
+// wildcard/malformed entries or when no axis applies.
+func GeneralizeOne(entry, list string) []Candidate {
+	p := parseEntry(entry)
+	if !p.ok {
+		return nil
+	}
+	src := []string{p.raw}
+	var out []Candidate
+	// url_segment: wildcard the trailing path segment.
+	if p.path != "" {
+		path := strings.TrimRight(p.path, "/")
+		if i := strings.LastIndexByte(path, '/'); i >= 0 {
+			pattern := renderPattern(p.method, p.scheme, formatHost(p.host, p.port), path[:i]+"/*")
+			out = append(out, Candidate{Axis: AxisURLSegment, List: list, SourceEntries: src, SuggestedPattern: pattern})
+		}
+	}
+	// hostname_below_tld: wildcard the leftmost label below the eTLD+1.
+	if !p.isIP {
+		if parent := parentBelowPublicSuffix(p.host); parent != "" && parent != p.host {
+			hostExpr := "*." + parent
+			if p.port != 0 {
+				hostExpr += ":" + strconv.Itoa(p.port)
+			}
+			pattern := renderPattern(p.method, p.scheme, hostExpr, p.path)
+			out = append(out, Candidate{Axis: AxisHostnameBelowTLD, List: list, SourceEntries: src, SuggestedPattern: pattern})
+		}
+	}
+	// ip_block: widen an IPv4 literal to its /24.
+	if p.isIP {
+		if ip := net.ParseIP(p.host).To4(); ip != nil {
+			hostExpr := fmt.Sprintf("%d.%d.%d.0/24", ip[0], ip[1], ip[2])
+			if p.port != 0 {
+				hostExpr += ":" + strconv.Itoa(p.port)
+			}
+			pattern := renderPattern(p.method, p.scheme, hostExpr, p.path)
+			out = append(out, Candidate{Axis: AxisIPBlock, List: list, SourceEntries: src, SuggestedPattern: pattern})
+		}
+	}
+	// method: widen a concrete verb to any.
+	if p.method != "*" {
+		pattern := renderPattern("*", p.scheme, formatHost(p.host, p.port), p.path)
+		out = append(out, Candidate{Axis: AxisMethod, List: list, SourceEntries: src, SuggestedPattern: pattern})
+	}
+	return out
+}
+
 func uniqueMethods(group []parsed) map[string]struct{} {
 	out := map[string]struct{}{}
 	for _, p := range group {

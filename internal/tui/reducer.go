@@ -8,6 +8,7 @@
 package tui
 
 import (
+	"fmt"
 	"net/url"
 	"sort"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/generalize"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
 	"github.com/dandriscoll/trollbridge/internal/reloadstatus"
 )
@@ -122,6 +124,20 @@ type Model struct {
 	URLsLocal    bool
 	URLsSelected int // index into AllowList++DenyList; -1 if empty
 
+	// URLsAnchor is the fixed end of a shift-select range in the URLs
+	// pane (#170 multi-select). -1 means no multi-selection; otherwise
+	// the selected set is the inclusive range
+	// [min(URLsAnchor,URLsSelected), max(...)]. Seeded from the cursor
+	// on the first Shift-Up/Down and reset to -1 on any plain
+	// navigation or list edit. Stored as an index range rather than a
+	// set so the value-copied Model carries no shared mutable map.
+	URLsAnchor int
+
+	// GenCard is the active generalization candidate card (#170),
+	// shown in the operations pane. nil when no card is up. While
+	// non-nil the card is modal: a/d/tab/esc act on the card.
+	GenCard *GeneralizeCard
+
 	// URLsUndo carries the most-recently-deleted URL pattern so the
 	// operator can press Ctrl-Z to restore it. Single level — the
 	// second delete overwrites the first. Cleared after a successful
@@ -191,6 +207,24 @@ type Suggestion struct {
 	SuggestedPattern string
 	Reason           string
 	AxesRemaining    int
+}
+
+// GeneralizeCard is the unified generalization candidate surface shown
+// in the operations pane (#170). The three entry points (single-select
+// `g`, multi-select `g`, and — filed for a follow-up — the LLM suggest)
+// all populate this one card. Candidates is the axis options for the
+// current trigger; AxisIndex selects which is shown and `tab` cycles
+// it. SourceDesc names what the candidate was derived from (e.g. "1
+// entry: GET …" or "3 selected entries"). The card is modal while up.
+type GeneralizeCard struct {
+	Candidates []generalize.Candidate
+	AxisIndex  int
+	SourceDesc string
+}
+
+// Current returns the candidate the card is presently showing.
+func (c *GeneralizeCard) Current() generalize.Candidate {
+	return c.Candidates[c.AxisIndex]
 }
 
 // AlertsState carries the chime toggle plus the last pending count
@@ -435,6 +469,12 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 			m.AllowList = e.Allow
 			m.DenyList = e.Deny
 			m.URLsLocal = e.Local
+			// A list reload invalidates any in-flight multi-selection
+			// range (indices may have shifted under add/remove). Reset
+			// the anchor so a stale range never feeds `g` (#170). This
+			// is also the chokepoint that clears the zero-value anchor
+			// when the pane first opens via CmdURLsRefresh.
+			m.URLsAnchor = -1
 			total := len(m.AllowList) + len(m.DenyList)
 			if total == 0 {
 				m.URLsSelected = -1
@@ -632,6 +672,12 @@ func applyKey(m Model, e KeyEvent) (Model, Cmd) {
 	// no focus change, no panel toggle, no console emission.
 	if e.Key == KeyCtrlL {
 		return m, CmdRepaint{}
+	}
+	// Generalization card is modal while shown (#170): a/d/tab/esc act
+	// on the card so they cannot leak to approve/deny or focus toggle.
+	// Placed after Ctrl-C/Ctrl-L so quit and repaint still work.
+	if m.GenCard != nil {
+		return applyKeyGenCard(m, e)
 	}
 	// Pre-#168 the 1/2/3 generalize-offer prompt was intercepted
 	// here. The prompt was removed in #168 in favor of the
@@ -906,13 +952,37 @@ func applyKeyURLs(m Model, e KeyEvent) (Model, Cmd) {
 		return mNew, cmd
 	}
 	combinedLen := len(m.AllowList) + len(m.DenyList)
+	// Shift-Up/Down build a contiguous multi-selection (#170): seed the
+	// anchor from the current cursor on the first shift-move, then move
+	// the cursor; the selected set is the inclusive [anchor,cursor]
+	// range that `g` consumes.
+	if e.Key == KeyShiftUp {
+		if m.URLsAnchor < 0 {
+			m.URLsAnchor = m.URLsSelected
+		}
+		if m.URLsSelected > 0 {
+			m.URLsSelected--
+		}
+		return m, CmdNone{}
+	}
+	if e.Key == KeyShiftDown {
+		if m.URLsAnchor < 0 {
+			m.URLsAnchor = m.URLsSelected
+		}
+		if m.URLsSelected < combinedLen-1 {
+			m.URLsSelected++
+		}
+		return m, CmdNone{}
+	}
 	if e.Key == KeyUp || e.Rune == 'k' {
+		m.URLsAnchor = -1
 		if m.URLsSelected > 0 {
 			m.URLsSelected--
 		}
 		return m, CmdNone{}
 	}
 	if e.Key == KeyDown || e.Rune == 'j' {
+		m.URLsAnchor = -1
 		if m.URLsSelected < combinedLen-1 {
 			m.URLsSelected++
 		}
@@ -1055,16 +1125,98 @@ func urlsEnterEditMode(m Model) (Model, Cmd) {
 	return m, CmdConsoleExec{Line: "remove " + pattern}
 }
 
-// urlsGeneralize was the URLs-pane "generalize this entry" command
-// added by #85 and removed by #168. The quiet-moment suggestion
-// lifecycle in internal/suggestion is the sole generalization
-// surface now; if the operator wants to generalize a specific
-// entry, the daemon's detector will find the opportunity at the
-// next quiet moment (or they can edit the YAML directly). Kept as
-// a stub that surfaces the change to anyone still pressing the
-// old keybinding.
+// urlsGeneralize builds the generalization card for the URLs pane (#170).
+// With a multi-selection (Shift-Up/Down range of ≥2 entries) it runs the
+// deterministic detector over the selected subset; otherwise it
+// axis-generalizes the single cursor entry. Either way the resulting
+// candidates populate m.GenCard, which the operations pane renders and
+// which a/d/tab then drive. No candidate → an explanatory LastErr.
 func urlsGeneralize(m Model) (Model, Cmd) {
-	m.LastErr = "generalize is now suggestion-driven (#168); the daemon offers candidates at quiet moments"
+	if !m.URLsLocal {
+		m.LastErr = "allow/deny editing runs on the proxy host"
+		return m, CmdNone{}
+	}
+	combined := append(append([]string(nil), m.AllowList...), m.DenyList...)
+	if len(combined) == 0 {
+		m.LastErr = "no URLs to generalize"
+		return m, CmdNone{}
+	}
+	lo, hi := m.URLsSelected, m.URLsSelected
+	if m.URLsAnchor >= 0 {
+		lo, hi = m.URLsAnchor, m.URLsSelected
+		if lo > hi {
+			lo, hi = hi, lo
+		}
+	}
+	if lo < 0 {
+		m.URLsAnchor = -1
+		m.LastErr = "no URL selected to generalize"
+		return m, CmdNone{}
+	}
+	var cands []generalize.Candidate
+	var srcDesc string
+	if hi > lo {
+		// Multi-select: split the range into allow/deny subsets (the
+		// detector never mixes lists) and run DetectAll over them.
+		var allowSel, denySel []string
+		for i := lo; i <= hi && i < len(combined); i++ {
+			if i < len(m.AllowList) {
+				allowSel = append(allowSel, combined[i])
+			} else {
+				denySel = append(denySel, combined[i])
+			}
+		}
+		cands = generalize.DetectAll(allowSel, denySel)
+		srcDesc = fmt.Sprintf("%d selected entries", hi-lo+1)
+	} else {
+		entry := combined[lo]
+		side := "allow"
+		if lo >= len(m.AllowList) {
+			side = "deny"
+		}
+		cands = generalize.GeneralizeOne(entry, side)
+		srcDesc = "1 entry: " + entry
+	}
+	m.URLsAnchor = -1
+	if len(cands) == 0 {
+		if hi > lo {
+			m.LastErr = "no generalization across the selected entries"
+		} else {
+			m.LastErr = "no generalization for " + combined[lo]
+		}
+		return m, CmdNone{}
+	}
+	m.GenCard = &GeneralizeCard{Candidates: cands, AxisIndex: 0, SourceDesc: srcDesc}
+	m.LastErr = ""
+	return m, CmdNone{}
+}
+
+// applyKeyGenCard handles keys while the generalization card is up
+// (#170). The card is modal: accept writes the current candidate's
+// pattern through the same configwrite path a typed `allow <pat>`
+// uses (mirroring daemon Manager.Accept — add the pattern, keep the
+// sources); decline/esc dismiss; tab rotates the axis. Every other
+// key is swallowed so a/d/tab cannot reach approve/deny or focus.
+func applyKeyGenCard(m Model, e KeyEvent) (Model, Cmd) {
+	switch {
+	case e.Rune == 'a':
+		c := m.GenCard.Current()
+		m.GenCard = nil
+		m.LastErr = ""
+		m.LastInfo = "generalized → " + c.List + " " + c.SuggestedPattern
+		// Snap back to the URLs list and refresh after the write so the
+		// operator sees the new pattern (#86 return-path).
+		m.URLsPendingReturn = true
+		return m, CmdConsoleExec{Line: c.List + " " + c.SuggestedPattern}
+	case e.Rune == 'd' || e.Key == KeyEsc:
+		m.GenCard = nil
+		return m, CmdNone{}
+	case e.Key == KeyTab || e.Key == KeyShiftTab:
+		card := *m.GenCard
+		card.AxisIndex = (card.AxisIndex + 1) % len(card.Candidates)
+		m.GenCard = &card
+		return m, CmdNone{}
+	}
 	return m, CmdNone{}
 }
 
