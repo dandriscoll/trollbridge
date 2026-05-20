@@ -1097,11 +1097,19 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString(bodyLine(padRight(runeTrunc(colHeader, inner), inner), m.Cols, focused))
 		used++
 		now := time.Now()
-		for i, o := range displayed {
+		// Bottom-anchored scroll so the pending region (tail of
+		// DisplayedOps) is never pushed off-screen (#175).
+		dataRows := listLines - 1
+		first := opsScrollOffset(m.Selected, dataRows, len(displayed))
+		end := first + dataRows
+		if end > len(displayed) {
+			end = len(displayed)
+		}
+		for i := first; i < end; i++ {
 			if used >= listLines {
 				break
 			}
-			row := formatOpRow(o, methodW, urlW, statusW+8, now)
+			row := formatOpRow(displayed[i], methodW, urlW, statusW+8, now)
 			row = padRightVisible(row, inner)
 			if i == m.Selected {
 				row = "\x1b[7m" + row + "\x1b[0m"
@@ -1433,11 +1441,18 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 		b.WriteString("\r\n")
 		used++
 		now := time.Now()
-		for i, o := range displayed {
+		// Bottom-anchored scroll so the pending region stays on screen (#175).
+		dataRows := bodyLines - 1
+		first := opsScrollOffset(m.Selected, dataRows, len(displayed))
+		end := first + dataRows
+		if end > len(displayed) {
+			end = len(displayed)
+		}
+		for i := first; i < end; i++ {
 			if used >= bodyLines {
 				break
 			}
-			row := formatOpRow(o, methodW, urlW, statusW, now)
+			row := formatOpRow(displayed[i], methodW, urlW, statusW, now)
 			if i == m.Selected {
 				b.WriteString("\x1b[7m")
 				b.WriteString(padRightVisible(row, m.Cols))
@@ -2214,6 +2229,25 @@ func urlsScrollOffset(cursorRow, bodyRows, total int) int {
 	}
 	if maxFirst := total - bodyRows; first > maxFirst {
 		first = maxFirst
+	}
+	return first
+}
+
+// opsScrollOffset returns the index of the first visible operations-pane
+// row given the cursor, the number of op rows available, and the total
+// op count (#175). Bottom-anchored: by default the last `rows` entries
+// are shown, so the pending region — always at the tail of DisplayedOps
+// (#156) — stays on screen. Scrolls UP to keep the cursor visible when
+// the operator has navigated into the resolved region above the window.
+// Distinct from urlsScrollOffset's centred rule: the ops pane biases to
+// the bottom because pending is the load-bearing content.
+func opsScrollOffset(cursor, rows, total int) int {
+	if rows <= 0 || total <= rows {
+		return 0
+	}
+	first := total - rows // bottom-anchored: pending at the tail stays visible
+	if cursor >= 0 && cursor < first {
+		first = cursor // follow the cursor up into the resolved region
 	}
 	return first
 }
