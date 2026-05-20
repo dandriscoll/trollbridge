@@ -618,24 +618,32 @@ func readKeys(ctx context.Context, in io.Reader, events chan<- Event) {
 				sendKey(ctx, events, KeyEvent{Key: KeyCtrlZ})
 				i++
 			case b == 0x1b: // ESC, possibly start of a CSI sequence
-				// 4-byte forms (`ESC [ <n> ~`) must be matched before the
-				// 3-byte form, otherwise `ESC [ 3` would dispatch as a
-				// 3-byte CSI and the trailing `~` would leak in as a
-				// printable rune.
-				if i+3 < n && buf[i+1] == '[' && buf[i+2] == '3' && buf[i+3] == '~' {
-					sendKey(ctx, events, KeyEvent{Key: KeyDelete})
-					i += 4
-				} else if i+2 < n && buf[i+1] == '[' {
-					switch buf[i+2] {
-					case 'A':
-						sendKey(ctx, events, KeyEvent{Key: KeyUp})
-					case 'B':
-						sendKey(ctx, events, KeyEvent{Key: KeyDown})
-					case 'Z':
-						// Shift-Tab as emitted by xterm/screen/tmux.
-						sendKey(ctx, events, KeyEvent{Key: KeyShiftTab})
+				// Scan a full CSI sequence (`ESC [ <params> <final>`)
+				// rather than special-casing fixed lengths. The fixed-
+				// length form leaked the tail of modifier sequences as
+				// printable runes: Shift-Up is `ESC [ 1 ; 2 A`, and the
+				// old parser consumed `ESC [ 1`, matched nothing, and
+				// emitted `;`, `2`, `A` — the `2` opened the info panel
+				// (#171). Collect param/intermediate bytes (0x20-0x3f)
+				// until a final byte (0x40-0x7e), then interpret as a
+				// whole; unknown sequences are swallowed, never leaked.
+				if i+1 < n && buf[i+1] == '[' {
+					j := i + 2
+					for j < n && buf[j] >= 0x20 && buf[j] <= 0x3f {
+						j++
 					}
-					i += 3
+					if j < n && buf[j] >= 0x40 && buf[j] <= 0x7e {
+						if ev, ok := csiKeyEvent(buf[i+2:j], buf[j]); ok {
+							sendKey(ctx, events, ev)
+						}
+						i = j + 1
+					} else {
+						// No final byte in this buffer (unterminated or
+						// split across reads): fall back to a lone Esc,
+						// matching the prior behavior for a bare ESC.
+						sendKey(ctx, events, KeyEvent{Key: KeyEsc})
+						i++
+					}
 				} else {
 					sendKey(ctx, events, KeyEvent{Key: KeyEsc})
 					i++
@@ -648,6 +656,40 @@ func readKeys(ctx context.Context, in io.Reader, events chan<- Event) {
 			}
 		}
 	}
+}
+
+// csiKeyEvent maps a parsed CSI sequence (the bytes between `ESC [` and
+// the final byte, plus the final byte) to a KeyEvent. ok=false means
+// the sequence is recognized-but-ignored or unknown — the caller emits
+// nothing, so no byte ever leaks as a printable rune. xterm encodes a
+// modifier as the second `;`-separated parameter (Shift=2, Alt=3,
+// Ctrl=5, …); only Shift is distinguished here, and every other
+// modifier degrades to the plain arrow.
+func csiKeyEvent(params []byte, final byte) (KeyEvent, bool) {
+	shift := false
+	if fields := strings.Split(string(params), ";"); len(fields) >= 2 {
+		shift = fields[1] == "2"
+	}
+	switch final {
+	case 'A':
+		if shift {
+			return KeyEvent{Key: KeyShiftUp}, true
+		}
+		return KeyEvent{Key: KeyUp}, true
+	case 'B':
+		if shift {
+			return KeyEvent{Key: KeyShiftDown}, true
+		}
+		return KeyEvent{Key: KeyDown}, true
+	case 'Z':
+		// Shift-Tab as emitted by xterm/screen/tmux.
+		return KeyEvent{Key: KeyShiftTab}, true
+	case '~':
+		if len(params) > 0 && strings.Split(string(params), ";")[0] == "3" {
+			return KeyEvent{Key: KeyDelete}, true
+		}
+	}
+	return KeyEvent{}, false
 }
 
 func sendKey(ctx context.Context, events chan<- Event, ev KeyEvent) {

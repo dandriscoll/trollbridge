@@ -322,6 +322,13 @@ const (
 	// to sweep stray bytes that may have landed on the alt-screen
 	// (#115).
 	KeyCtrlL
+	// KeyShiftUp / KeyShiftDown are the modifier-CSI arrow forms
+	// (xterm `ESC [ 1 ; 2 A` / `... B`). Distinct KeyCodes so the
+	// parser can consume the whole sequence without leaking the
+	// `; 2 A` tail as printable runes (#171). They are inert today;
+	// issue #170 gives them multi-select meaning in the URLs pane.
+	KeyShiftUp
+	KeyShiftDown
 )
 
 // ActionResult arrives after an approve or deny POST completes.
@@ -727,6 +734,13 @@ func applyMetaPanelDigitKey(m Model, e KeyEvent) (Model, Cmd, bool) {
 		}
 		m.BottomPanel = BottomPanelInfo
 		m.BottomPanelOpen = true
+		// Info is a read-only reflection of the approvals selection; it
+		// has no text input and must not hold PaneConsole focus. When
+		// opened from a console-focused pane (URLs/LLM) without this,
+		// dispatch falls through to applyKeyConsole (BottomPanelInfo has
+		// no handler) which swallows digit keys into the hidden console
+		// input — the #171 "0/4 do nothing, only esc closes" trap.
+		m.Focused = PaneApprovals
 		return m, CmdNone{}, true
 	case '3':
 		if m.BottomPanelOpen && m.BottomPanel == BottomPanelLLM {
