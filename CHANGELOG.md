@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.7.20 — 2026-05-20
+
 ### TUI: pending requests stay on screen in a busy ops pane (closes #175)
 
 - **Fixed.** When the operations pane had more rows than fit, the
