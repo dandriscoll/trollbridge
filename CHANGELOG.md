@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.7.19 — 2026-05-20
+
 ### Generalize accept now prunes the specifics it replaces (closes #173)
 
 - **Changed.** Accepting a generalization (manual card or daemon
