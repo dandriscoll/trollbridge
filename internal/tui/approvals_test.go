@@ -26,6 +26,9 @@ type stubClient struct {
 	denyErr    error
 	approveIDs []string
 	denyIDs    []string
+	suggestion *Suggestion
+	acceptedID []string
+	declinedID []string
 }
 
 func (s *stubClient) ListHolds() ([]approvals.Snapshot, error) {
@@ -69,6 +72,26 @@ func (s *stubClient) RecentURLs() ([]string, []string, bool, error) {
 
 func (s *stubClient) ReloadStatus() (reloadstatus.Status, error) {
 	return reloadstatus.Status{}, nil
+}
+
+func (s *stubClient) ActiveSuggestion() (*Suggestion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.suggestion, nil
+}
+
+func (s *stubClient) AcceptSuggestion(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.acceptedID = append(s.acceptedID, id)
+	return nil
+}
+
+func (s *stubClient) DeclineSuggestion(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.declinedID = append(s.declinedID, id)
+	return nil
 }
 
 // TestRunLoop_ApproveFlowEndToEnd drives runLoop with scripted

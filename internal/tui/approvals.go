@@ -54,6 +54,23 @@ type ControlClient interface {
 	// bold-red `␇ reload failed` badge so the operator notices that
 	// the file on disk diverges from what the daemon is running.
 	ReloadStatus() (reloadstatus.Status, error)
+	// ActiveSuggestion returns the daemon's currently-offered quiet-
+	// moment generalization suggestion, or (nil, nil) when there is
+	// none (#172). AcceptSuggestion / DeclineSuggestion resolve it by
+	// id through the daemon's suggestion lifecycle.
+	ActiveSuggestion() (*Suggestion, error)
+	AcceptSuggestion(id string) error
+	DeclineSuggestion(id string) error
+}
+
+// SuggestionSource is the in-process surface of the daemon's
+// suggestion lifecycle (#172). The cmd layer adapts a
+// *suggestion.Manager to it so the tui package needs no suggestion
+// import. May be nil on the in-process client (no suggestions then).
+type SuggestionSource interface {
+	ActiveSuggestion() *Suggestion
+	AcceptSuggestion(id string) error
+	DeclineSuggestion(id string) error
 }
 
 type httpClient struct{ cfg *config.Config }
@@ -135,6 +152,49 @@ func (c *httpClient) RecentURLs() (allow, deny []string, ok bool, err error) {
 	return resp.Allow, resp.Deny, true, nil
 }
 
+func (c *httpClient) ActiveSuggestion() (*Suggestion, error) {
+	body, err := controlclient.Get(c.cfg, "/v1/suggestion")
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil, nil // 204: no active suggestion
+	}
+	var row struct {
+		SuggestionID     string   `json:"suggestion_id"`
+		Axis             string   `json:"axis"`
+		List             string   `json:"list"`
+		SourceEntries    []string `json:"source_entries"`
+		SuggestedPattern string   `json:"suggested_pattern"`
+		Reason           string   `json:"reason"`
+		AxesRemaining    int      `json:"axes_remaining"`
+	}
+	if uerr := json.Unmarshal(body, &row); uerr != nil {
+		return nil, fmt.Errorf("decode suggestion: %w", uerr)
+	}
+	return &Suggestion{
+		ID:               row.SuggestionID,
+		Axis:             row.Axis,
+		List:             row.List,
+		SourceEntries:    row.SourceEntries,
+		SuggestedPattern: row.SuggestedPattern,
+		Reason:           row.Reason,
+		AxesRemaining:    row.AxesRemaining,
+	}, nil
+}
+
+func (c *httpClient) AcceptSuggestion(id string) error {
+	body, _ := json.Marshal(map[string]string{"suggestion_id": id})
+	_, err := controlclient.Post(c.cfg, "/v1/suggestion/accept", body)
+	return err
+}
+
+func (c *httpClient) DeclineSuggestion(id string) error {
+	body, _ := json.Marshal(map[string]string{"suggestion_id": id})
+	_, err := controlclient.Post(c.cfg, "/v1/suggestion/decline", body)
+	return err
+}
+
 // NewHTTPClient returns a ControlClient that talks to the daemon's
 // mTLS control plane. Used by `trollbridge attach` (separate process).
 func NewHTTPClient(cfg *config.Config) ControlClient {
@@ -160,6 +220,9 @@ type inProcessClient struct {
 	// reload is the daemon's reload-status surface (closes #129).
 	// May be nil — the TUI badge then stays dormant.
 	reload ReloadStatusSource
+	// sugg is the daemon's suggestion lifecycle (#172). May be nil —
+	// the suggestion card then never appears in the embedded UI.
+	sugg SuggestionSource
 }
 
 func (c *inProcessClient) ListHolds() ([]approvals.Snapshot, error) {
@@ -221,6 +284,27 @@ func (c *inProcessClient) RecentURLs() ([]string, []string, bool, error) {
 	return nil, nil, false, nil
 }
 
+func (c *inProcessClient) ActiveSuggestion() (*Suggestion, error) {
+	if c.sugg == nil {
+		return nil, nil
+	}
+	return c.sugg.ActiveSuggestion(), nil
+}
+
+func (c *inProcessClient) AcceptSuggestion(id string) error {
+	if c.sugg == nil {
+		return errors.New("suggestion lifecycle not wired")
+	}
+	return c.sugg.AcceptSuggestion(id)
+}
+
+func (c *inProcessClient) DeclineSuggestion(id string) error {
+	if c.sugg == nil {
+		return errors.New("suggestion lifecycle not wired")
+	}
+	return c.sugg.DeclineSuggestion(id)
+}
+
 // NewInProcessClient returns a ControlClient that calls the daemon's
 // approvals queue and ops ring directly. Use this when the operator
 // UI is embedded in the daemon (e.g. `trollbridge run`): it removes
@@ -246,6 +330,14 @@ func NewInProcessClientWithAdvisor(q *approvals.Queue, ops *opstream.Ring, adv *
 // surface then renders empty.
 func NewInProcessClientFull(q *approvals.Queue, ops *opstream.Ring, adv *advisor.Service, rs ReloadStatusSource) ControlClient {
 	return &inProcessClient{q: q, ops: ops, adv: adv, reload: rs}
+}
+
+// NewInProcessClientWithSuggestion is NewInProcessClientFull plus the
+// daemon's suggestion lifecycle (#172), so the embedded `trollbridge
+// run` UI can surface and resolve quiet-moment generalization
+// suggestions without an HTTP hop. sugg may be nil.
+func NewInProcessClientWithSuggestion(q *approvals.Queue, ops *opstream.Ring, adv *advisor.Service, rs ReloadStatusSource, sugg SuggestionSource) ControlClient {
+	return &inProcessClient{q: q, ops: ops, adv: adv, reload: rs, sugg: sugg}
 }
 
 // RunOperator drives the unified two-pane operator UI. The caller
@@ -442,6 +534,24 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				select {
 				case <-loopCtx.Done():
 				case events <- ActionResult{ID: id, Action: "deny", Err: err}:
+				}
+			}()
+		case CmdSuggestionAccept:
+			id := c.ID
+			go func() {
+				err := client.AcceptSuggestion(id)
+				select {
+				case <-loopCtx.Done():
+				case events <- SuggestionActionResult{Action: "accept", Err: err}:
+				}
+			}()
+		case CmdSuggestionDecline:
+			id := c.ID
+			go func() {
+				err := client.DeclineSuggestion(id)
+				select {
+				case <-loopCtx.Done():
+				case events <- SuggestionActionResult{Action: "decline", Err: err}:
 				}
 			}()
 		case CmdDigestRefresh:
@@ -779,9 +889,17 @@ func tickRefresh(ctx context.Context, client ControlClient, events chan<- Event)
 		case events <- ReloadTickResult{Status: st, Err: err}:
 		}
 	}
+	emitSuggestion := func() {
+		sug, err := client.ActiveSuggestion()
+		select {
+		case <-ctx.Done():
+		case events <- SuggestionTickResult{Suggestion: sug, Err: err}:
+		}
+	}
 	emitHolds()
 	emitOps()
 	emitReload()
+	emitSuggestion()
 	t := time.NewTicker(1500 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -792,6 +910,7 @@ func tickRefresh(ctx context.Context, client ControlClient, events chan<- Event)
 			go emitHolds()
 			go emitOps()
 			go emitReload()
+			go emitSuggestion()
 		}
 	}
 }
@@ -917,12 +1036,19 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	// The generalization card (#170) occupies the bottom of the body
 	// when active; op rows fill the remainder above it. Each card line
 	// is width-fitted so nothing renders off-screen (the reported bug).
+	// Card-slot precedence: a manual generalize card (modal) wins; else
+	// the daemon's ambient quiet-moment suggestion (#172), hidden while
+	// any hold is pending so it never competes with approve/deny. Both
+	// render width-fit so nothing is pushed off-screen.
 	var cardRows []string
-	if m.GenCard != nil {
+	switch {
+	case m.GenCard != nil:
 		cardRows = formatGeneralizeCard(*m.GenCard, inner)
-		if max := bodyLines - 1; len(cardRows) > max && max >= 0 {
-			cardRows = cardRows[:max]
-		}
+	case m.Suggestion != nil && len(m.Holds) == 0:
+		cardRows = formatSuggestionCard(*m.Suggestion, inner)
+	}
+	if max := bodyLines - 1; len(cardRows) > max && max >= 0 {
+		cardRows = cardRows[:max]
 	}
 	listLines := bodyLines - len(cardRows)
 	used := 0
@@ -962,16 +1088,10 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	}
 
 	// Status row (lives inside the border, above the bottom border).
+	// The quiet-moment suggestion now renders as a width-fit card in
+	// the body slot above (#172), not as a single status row that could
+	// truncate off-screen.
 	switch {
-	case m.Suggestion != nil && len(m.Holds) == 0:
-		// Quiet-moment suggestion (#168). Cyan so the operator
-		// notices a new-keystroke-expected state without it reading
-		// like an error. Hidden whenever any real hold is in the
-		// queue — the literal "hidden if any real pending requests
-		// come in" requirement from the issue body.
-		text := formatSuggestion(*m.Suggestion)
-		row := "\x1b[36m" + padRight(runeTrunc(text, inner), inner) + "\x1b[0m"
-		b.WriteString(bodyLine(row, m.Cols, focused))
 	case m.LastErr != "":
 		row := "\x1b[31m" + padRight(runeTrunc("error: "+m.LastErr, inner), inner) + "\x1b[0m"
 		b.WriteString(bodyLine(row, m.Cols, focused))
@@ -1013,21 +1133,30 @@ func formatGeneralizeCard(card GeneralizeCard, inner int) []string {
 	return out
 }
 
-// formatSuggestion formats the quiet-moment generalization-
-// suggestion prompt shown in the approvals-pane status row when
-// the daemon's detector finds an opportunity (#168). The prompt
-// names the proposed pattern, the LLM-narrated reason, the axis
-// of generalization, and the accept/decline keybindings. Hidden
-// whenever any real hold is in the queue (literal interpretation
-// of "hidden if any real pending requests come in").
-func formatSuggestion(s Suggestion) string {
-	remaining := ""
+// formatSuggestionCard renders the daemon's quiet-moment suggestion
+// (#168) as a width-fit card in the operations pane (#172), matching
+// the manual generalize card's shape. Returns inner-width, cyan
+// content lines (the caller wraps each in the pane border). Every line
+// is runeTrunc'd so the accept/decline keys can never be pushed off
+// the right edge. The suggestion is ambient, so it uses shift+a/shift+d
+// (distinct from the modal a/d of the manual card) to avoid stealing
+// approve/deny.
+func formatSuggestionCard(s Suggestion, inner int) []string {
+	axis := ""
 	if s.AxesRemaining > 0 {
-		remaining = fmt.Sprintf("  (axis 1 of %d)", s.AxesRemaining+1)
+		axis = fmt.Sprintf("  axis 1/%d", s.AxesRemaining+1)
 	}
-	return fmt.Sprintf(
-		"suggest %s: %s — %s  [shift+a]ccept  [shift+d]ecline%s",
-		s.Axis, s.SuggestedPattern, s.Reason, remaining)
+	raw := []string{
+		fmt.Sprintf("suggestion (%s)%s", s.Axis, axis),
+		"  pattern: " + s.SuggestedPattern,
+		"  why: " + s.Reason,
+		"  → " + s.List + "    [shift+a]ccept  [shift+d]ecline",
+	}
+	out := make([]string, len(raw))
+	for i, l := range raw {
+		out[i] = "\x1b[36m" + padRight(runeTrunc(l, inner), inner) + "\x1b[0m"
+	}
+	return out
 }
 
 // formatOpRow renders one approvals-pane row for op `o` with the

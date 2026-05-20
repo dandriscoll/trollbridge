@@ -452,7 +452,8 @@ func newRunCmd() *cobra.Command {
 								"error", fmt.Sprintf("%v", r))
 						}
 					}()
-					if err := tui.RunOperator(ctx, tui.NewInProcessClientFull(srv.Queue(), srv.Ops(), srv.Advisor(), srv), os.Stdin, os.Stdout, backend, welcome, cancel, tui.Options{ChimeEnabled: cfg.TUI.Alerts.ChimeEnabled()}); err != nil {
+					inproc := tui.NewInProcessClientWithSuggestion(srv.Queue(), srv.Ops(), srv.Advisor(), srv, tuiSuggestionAdapter{m: sugMgr})
+					if err := tui.RunOperator(ctx, inproc, os.Stdin, os.Stdout, backend, welcome, cancel, tui.Options{ChimeEnabled: cfg.TUI.Alerts.ChimeEnabled()}); err != nil {
 						opLog.Warn("operator UI exited",
 							"event", oplog.EventOperatorUIError,
 							"error", err.Error())
@@ -737,6 +738,38 @@ func (writerAdapter) AddDeclinedSuggestion(path string, src, axes []string, at s
 		AxesDeclined:  axes,
 		DeclinedAt:    at,
 	})
+}
+
+// tuiSuggestionAdapter adapts the suggestion.Manager to the TUI's
+// SuggestionSource so the embedded `trollbridge run` UI can surface and
+// resolve quiet-moment suggestions in-process (#172). It reuses
+// suggestion.ControlAdapter for the Manager→row conversion (incl. the
+// axes-remaining count) so the in-process and HTTP surfaces stay
+// identical.
+type tuiSuggestionAdapter struct{ m *suggestion.Manager }
+
+func (a tuiSuggestionAdapter) ActiveSuggestion() *tui.Suggestion {
+	row := suggestion.ControlAdapter{M: a.m}.Active()
+	if row == nil {
+		return nil
+	}
+	return &tui.Suggestion{
+		ID:               row.SuggestionID,
+		Axis:             row.Axis,
+		List:             row.List,
+		SourceEntries:    row.SourceEntries,
+		SuggestedPattern: row.SuggestedPattern,
+		Reason:           row.Reason,
+		AxesRemaining:    row.AxesRemaining,
+	}
+}
+
+func (a tuiSuggestionAdapter) AcceptSuggestion(id string) error {
+	return a.m.Accept(context.Background(), id)
+}
+
+func (a tuiSuggestionAdapter) DeclineSuggestion(id string) error {
+	return a.m.Decline(context.Background(), id)
 }
 
 // advisorAdapter wraps advisor.Service so the suggestion package

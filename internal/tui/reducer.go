@@ -320,6 +320,24 @@ type ReloadTickResult struct {
 	Err    error
 }
 
+// SuggestionTickResult arrives after a poll of /v1/suggestion (#172).
+// Suggestion is nil when the daemon has no active offer; a non-nil Err
+// (transport blip) means "keep the prior state" so the card does not
+// flicker.
+type SuggestionTickResult struct {
+	Suggestion *Suggestion
+	Err        error
+}
+
+// SuggestionActionResult arrives after a CmdSuggestionAccept /
+// CmdSuggestionDecline completes (#172). Action is "accept" or
+// "decline"; Err is non-nil when the control call failed (e.g. the
+// suggestion went stale).
+type SuggestionActionResult struct {
+	Action string
+	Err    error
+}
+
 // KeyEvent arrives when the operator presses a key.
 type KeyEvent struct {
 	Rune rune    // printable rune (a, d, q, j, k, etc.) or 0
@@ -390,7 +408,9 @@ func (TickResult) event()        {}
 func (OpsTickResult) event()     {}
 func (DigestTickResult) event()  {}
 func (URLsTickResult) event()    {}
-func (ReloadTickResult) event()  {}
+func (ReloadTickResult) event()     {}
+func (SuggestionTickResult) event()   {}
+func (SuggestionActionResult) event() {}
 func (KeyEvent) event()          {}
 func (ActionResult) event()      {}
 func (ResizeEvent) event()       {}
@@ -422,6 +442,13 @@ type CmdGeneralizeAccept struct {
 	Sources []string
 }
 type CmdDigestRefresh struct{}
+
+// CmdSuggestionAccept / CmdSuggestionDecline resolve the daemon's
+// active quiet-moment suggestion through the control plane (#172). The
+// runtime calls the ControlClient off the event loop and emits a
+// SuggestionActionResult; the next poll refreshes Model.Suggestion.
+type CmdSuggestionAccept struct{ ID string }
+type CmdSuggestionDecline struct{ ID string }
 
 // CmdRepaint is emitted on Ctrl-L. The runtime writes a hard-clear
 // sequence (clear visible + scrollback, home cursor, hide cursor)
@@ -455,7 +482,9 @@ func (CmdApprove) cmd()       {}
 func (CmdDeny) cmd()          {}
 func (CmdQuit) cmd()          {}
 func (CmdConsoleExec) cmd()       {}
-func (CmdGeneralizeAccept) cmd()  {}
+func (CmdGeneralizeAccept) cmd()   {}
+func (CmdSuggestionAccept) cmd()   {}
+func (CmdSuggestionDecline) cmd()  {}
 func (CmdDigestRefresh) cmd() {}
 func (CmdURLsRefresh) cmd()   {}
 func (CmdRingBell) cmd()      {}
@@ -506,6 +535,25 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 		// via Err.
 		if e.Err == nil {
 			m.ReloadStatus = e.Status
+		}
+		return m, CmdNone{}
+	case SuggestionTickResult:
+		// Keep prior state on a transport blip (#172) — same rule as
+		// ReloadTickResult — so the ambient card does not flicker.
+		if e.Err == nil {
+			m.Suggestion = e.Suggestion
+		}
+		return m, CmdNone{}
+	case SuggestionActionResult:
+		if e.Err != nil {
+			m.LastErr = "suggestion " + e.Action + ": " + truncate(e.Err.Error(), 200)
+			m.LastInfo = ""
+		} else {
+			m.LastInfo = "suggestion " + e.Action + "ed"
+			m.LastErr = ""
+			// Clear optimistically; the next poll re-fetches the
+			// authoritative active suggestion (likely nil now).
+			m.Suggestion = nil
 		}
 		return m, CmdNone{}
 	case KeyEvent:
@@ -1249,6 +1297,19 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	if e.Rune == 'q' {
 		m.Quit = true
 		return m, CmdQuit{}
+	}
+	// Daemon suggestion accept/decline (#172). The suggestion is
+	// ambient (it appears at quiet moments), so it uses shift+a/shift+d
+	// — uppercase 'A'/'D' runes — rather than the modal a/d of the
+	// manual generalize card, to avoid stealing approve/deny. Gated on
+	// a live suggestion so the keys are inert otherwise.
+	if m.Suggestion != nil {
+		if e.Rune == 'A' {
+			return m, CmdSuggestionAccept{ID: m.Suggestion.ID}
+		}
+		if e.Rune == 'D' {
+			return m, CmdSuggestionDecline{ID: m.Suggestion.ID}
+		}
 	}
 	displayed := DisplayedOps(m)
 	if e.Key == KeyUp || e.Rune == 'k' {
