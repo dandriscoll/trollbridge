@@ -94,6 +94,12 @@ func (s *stubClient) DeclineSuggestion(id string) error {
 	return nil
 }
 
+func (s *stubClient) SuggestNow() (*Suggestion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.suggestion, nil
+}
+
 // TestRunLoop_ApproveFlowEndToEnd drives runLoop with scripted
 // keystrokes and a stub control client; asserts the approve call
 // landed and the loop exited cleanly on 'q'.

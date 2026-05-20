@@ -43,3 +43,8 @@ func (a ControlAdapter) Accept(ctx context.Context, id string) error {
 func (a ControlAdapter) Decline(ctx context.Context, id string) error {
 	return a.M.Decline(ctx, id)
 }
+
+// SuggestNow forwards the on-demand scan to the manager (#174).
+func (a ControlAdapter) SuggestNow(ctx context.Context) {
+	a.M.SuggestNow(ctx)
+}

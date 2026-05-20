@@ -327,6 +327,10 @@ type ReloadTickResult struct {
 type SuggestionTickResult struct {
 	Suggestion *Suggestion
 	Err        error
+	// OnDemand marks a result from a CmdSuggestNow scan (#174) rather
+	// than the periodic poll, so an empty result can surface a "no
+	// opportunities" message instead of silently clearing the card.
+	OnDemand bool
 }
 
 // SuggestionActionResult arrives after a CmdSuggestionAccept /
@@ -450,6 +454,11 @@ type CmdDigestRefresh struct{}
 type CmdSuggestionAccept struct{ ID string }
 type CmdSuggestionDecline struct{ ID string }
 
+// CmdSuggestNow asks the daemon to run the generalization detector on
+// demand (#174). The runtime calls the ControlClient off the event
+// loop and emits a SuggestionTickResult{OnDemand:true}.
+type CmdSuggestNow struct{}
+
 // CmdRepaint is emitted on Ctrl-L. The runtime writes a hard-clear
 // sequence (clear visible + scrollback, home cursor, hide cursor)
 // before the next render so stray bytes leaked onto the alt-screen
@@ -485,6 +494,7 @@ func (CmdConsoleExec) cmd()       {}
 func (CmdGeneralizeAccept) cmd()   {}
 func (CmdSuggestionAccept) cmd()   {}
 func (CmdSuggestionDecline) cmd()  {}
+func (CmdSuggestNow) cmd()         {}
 func (CmdDigestRefresh) cmd() {}
 func (CmdURLsRefresh) cmd()   {}
 func (CmdRingBell) cmd()      {}
@@ -542,6 +552,17 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 		// ReloadTickResult — so the ambient card does not flicker.
 		if e.Err == nil {
 			m.Suggestion = e.Suggestion
+		}
+		if e.OnDemand {
+			// On-demand scan (#174) gives explicit feedback rather than
+			// silently leaving the card empty.
+			if e.Err != nil {
+				m.LastErr = "suggest: " + truncate(e.Err.Error(), 200)
+			} else if e.Suggestion == nil {
+				m.LastInfo = "no generalization opportunities found"
+			} else {
+				m.LastInfo = ""
+			}
 		}
 		return m, CmdNone{}
 	case SuggestionActionResult:
@@ -1067,6 +1088,14 @@ func applyKeyURLs(m Model, e KeyEvent) (Model, Cmd) {
 	}
 	if e.Rune == 'g' {
 		return urlsGeneralize(m)
+	}
+	// On-demand suggest (#174): ask the daemon to scan the lists for a
+	// generalization now, rather than waiting for a quiet moment. The
+	// result surfaces in the same suggestion card.
+	if e.Rune == 's' {
+		m.LastErr = ""
+		m.LastInfo = "scanning for generalizations…"
+		return m, CmdSuggestNow{}
 	}
 	return m, CmdNone{}
 }

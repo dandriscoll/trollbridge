@@ -74,6 +74,10 @@ type SuggestionProvider interface {
 	Active() *SuggestionRow
 	Accept(ctx context.Context, id string) error
 	Decline(ctx context.Context, id string) error
+	// SuggestNow runs the detector on demand, bypassing the quiet
+	// gate (#174), so the operator can request a scan instead of
+	// waiting for an idle moment.
+	SuggestNow(ctx context.Context)
 }
 
 // SuggestionRow is the wire-shape returned by GET /v1/suggestion.
@@ -218,6 +222,7 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	mux.HandleFunc("/v1/suggestion", authd(s.suggestionGet))                  // closes #168
 	mux.HandleFunc("/v1/suggestion/accept", authd(s.suggestionAccept))        // closes #168
 	mux.HandleFunc("/v1/suggestion/decline", authd(s.suggestionDecline))      // closes #168
+	mux.HandleFunc("/v1/suggestion/scan", authd(s.suggestionScan))            // #174 on-demand
 	// /v1/healthz is intentionally unauthenticated for monitoring.
 	mux.HandleFunc("/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -438,6 +443,27 @@ func (s *Server) suggestionDecline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "declined", "suggestion_id": id})
+}
+
+// suggestionScan runs an on-demand detector pass (#174) and returns
+// the resulting active suggestion (200) or 204 when the scan found
+// nothing to offer.
+func (s *Server) suggestionScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.suggestion == nil {
+		http.Error(w, "suggestion mode not configured", http.StatusNotFound)
+		return
+	}
+	s.suggestion.SuggestNow(r.Context())
+	row := s.suggestion.Active()
+	if row == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, row)
 }
 
 func readSuggestionID(w http.ResponseWriter, r *http.Request) (string, error) {

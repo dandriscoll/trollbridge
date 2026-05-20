@@ -61,16 +61,20 @@ type ControlClient interface {
 	ActiveSuggestion() (*Suggestion, error)
 	AcceptSuggestion(id string) error
 	DeclineSuggestion(id string) error
+	// SuggestNow asks the daemon to run the detector on demand
+	// (#174) and returns the resulting suggestion (or nil).
+	SuggestNow() (*Suggestion, error)
 }
 
 // SuggestionSource is the in-process surface of the daemon's
-// suggestion lifecycle (#172). The cmd layer adapts a
+// suggestion lifecycle (#172/#174). The cmd layer adapts a
 // *suggestion.Manager to it so the tui package needs no suggestion
 // import. May be nil on the in-process client (no suggestions then).
 type SuggestionSource interface {
 	ActiveSuggestion() *Suggestion
 	AcceptSuggestion(id string) error
 	DeclineSuggestion(id string) error
+	SuggestNow() *Suggestion
 }
 
 type httpClient struct{ cfg *config.Config }
@@ -152,11 +156,7 @@ func (c *httpClient) RecentURLs() (allow, deny []string, ok bool, err error) {
 	return resp.Allow, resp.Deny, true, nil
 }
 
-func (c *httpClient) ActiveSuggestion() (*Suggestion, error) {
-	body, err := controlclient.Get(c.cfg, "/v1/suggestion")
-	if err != nil {
-		return nil, err
-	}
+func decodeSuggestion(body []byte) (*Suggestion, error) {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil, nil // 204: no active suggestion
 	}
@@ -181,6 +181,22 @@ func (c *httpClient) ActiveSuggestion() (*Suggestion, error) {
 		Reason:           row.Reason,
 		AxesRemaining:    row.AxesRemaining,
 	}, nil
+}
+
+func (c *httpClient) ActiveSuggestion() (*Suggestion, error) {
+	body, err := controlclient.Get(c.cfg, "/v1/suggestion")
+	if err != nil {
+		return nil, err
+	}
+	return decodeSuggestion(body)
+}
+
+func (c *httpClient) SuggestNow() (*Suggestion, error) {
+	body, err := controlclient.Post(c.cfg, "/v1/suggestion/scan", nil)
+	if err != nil {
+		return nil, err
+	}
+	return decodeSuggestion(body)
 }
 
 func (c *httpClient) AcceptSuggestion(id string) error {
@@ -303,6 +319,13 @@ func (c *inProcessClient) DeclineSuggestion(id string) error {
 		return errors.New("suggestion lifecycle not wired")
 	}
 	return c.sugg.DeclineSuggestion(id)
+}
+
+func (c *inProcessClient) SuggestNow() (*Suggestion, error) {
+	if c.sugg == nil {
+		return nil, nil
+	}
+	return c.sugg.SuggestNow(), nil
 }
 
 // NewInProcessClient returns a ControlClient that calls the daemon's
@@ -552,6 +575,14 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				select {
 				case <-loopCtx.Done():
 				case events <- SuggestionActionResult{Action: "decline", Err: err}:
+				}
+			}()
+		case CmdSuggestNow:
+			go func() {
+				sug, err := client.SuggestNow()
+				select {
+				case <-loopCtx.Done():
+				case events <- SuggestionTickResult{Suggestion: sug, Err: err, OnDemand: true}:
 				}
 			}()
 		case CmdDigestRefresh:
@@ -2256,13 +2287,13 @@ func renderURLsPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
 		used++
 	}
-	urlsHint := "[jk] nav  [a/d] approve/deny  [+] add  [e] edit  [g] generalize  [del] rm  [^z] undo"
+	urlsHint := "[jk] nav  [a/d] approve/deny  [+] add  [e] edit  [g] generalize  [s] suggest  [del] rm  [^z] undo"
 	b.WriteString(bottomBorder(urlsHint, panelSwitcherHint, m.Cols, focused))
 }
 
 // renderURLsPaneNoBorder is the narrow-terminal fallback.
 func renderURLsPaneNoBorder(b *strings.Builder, m Model, rows int) {
-	panelHeaderLine(b, m, "── urls ── [jk] nav  [a/d] approve/deny  [+] add  [e] edit  [g] generalize  [del] rm  [^z] undo ")
+	panelHeaderLine(b, m, "── urls ── [jk] nav  [a/d] approve/deny  [+] add  [e] edit  [g] generalize  [s] suggest  [del] rm  [^z] undo ")
 	used := 1
 	if !m.URLsLocal {
 		b.WriteString(padRight("  (allow/deny editing runs on the proxy host — open `trollbridge run` there)", m.Cols))

@@ -89,6 +89,42 @@ func TestSuggestionActionResult_Status(t *testing.T) {
 	}
 }
 
+// TestApplyKeyURLs_SuggestNowKey pins #174: 's' in the URL pane emits
+// CmdSuggestNow and sets a scanning hint.
+func TestApplyKeyURLs_SuggestNowKey(t *testing.T) {
+	m := Model{
+		Cols: 100, Rows: 30,
+		Focused:         PaneConsole,
+		BottomPanel:     BottomPanelURLs,
+		BottomPanelOpen: true,
+		URLsLocal:       true,
+		URLsAnchor:      -1,
+	}
+	got, cmd := Apply(m, KeyEvent{Rune: 's'})
+	if _, ok := cmd.(CmdSuggestNow); !ok {
+		t.Fatalf("'s' = %T, want CmdSuggestNow", cmd)
+	}
+	if got.LastInfo == "" {
+		t.Errorf("'s' did not set a scanning hint")
+	}
+}
+
+// TestSuggestionTick_OnDemandEmptyFeedback pins #174: an on-demand scan
+// that finds nothing surfaces a "none found" message rather than
+// silently clearing the card.
+func TestSuggestionTick_OnDemandEmptyFeedback(t *testing.T) {
+	m := Model{Cols: 100, Rows: 30}
+	got, _ := Apply(m, SuggestionTickResult{Suggestion: nil, OnDemand: true})
+	if got.LastInfo == "" {
+		t.Errorf("on-demand empty scan gave no feedback")
+	}
+	// A periodic (non-on-demand) empty tick stays silent.
+	quiet, _ := Apply(m, SuggestionTickResult{Suggestion: nil})
+	if quiet.LastInfo != "" {
+		t.Errorf("periodic empty tick wrongly set LastInfo=%q", quiet.LastInfo)
+	}
+}
+
 // TestSuggestionCard_RenderedAndHiddenByHolds pins #172: the suggestion
 // renders as a width-fit card in the operations pane when no holds are
 // pending, and is hidden when a hold is present (so it never competes

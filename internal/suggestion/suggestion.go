@@ -234,6 +234,32 @@ func (m *Manager) Tick(ctx context.Context) {
 		return
 	}
 
+	m.produce(ctx, cfg, maxCandidates, int(idleDur.Seconds()))
+}
+
+// SuggestNow runs the detector→rank→offer sequence on demand (#174),
+// bypassing the quiet-idle gate that Tick enforces. Any existing
+// active suggestion is cleared first so the operator gets a fresh
+// scan. No-op when suggestion mode is disabled.
+func (m *Manager) SuggestNow(ctx context.Context) {
+	if m == nil {
+		return
+	}
+	cfg := m.cfg()
+	if cfg == nil || !cfg.Approvals.Suggestion.EnabledFor(cfg.LLM) {
+		return
+	}
+	m.mu.Lock()
+	m.active = nil
+	m.mu.Unlock()
+	m.produce(ctx, cfg, cfg.Approvals.Suggestion.MaxCandidates, 0)
+}
+
+// produce is the post-gate core shared by Tick (after the quiet
+// predicate) and SuggestNow (on demand): detect candidates, decline-
+// filter, group, ask the advisor, and store the top-ranked offer.
+// idleSeconds is recorded in the detector log lines (0 for on-demand).
+func (m *Manager) produce(ctx context.Context, cfg *config.Config, maxCandidates, idleSeconds int) {
 	allow, deny, declined := m.lists.CurrentLists()
 	candidates := generalize.DetectAll(allow, deny)
 
@@ -283,7 +309,7 @@ func (m *Manager) Tick(ctx context.Context) {
 			"event", oplog.EventSuggestionDetectorRan,
 			"opportunity_exists", false,
 			"candidates_found", 0,
-			"idle_seconds", int(idleDur.Seconds()),
+			"idle_seconds", idleSeconds,
 		)
 		return
 	}
@@ -311,7 +337,7 @@ func (m *Manager) Tick(ctx context.Context) {
 		"event", oplog.EventSuggestionDetectorRan,
 		"opportunity_exists", true,
 		"candidates_found", len(chosen),
-		"idle_seconds", int(idleDur.Seconds()),
+		"idle_seconds", idleSeconds,
 	)
 
 	// Build advisor input.

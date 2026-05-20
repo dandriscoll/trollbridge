@@ -772,6 +772,11 @@ func (a tuiSuggestionAdapter) DeclineSuggestion(id string) error {
 	return a.m.Decline(context.Background(), id)
 }
 
+func (a tuiSuggestionAdapter) SuggestNow() *tui.Suggestion {
+	a.m.SuggestNow(context.Background())
+	return a.ActiveSuggestion()
+}
+
 // advisorAdapter wraps advisor.Service so the suggestion package
 // can mock it. Pre-existing Service methods are unchanged.
 type advisorAdapter struct{ svc *advisor.Service }
