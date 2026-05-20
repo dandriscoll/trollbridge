@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.7.18 — 2026-05-20
+
 ### TUI: modifier-arrow keys no longer hijack the panel (closes #171)
 
 - **Fixed.** Pressing Shift-Up (or any modified arrow) in the URL pane
