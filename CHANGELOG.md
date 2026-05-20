@@ -9,6 +9,15 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### TUI: pending requests stay on screen in a busy ops pane (closes #175)
+
+- **Fixed.** When the operations pane had more rows than fit, the
+  pending (held) requests — sorted to the bottom of the list — were
+  pushed off-screen with no way to scroll to them. The pane now
+  bottom-anchors its scroll so the pending region is always visible at
+  the bottom; navigating up with `j`/`k` follows the cursor into the
+  resolved rows above.
+
 ## v0.7.19 — 2026-05-20
 
 ### Generalize accept now prunes the specifics it replaces (closes #173)
