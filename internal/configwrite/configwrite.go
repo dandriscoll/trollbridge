@@ -37,6 +37,25 @@ func AddDeny(path, pattern string) (bool, error) {
 	})
 }
 
+// Generalize applies an accepted generalization to `list` ("allow" or
+// "deny") in one atomic write: it removes each entry in removeSources
+// (the more-specific patterns the generalization replaces — #173) and
+// inserts the generalized pattern. A source not present is skipped.
+// Returns (changed, err); changed is true when the resulting list
+// differs from the original (normally true, since the pattern is
+// added).
+func Generalize(path, list, pattern string, removeSources []string) (bool, error) {
+	if list != "allow" && list != "deny" {
+		return false, fmt.Errorf("generalize: unknown list %q", list)
+	}
+	return mutate(path, list, func(entries []string) []string {
+		for _, s := range removeSources {
+			entries = remove(entries, s)
+		}
+		return insertSorted(entries, pattern)
+	})
+}
+
 // RemoveAllow removes every occurrence of pattern from
 // `lists.allow`. Returns (false, nil) when no occurrence exists.
 func RemoveAllow(path, pattern string) (bool, error) {

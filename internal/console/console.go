@@ -222,6 +222,37 @@ func (b *Backend) addPattern(out io.Writer, label, pattern string) {
 	b.triggerReload()
 }
 
+// AcceptGeneralization applies an accepted generalization from the TUI
+// card (#170/#173): it removes the more-specific source entries and
+// adds the generalized pattern to `list`, atomically, then reloads.
+// Mirrors movePattern's compound-write + reload shape. Called via the
+// console worker (serialized) so it cannot race another list write.
+func (b *Backend) AcceptGeneralization(out io.Writer, list, pattern string, sources []string) {
+	if !b.LocalOnly {
+		fmt.Fprintln(out, "generalize: not available in attach mode — run on the proxy host")
+		return
+	}
+	if b.ConfigPath == "" {
+		fmt.Fprintln(out, "no config path configured (cannot persist mutation)")
+		return
+	}
+	changed, err := configwrite.Generalize(b.ConfigPath, list, pattern, sources)
+	if err != nil {
+		fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, err)
+		return
+	}
+	if !changed {
+		fmt.Fprintf(out, "%s already in %s list\n", pattern, list)
+		return
+	}
+	noun := "entries"
+	if len(sources) == 1 {
+		noun = "entry"
+	}
+	fmt.Fprintf(out, "generalized → added %s to %s, removed %d specific %s\n", pattern, list, len(sources), noun)
+	b.triggerReload()
+}
+
 func (b *Backend) removePattern(out io.Writer, pattern string) {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {

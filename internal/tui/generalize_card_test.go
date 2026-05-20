@@ -67,24 +67,30 @@ func TestGeneralize_PlainNavResetsAnchor(t *testing.T) {
 	}
 }
 
-// TestGeneralize_CardModalAcceptWritesPattern pins #170 accept: 'a'
-// writes the current candidate's pattern through the same console
-// configwrite path a typed `allow <pat>` uses, then dismisses the card.
-func TestGeneralize_CardModalAcceptWritesPattern(t *testing.T) {
+// TestGeneralize_CardModalAcceptRemovesSpecifics pins #170 accept +
+// #173 cleanup: 'a' emits a CmdGeneralizeAccept carrying the candidate's
+// pattern, target list, and the source entries to remove, then dismisses
+// the card.
+func TestGeneralize_CardModalAcceptRemovesSpecifics(t *testing.T) {
 	m := genModel()
 	m, _ = Apply(m, KeyEvent{Key: KeyShiftDown})
 	m, _ = Apply(m, KeyEvent{Rune: 'g'})
-	pattern := m.GenCard.Current().SuggestedPattern
+	cand := m.GenCard.Current()
 	got, cmd := Apply(m, KeyEvent{Rune: 'a'})
 	if got.GenCard != nil {
 		t.Errorf("accept did not dismiss the card")
 	}
-	exec, ok := cmd.(CmdConsoleExec)
+	acc, ok := cmd.(CmdGeneralizeAccept)
 	if !ok {
-		t.Fatalf("accept cmd = %T, want CmdConsoleExec", cmd)
+		t.Fatalf("accept cmd = %T, want CmdGeneralizeAccept", cmd)
 	}
-	if exec.Line != "allow "+pattern {
-		t.Errorf("accept line = %q, want %q", exec.Line, "allow "+pattern)
+	if acc.Pattern != cand.SuggestedPattern || acc.List != cand.List {
+		t.Errorf("accept = {%q %q}, want {%q %q}", acc.List, acc.Pattern, cand.List, cand.SuggestedPattern)
+	}
+	// #173: the source entries the pattern replaces must be carried for
+	// removal.
+	if len(acc.Sources) != len(cand.SourceEntries) || len(acc.Sources) == 0 {
+		t.Errorf("accept Sources = %v, want the candidate's %v", acc.Sources, cand.SourceEntries)
 	}
 	if !got.URLsPendingReturn {
 		t.Errorf("accept did not set URLsPendingReturn for the snap-back refresh")

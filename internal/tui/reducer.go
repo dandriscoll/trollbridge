@@ -411,6 +411,16 @@ type CmdDeny struct{ ID string }
 type CmdRingBell struct{}
 type CmdQuit struct{}
 type CmdConsoleExec struct{ Line string }
+
+// CmdGeneralizeAccept applies an accepted generalization card (#170):
+// the runtime removes the more-specific Sources and adds Pattern to
+// List in one atomic write (#173), serialized through the same console
+// worker as CmdConsoleExec.
+type CmdGeneralizeAccept struct {
+	List    string // "allow" or "deny"
+	Pattern string
+	Sources []string
+}
 type CmdDigestRefresh struct{}
 
 // CmdRepaint is emitted on Ctrl-L. The runtime writes a hard-clear
@@ -444,7 +454,8 @@ func (CmdRefresh) cmd()       {}
 func (CmdApprove) cmd()       {}
 func (CmdDeny) cmd()          {}
 func (CmdQuit) cmd()          {}
-func (CmdConsoleExec) cmd()   {}
+func (CmdConsoleExec) cmd()       {}
+func (CmdGeneralizeAccept) cmd()  {}
 func (CmdDigestRefresh) cmd() {}
 func (CmdURLsRefresh) cmd()   {}
 func (CmdRingBell) cmd()      {}
@@ -1205,9 +1216,11 @@ func applyKeyGenCard(m Model, e KeyEvent) (Model, Cmd) {
 		m.LastErr = ""
 		m.LastInfo = "generalized → " + c.List + " " + c.SuggestedPattern
 		// Snap back to the URLs list and refresh after the write so the
-		// operator sees the new pattern (#86 return-path).
+		// operator sees the new pattern and the pruned specifics (#86
+		// return-path). Accept removes the source entries the pattern
+		// replaces and adds the pattern, atomically (#173).
 		m.URLsPendingReturn = true
-		return m, CmdConsoleExec{Line: c.List + " " + c.SuggestedPattern}
+		return m, CmdGeneralizeAccept{List: c.List, Pattern: c.SuggestedPattern, Sources: c.SourceEntries}
 	case e.Rune == 'd' || e.Key == KeyEsc:
 		m.GenCard = nil
 		return m, CmdNone{}

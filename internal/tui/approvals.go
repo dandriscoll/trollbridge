@@ -349,7 +349,7 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 	defer cancelLoop()
 
-	consoleQueue := make(chan string, 8)
+	consoleQueue := make(chan consoleJob, 8)
 	go consoleWorker(loopCtx, backend, consoleQueue, events)
 
 	go readKeys(loopCtx, in, events)
@@ -516,7 +516,7 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 			}()
 		case CmdConsoleExec:
 			select {
-			case consoleQueue <- c.Line:
+			case consoleQueue <- consoleJob{line: c.Line}:
 			default:
 				// Worker is busy with a prior command; rather than
 				// blocking the event loop (Ctrl-C must stay
@@ -525,6 +525,16 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				select {
 				case <-loopCtx.Done():
 				case events <- ConsoleExecResult{Line: c.Line, Output: "console busy: a prior command is still running\n"}:
+				}
+			}
+		case CmdGeneralizeAccept:
+			job := consoleJob{gen: &genAcceptJob{list: c.List, pattern: c.Pattern, sources: c.Sources}}
+			select {
+			case consoleQueue <- job:
+			default:
+				select {
+				case <-loopCtx.Done():
+				case events <- ConsoleExecResult{Line: "generalize " + c.List + " " + c.Pattern, Output: "console busy: a prior command is still running\n"}:
 				}
 			}
 		case CmdRingBell:
@@ -544,16 +554,44 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 // concurrent allow/deny writes cannot race the configwrite
 // rename. It also recovers from backend panics so a broken
 // callback (test/doctor wiring) cannot kill the goroutine.
-func consoleWorker(ctx context.Context, backend *console.Backend, in <-chan string, events chan<- Event) {
+// consoleJob is one unit of serialized work for the console worker:
+// either a raw command line (Backend.Execute) or a structured
+// generalize-accept (Backend.AcceptGeneralization). Routing structured
+// data through the same single-worker channel keeps it serialized with
+// console writes so two list mutations cannot race the configwrite
+// rename (#173).
+type consoleJob struct {
+	line string
+	gen  *genAcceptJob
+}
+
+type genAcceptJob struct {
+	list    string
+	pattern string
+	sources []string
+}
+
+func consoleWorker(ctx context.Context, backend *console.Backend, in <-chan consoleJob, events chan<- Event) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case line, ok := <-in:
+		case job, ok := <-in:
 			if !ok {
 				return
 			}
-			out, quit := safeExecute(backend, line)
+			var (
+				line string
+				out  string
+				quit bool
+			)
+			if job.gen != nil {
+				line = "generalize " + job.gen.list + " " + job.gen.pattern
+				out = safeAccept(backend, job.gen)
+			} else {
+				line = job.line
+				out, quit = safeExecute(backend, job.line)
+			}
 			select {
 			case <-ctx.Done():
 				return
@@ -561,6 +599,20 @@ func consoleWorker(ctx context.Context, backend *console.Backend, in <-chan stri
 			}
 		}
 	}
+}
+
+func safeAccept(backend *console.Backend, gen *genAcceptJob) (output string) {
+	defer func() {
+		if r := recover(); r != nil {
+			output += fmt.Sprintf("panic: %v\n", r)
+		}
+	}()
+	if backend == nil {
+		return ""
+	}
+	var buf bytes.Buffer
+	backend.AcceptGeneralization(&buf, gen.list, gen.pattern, gen.sources)
+	return buf.String()
 }
 
 func safeExecute(backend *console.Backend, line string) (output string, quit bool) {

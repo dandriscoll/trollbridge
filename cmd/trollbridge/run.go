@@ -728,11 +728,8 @@ func (a listsAdapter) CurrentLists() ([]string, []string, []config.DeclinedSugge
 // package — keeps the package free of a direct configwrite import.
 type writerAdapter struct{}
 
-func (writerAdapter) AddAllow(path, pat string) (bool, error) {
-	return configwrite.AddAllow(path, pat)
-}
-func (writerAdapter) AddDeny(path, pat string) (bool, error) {
-	return configwrite.AddDeny(path, pat)
+func (writerAdapter) Generalize(path, list, pat string, sources []string) (bool, error) {
+	return configwrite.Generalize(path, list, pat, sources)
 }
 func (writerAdapter) AddDeclinedSuggestion(path string, src, axes []string, at string) (bool, error) {
 	return configwrite.AddDeclinedSuggestion(path, configwrite.DeclinedSuggestion{

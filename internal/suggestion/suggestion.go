@@ -77,8 +77,10 @@ type ListsProvider interface {
 // rather than configwrite.DeclinedSuggestion so the interface does
 // not pull configwrite types into test seams.
 type ConfigWriter interface {
-	AddAllow(path, pattern string) (bool, error)
-	AddDeny(path, pattern string) (bool, error)
+	// Generalize removes the more-specific source entries the
+	// generalization replaces and adds the generalized pattern to
+	// `list`, atomically (#173).
+	Generalize(path, list, pattern string, sources []string) (bool, error)
 	AddDeclinedSuggestion(path string, sourceEntries, axesDeclined []string, declinedAt string) (bool, error)
 }
 
@@ -413,16 +415,13 @@ func (m *Manager) Accept(ctx context.Context, id string) error {
 	m.mu.Unlock()
 
 	pat := active.Candidate.SuggestedPattern
-	var changed bool
-	var err error
-	switch active.Candidate.List {
-	case "allow":
-		changed, err = m.writer.AddAllow(m.cfgPath, pat)
-	case "deny":
-		changed, err = m.writer.AddDeny(m.cfgPath, pat)
-	default:
+	if active.Candidate.List != "allow" && active.Candidate.List != "deny" {
 		return fmt.Errorf("accept: unknown list %q", active.Candidate.List)
 	}
+	// Adding the generalized pattern AND removing the more-specific
+	// source entries it replaces is the point of generalizing — the
+	// list shrinks (#173). One atomic write.
+	changed, err := m.writer.Generalize(m.cfgPath, active.Candidate.List, pat, active.Candidate.SourceEntries)
 	if err != nil {
 		m.opLog.Warn("list persist failure",
 			"event", oplog.EventListPersistFailure,

@@ -31,6 +31,7 @@ type fakeWriter struct {
 	mu          sync.Mutex
 	addedAllow  []string
 	addedDeny   []string
+	removed     []string
 	declined    []writerDecline
 	failAccept  bool
 	failDecline bool
@@ -42,22 +43,19 @@ type writerDecline struct {
 	at      string
 }
 
-func (f *fakeWriter) AddAllow(path, pat string) (bool, error) {
+func (f *fakeWriter) Generalize(path, list, pat string, sources []string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failAccept {
-		return false, errors.New("simulated allow write failure")
+		return false, errors.New("simulated generalize write failure")
 	}
-	f.addedAllow = append(f.addedAllow, pat)
-	return true, nil
-}
-func (f *fakeWriter) AddDeny(path, pat string) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.failAccept {
-		return false, errors.New("simulated deny write failure")
+	switch list {
+	case "allow":
+		f.addedAllow = append(f.addedAllow, pat)
+	case "deny":
+		f.addedDeny = append(f.addedDeny, pat)
 	}
-	f.addedDeny = append(f.addedDeny, pat)
+	f.removed = append(f.removed, sources...)
 	return true, nil
 }
 func (f *fakeWriter) AddDeclinedSuggestion(path string, src, axes []string, at string) (bool, error) {
@@ -191,6 +189,10 @@ func TestAcceptWritesAllowAndClears(t *testing.T) {
 	}
 	if len(writer.addedAllow) != 1 {
 		t.Fatalf("expected 1 allow add; got %v", writer.addedAllow)
+	}
+	// #173: accept removes the more-specific source entries it replaces.
+	if len(writer.removed) != len(active.Candidate.SourceEntries) || len(writer.removed) == 0 {
+		t.Errorf("expected accept to remove %d source entries; got %v", len(active.Candidate.SourceEntries), writer.removed)
 	}
 	if !*reloaded {
 		t.Errorf("expected reload after Accept")
