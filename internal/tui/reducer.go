@@ -73,6 +73,13 @@ type Model struct {
 	Selected int    // index into displayed-ops list, or -1 if empty.
 	LastInfo string // last successful-action message shown in the upper-pane footer.
 	LastErr  string // last error message shown in the upper-pane footer.
+
+	// statusInfoSeen / statusInfoAge time out a lingering LastInfo line
+	// (#180): the ops tick ages the currently-shown LastInfo and clears
+	// it after statusInfoTimeoutTicks. seen tracks the last value so a
+	// fresh message resets the age. Unexported — reducer-internal.
+	statusInfoSeen string
+	statusInfoAge  int
 	Cols     int
 	Rows     int
 	Quit     bool
@@ -479,6 +486,13 @@ const opsPauseTicks = 2
 // on actionable work (#156).
 const idleSnapTicks = 4
 
+// statusInfoTimeoutTicks is how long a transient info status (LastInfo,
+// e.g. "generalized → allow GET …") stays at the bottom of the pane
+// before it clears. At the ~1.5s ops-tick cadence, 8 ticks ≈ 12s —
+// long enough to read, short enough that it doesn't sit there for
+// minutes (#180). LastErr already clears on the next successful tick.
+const statusInfoTimeoutTicks = 8
+
 // CmdURLsRefresh asks the runtime to re-read the allow/deny lists
 // from trollbridge.yaml and emit a URLsTickResult. Emitted on '4'
 // open and after any console exec while the URLs pane is open
@@ -622,6 +636,24 @@ func applyOpsTick(m Model, e OpsTickResult) (Model, Cmd) {
 	m.LastErr = ""
 	preserveSelection(&m, prevGroup, prevReq)
 	clampSelection(&m)
+
+	// #180: time out a lingering info status. LastErr clears above on
+	// every successful tick; LastInfo used to persist until the next
+	// action, leaving e.g. "generalized → allow GET …" on screen for
+	// minutes. Age the current message and clear it after the timeout;
+	// a changed message resets the age so each new line gets its full
+	// dwell.
+	if m.LastInfo != m.statusInfoSeen {
+		m.statusInfoSeen = m.LastInfo
+		m.statusInfoAge = 0
+	} else if m.LastInfo != "" {
+		m.statusInfoAge++
+		if m.statusInfoAge >= statusInfoTimeoutTicks {
+			m.LastInfo = ""
+			m.statusInfoSeen = ""
+			m.statusInfoAge = 0
+		}
+	}
 
 	// #156: idle-snap. Increment LastInputTicks; when it crosses the
 	// threshold AND a pending row exists AND the cursor isn't
