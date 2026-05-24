@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.7.21 — 2026-05-24
+
 ### Generalize + allow/deny workflow fixes
 
 - **Generalize now prunes every redundant entry it covers, not just the
