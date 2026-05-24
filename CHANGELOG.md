@@ -9,6 +9,22 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Generalize + allow/deny workflow fixes
+
+- **Generalize now prunes every redundant entry it covers, not just the
+  selected ones (closes #177).** Accepting a generalization removes every
+  existing allow/deny entry the new wildcard subsumes — across a widened
+  method, dropped port, wildcarded path segment, or wildcarded hostname —
+  so the list shrinks the way "generalize" implies. (IP `/24` blocks are a
+  known gap — see #181.)
+- **Approving a URL no longer leaves it stuck on the deny list (closes #179).**
+  Adding a pattern to one list now removes it from the other, so an approved
+  URL isn't silently overridden by a stale deny entry on the next reload.
+- **`Enter` accepts and `Esc` cancels in the generalize card (closes #178).**
+- **Transient status lines time out (closes #180).** The info line at the
+  bottom of the operations pane (e.g. `generalized → allow …`) now clears
+  after ~12s instead of lingering until the next action.
+
 ## v0.7.20 — 2026-05-20
 
 ### TUI: pending requests stay on screen in a busy ops pane (closes #175)
