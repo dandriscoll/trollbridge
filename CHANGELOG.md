@@ -9,6 +9,28 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Suspend the TUI to the shell (closes #176)
+
+- **Press `z` in the approvals pane to background trollbridge** via job
+  control (SIGTSTP); `fg` resumes it and repaints. Bound to `z` rather
+  than Ctrl-Z (which the URLs pane uses for undo) and only in the
+  approvals pane, so a literal `z` typed into the console is never
+  stolen. No-op on Windows, which has no job control.
+
+### Advisor metrics (closes #137)
+
+- **The LLM advisor now keeps process-lifetime counters** — consulted,
+  classified (actionable allow/deny), fallback (consulted but landed on
+  ask_user), and per-class errors (wire/schema/unknown) — plus a
+  classify-latency histogram. Surfaced on the control plane at
+  `GET /v1/advisor/metrics`.
+
+### Other
+
+- Daemon-suggested list mutations are now tagged `source=suggestion` on
+  the accept oplog line too (not only on persist failure), so a
+  suggested change can be told from a manual one (#172/#174).
+
 ## v0.7.21 — 2026-05-24
 
 ### Generalize + allow/deny workflow fixes
