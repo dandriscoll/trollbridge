@@ -252,6 +252,7 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 	// advisor service.
 	s.control.SetLists(s)
 	s.control.SetDigests(digestsProviderAdapter{adv: s.advisor})
+	s.control.SetAdvisorStats(s.advisor) // #137: advisor counters on /v1/advisor/metrics
 	// Closes #129: /v1/rules surfaces the most-recent hot-reload
 	// outcome so the TUI badge can render it without subscribing to
 	// the operational log.

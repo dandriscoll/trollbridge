@@ -58,6 +58,13 @@ type DigestsProvider interface {
 	Digests() []advisor.Digest
 }
 
+// AdvisorMetricsProvider exposes the advisor's process-lifetime
+// counters on /v1/advisor/metrics (#137). Returns nil when no advisor
+// is configured. The concrete provider is *advisor.Service.
+type AdvisorMetricsProvider interface {
+	Stats() *advisor.Stats
+}
+
 // ReloadStatusProvider surfaces the daemon's most-recent hot-reload
 // outcome on /v1/rules so the TUI badge (#129) can render it. The
 // concrete provider lives on *server.Server; control takes an
@@ -103,6 +110,7 @@ type Server struct {
 	ops          *opstream.Ring
 	lists        ListsProvider
 	digests      DigestsProvider
+	advisorStats AdvisorMetricsProvider
 	reloadStatus ReloadStatusProvider
 	ca           CAOps
 	tlsProv      TLSProvider
@@ -144,6 +152,10 @@ func (s *Server) SetLists(p ListsProvider) { s.lists = p }
 // so /v1/llm-digests can return recent classifications. Closes #99
 // part 2.
 func (s *Server) SetDigests(p DigestsProvider) { s.digests = p }
+
+// SetAdvisorStats wires the advisor's counter set into the control
+// plane so /v1/advisor/metrics can return them (#137).
+func (s *Server) SetAdvisorStats(p AdvisorMetricsProvider) { s.advisorStats = p }
 
 // SetReloadStatusProvider wires the daemon's reload-status surface
 // so /v1/rules can report the most-recent hot-reload outcome. The
@@ -216,6 +228,7 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	mux.HandleFunc("/v1/ops", authd(s.listOps))
 	mux.HandleFunc("/v1/lists", authd(s.listLists))             // closes #99 part 1
 	mux.HandleFunc("/v1/llm-digests", authd(s.listLLMDigests))  // closes #99 part 2
+	mux.HandleFunc("/v1/advisor/metrics", authd(s.advisorMetrics)) // #137
 	mux.HandleFunc("/v1/sessions", authd(s.listSessions))
 	mux.HandleFunc("/v1/rules", authd(s.rulesInfo))
 	mux.HandleFunc("/v1/rules/reload", authd(s.rulesReload))
@@ -347,6 +360,16 @@ func (s *Server) listLLMDigests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.digests.Digests())
+}
+
+// advisorMetrics returns the advisor's process-lifetime counters (#137).
+// Empty snapshot when no advisor is configured.
+func (s *Server) advisorMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.advisorStats == nil {
+		writeJSON(w, advisor.StatsSnapshot{})
+		return
+	}
+	writeJSON(w, s.advisorStats.Stats().Snapshot())
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {

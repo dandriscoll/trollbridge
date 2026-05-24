@@ -122,7 +122,13 @@ type Service struct {
 	// LLM-browse surface (closes #65). Bounded ring; the audit log
 	// is the durable record.
 	digests *DigestRing
+	// stats are process-lifetime advisor counters (#137), surfaced via
+	// the control plane. Always non-nil after New.
+	stats *Stats
 }
+
+// Stats returns the live advisor counter set (#137); never nil after New.
+func (s *Service) Stats() *Stats { return s.stats }
 
 // Logger is a tiny subset of *slog.Logger used by the advisor for
 // lifecycle (Info), wire-detail (Debug), and failure (Warn) events.
@@ -161,6 +167,7 @@ func New(cfg Config, prov Provider) *Service {
 		prov:    prov,
 		cache:   newCache(cfg.CacheTTL),
 		digests: NewDigestRing(DigestDefaultCap),
+		stats:   &Stats{},
 	}
 }
 
@@ -271,20 +278,27 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 		}
 		s.opLog.Info("advisor consulted", args...)
 	}
+	s.stats.Consulted.Add(1)
 	cctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout)
 	defer cancel()
 	classifyStart := time.Now()
 	out, err := s.prov.Classify(cctx, in)
 	classifyLatency := time.Since(classifyStart)
 	if err != nil {
+		s.stats.Fallback.Add(1)
 		s.logFailure(err, req)
 		d := s.unavailableDecision("advisor unavailable: " + err.Error())
 		s.recordDigest(req, DigestOutcomeUnavailable, string(d.Effect), "", "", d.Reason)
 		return d, ""
 	}
+	// Latency reflects the provider round-trip; record it for every
+	// non-error response, before the verdict is sorted into
+	// classified vs fallback (#137).
+	s.stats.recordLatency(classifyLatency.Milliseconds())
 
 	d, advisorID, verr := s.validate(out, in)
 	if verr != nil {
+		s.stats.Fallback.Add(1)
 		reason := "advisor validation failed: " + verr.Error()
 		s.recordDigest(req, DigestOutcomeValidationFailed, string(types.EffectAskUser), "", "", reason)
 		return types.Decision{
@@ -292,6 +306,14 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 			Source: types.SourceLLMAdvisor,
 			Reason: reason,
 		}, ""
+	}
+	// An actionable allow/deny is a classification; anything that
+	// lands on ask_user (low confidence, advisory-only effect) is a
+	// fallback even though the provider responded cleanly (#137).
+	if d.Effect == types.EffectAllow || d.Effect == types.EffectDeny {
+		s.stats.Classified.Add(1)
+	} else {
+		s.stats.Fallback.Add(1)
 	}
 	if s.opLog != nil {
 		args := []any{
@@ -325,15 +347,22 @@ func (s *Service) Classify(ctx context.Context, req *types.RequestEvent, ruleSet
 // operator debugging an advisor outage doesn't have to run
 // `trollbridge doctor` to learn the layer.
 func (s *Service) logFailure(err error, req *types.RequestEvent) {
-	if s.opLog == nil || err == nil {
+	if err == nil {
 		return
 	}
 	event := oplog.EventAdvisorUnknownFail
 	switch {
 	case errors.Is(err, ErrAdvisorWire):
 		event = oplog.EventAdvisorWireFail
+		s.stats.ErrWire.Add(1)
 	case errors.Is(err, ErrAdvisorSchema):
 		event = oplog.EventAdvisorSchemaFail
+		s.stats.ErrSchema.Add(1)
+	default:
+		s.stats.ErrUnknown.Add(1)
+	}
+	if s.opLog == nil {
+		return
 	}
 	s.opLog.Warn("advisor classify failed",
 		"event", event,
