@@ -391,6 +391,14 @@ type Options struct {
 	// toggle this at runtime by pressing `b`. False pre-mutes;
 	// `b` still unmutes (#72).
 	ChimeEnabled bool
+
+	// suspend, when non-nil, performs a job-control suspend (#176):
+	// restore the cooked terminal, raise SIGTSTP so the host shell
+	// regains control, and on resume (fg) re-enter raw mode + the
+	// alt-screen. It blocks until the process is resumed. runWithClient
+	// wires this with the live raw-mode state; tests leave it nil (the
+	// `z` hotkey then no-ops). Unexported: only the TUI runtime sets it.
+	suspend func()
 }
 
 // DefaultOptions returns the TUI's default Options: chime on.
@@ -425,6 +433,22 @@ func runWithClient(ctx context.Context, in, out *os.File, client ControlClient, 
 	// Enter alternate screen + hide cursor so the host shell's
 	// scrollback is preserved.
 	fmt.Fprint(out, "\x1b[?1049h\x1b[?25l")
+
+	// Job-control suspend (#176). On `z` the loop calls this: drop the
+	// alt-screen, restore cooked mode so the shell prompt is usable,
+	// then stop ourselves with SIGTSTP. raiseSIGTSTP returns only once
+	// the shell resumes us (fg / bg+fg), at which point we re-enter raw
+	// mode + the alt-screen. oldState is refreshed so the deferred
+	// Restore above still targets the operator's original termios.
+	opts.suspend = func() {
+		fmt.Fprint(out, "\x1b[?25h\x1b[?1049l")
+		_ = term.Restore(int(in.Fd()), oldState)
+		raiseSIGTSTP()
+		if st, e := term.MakeRaw(int(in.Fd())); e == nil {
+			oldState = st
+		}
+		fmt.Fprint(out, "\x1b[?1049h\x1b[?25l")
+	}
 
 	cols, rows, _ := term.GetSize(int(out.Fd()))
 	if cols == 0 {
@@ -516,6 +540,16 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				requestShutdown()
 			}
 			return nil
+		case CmdSuspend:
+			// Job-control suspend (#176). suspend() blocks until the
+			// shell resumes us, then has re-entered raw mode + the
+			// alt-screen; the alt-screen comes back blank, so force a
+			// full redraw of the current frame.
+			if opts.suspend != nil {
+				opts.suspend()
+				_, _ = out.Write([]byte("\x1b[2J\x1b[3J\x1b[H\x1b[?25l"))
+				_ = render(out, model)
+			}
 		case CmdRefresh:
 			go func() {
 				holds, err := client.ListHolds()
@@ -1144,7 +1178,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	// Bottom border carries the keybindings on the right. While the
 	// generalization card is modal (#170), a/d mean accept/decline —
 	// reflect that so the border hint matches the live key effect.
-	keys := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [q] quit"
+	keys := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [z] suspend  [q] quit"
 	if m.GenCard != nil {
 		keys = "[a]ccept  [d]ecline  [tab] next axis  [esc] dismiss"
 	}

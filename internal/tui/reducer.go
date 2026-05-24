@@ -472,6 +472,13 @@ type CmdSuggestNow struct{}
 // are swept (#115).
 type CmdRepaint struct{}
 
+// CmdSuspend is emitted on `z` from the approvals pane (#176). The
+// runtime restores the cooked terminal and raises SIGTSTP so the host
+// shell regains control; on resume it re-enters raw mode + the
+// alt-screen and repaints. No-op when the runtime wired no suspend
+// handler (tests, or platforms without job control).
+type CmdSuspend struct{}
+
 // opsPauseTicks is how many tick refreshes a navigation keystroke
 // suspends list ingestion for. At the ~1.5s tick cadence, 2 ticks ≈
 // 3 seconds — long enough for the operator to read the info pane
@@ -513,6 +520,7 @@ func (CmdDigestRefresh) cmd() {}
 func (CmdURLsRefresh) cmd()   {}
 func (CmdRingBell) cmd()      {}
 func (CmdRepaint) cmd()       {}
+func (CmdSuspend) cmd()       {}
 
 // Apply is the pure reducer. It does no I/O. Callers replace their
 // Model with the returned one and run the returned Cmd.
@@ -1359,6 +1367,13 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	if e.Rune == 'q' {
 		m.Quit = true
 		return m, CmdQuit{}
+	}
+	// Suspend to the host shell (#176). `z` (not Ctrl-Z, which the URLs
+	// pane uses for undo) backgrounds the process via SIGTSTP; `fg`
+	// resumes it. Handled here in the approvals pane so it never steals
+	// a literal 'z' the operator is typing into the console.
+	if e.Rune == 'z' {
+		return m, CmdSuspend{}
 	}
 	// Daemon suggestion accept/decline (#172). The suggestion is
 	// ambient (it appears at quiet moments), so it uses shift+a/shift+d

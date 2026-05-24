@@ -120,7 +120,7 @@ func TestProductionHints_AreASCII(t *testing.T) {
 	hints := []string{
 		"[Tab] focus console",
 		"[Tab] focus approvals",
-		"[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [q] quit",
+		"[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [z] suspend  [q] quit",
 		"[Ctrl-C] quit",
 	}
 	for _, h := range hints {
