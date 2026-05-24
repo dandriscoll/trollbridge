@@ -203,10 +203,23 @@ func (b *Backend) addPattern(out io.Writer, label, pattern string) {
 		changed bool
 		err     error
 	)
+	// Reconcile the two lists on input (#179): adding a pattern to one
+	// list removes the same pattern from the other, so a URL never ends
+	// up on both. Without this, approving (allow) a URL that is still on
+	// the deny list leaves it denied — deny wins on reload — and the
+	// approve silently does nothing.
 	switch label {
 	case "allow":
+		if _, rerr := configwrite.RemoveDeny(b.ConfigPath, pattern); rerr != nil {
+			fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, rerr)
+			return
+		}
 		changed, err = configwrite.AddAllow(b.ConfigPath, pattern)
 	case "deny":
+		if _, rerr := configwrite.RemoveAllow(b.ConfigPath, pattern); rerr != nil {
+			fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, rerr)
+			return
+		}
 		changed, err = configwrite.AddDeny(b.ConfigPath, pattern)
 	}
 	if err != nil {
