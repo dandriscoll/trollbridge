@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.8.0 — 2026-05-24
+
 ### Suspend the TUI to the shell (closes #176)
 
 - **Press `z` in the approvals pane to background trollbridge** via job
