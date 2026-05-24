@@ -464,6 +464,10 @@ func (m *Manager) Accept(ctx context.Context, id string) error {
 		"pattern_added", pat,
 		"changed", changed,
 		"source_count", len(active.Candidate.SourceEntries),
+		// Tag the mutation's origin so an operator can tell a
+		// daemon-suggested list change from a manual one (#172/#174).
+		// Matches the source on the persist-failure line above.
+		"source", "suggestion",
 	)
 	if m.reload != nil {
 		m.reload()
