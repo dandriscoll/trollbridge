@@ -334,3 +334,81 @@ func matchPathPattern(p Pattern, path string) bool {
 		return path == p.exactPath
 	}
 }
+
+// Subsumes reports whether the pattern `pattern` covers every request
+// the pattern `entry` would — i.e. once `pattern` is on a list, `entry`
+// on the same list is redundant. Used to prune the specific entries a
+// generalization replaces (#177): a generalized pattern may widen the
+// method (to `*`), drop the port, wildcard a trailing path segment, or
+// wildcard the hostname, and each of those must be recognized as
+// "covers the narrower entry." Conservative: if either string fails to
+// parse, returns false (keep the entry).
+func Subsumes(pattern, entry string) bool {
+	p, err := parsePattern(pattern)
+	if err != nil {
+		return false
+	}
+	e, err := parsePattern(entry)
+	if err != nil {
+		return false
+	}
+	return subsumes(p, e)
+}
+
+// subsumes is the per-axis "p is more-general-or-equal than e" test.
+func subsumes(p, e Pattern) bool {
+	if !p.anyMethod && (e.anyMethod || e.method != p.method) {
+		return false
+	}
+	if !p.anyScheme && (e.anyScheme || e.scheme != p.scheme) {
+		return false
+	}
+	if !hostSubsumes(p, e) {
+		return false
+	}
+	if !p.anyPort && (e.anyPort || e.port != p.port) {
+		return false
+	}
+	if !pathSubsumes(p, e) {
+		return false
+	}
+	return true
+}
+
+func hostSubsumes(p, e Pattern) bool {
+	switch {
+	case p.wildcardAllHosts:
+		return true
+	case p.wildcardPrefix:
+		switch {
+		case e.wildcardAllHosts:
+			return false // e is broader than p
+		case e.wildcardPrefix:
+			// e = *.<eSuffix> ⊆ p = *.<pSuffix> iff eSuffix ends with
+			// pSuffix (e.g. p=*.example.com ⊇ e=*.api.example.com).
+			return strings.HasSuffix(e.hostSuffix, p.hostSuffix)
+		default: // e.exactHost
+			return strings.HasSuffix(e.exactHost, p.hostSuffix) && len(e.exactHost) > len(p.hostSuffix)
+		}
+	default: // p.exactHost
+		return !e.wildcardAllHosts && !e.wildcardPrefix && e.exactHost == p.exactHost
+	}
+}
+
+func pathSubsumes(p, e Pattern) bool {
+	switch {
+	case p.anyPath:
+		return true
+	case p.matchPrefix:
+		switch {
+		case e.anyPath:
+			return false // e matches all paths; p only a prefix
+		case e.matchPrefix:
+			return strings.HasPrefix(e.pathPrefix, p.pathPrefix)
+		default: // e.exactPath
+			return strings.HasPrefix(e.exactPath, p.pathPrefix)
+		}
+	default: // p.exactPath
+		return !e.anyPath && !e.matchPrefix && e.exactPath == p.exactPath
+	}
+}

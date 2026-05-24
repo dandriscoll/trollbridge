@@ -23,8 +23,8 @@ func TestBackend_AcceptGeneralization_RemovesSourcesAddsPattern(t *testing.T) {
 		[]string{"GET api.example.com/v1/users/123", "GET api.example.com/v1/users/456"})
 
 	out := buf.String()
-	if !strings.Contains(out, "removed 2 specific") {
-		t.Errorf("expected removed-count message; got: %s", out)
+	if !strings.Contains(out, "pruned redundant") {
+		t.Errorf("expected pruned-redundant message; got: %s", out)
 	}
 	if !reloaded {
 		t.Errorf("expected reload after accept")

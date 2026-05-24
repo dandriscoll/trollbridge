@@ -245,11 +245,7 @@ func (b *Backend) AcceptGeneralization(out io.Writer, list, pattern string, sour
 		fmt.Fprintf(out, "%s already in %s list\n", pattern, list)
 		return
 	}
-	noun := "entries"
-	if len(sources) == 1 {
-		noun = "entry"
-	}
-	fmt.Fprintf(out, "generalized → added %s to %s, removed %d specific %s\n", pattern, list, len(sources), noun)
+	fmt.Fprintf(out, "generalized → added %s to %s; pruned redundant entries it now covers\n", pattern, list)
 	b.triggerReload()
 }
 

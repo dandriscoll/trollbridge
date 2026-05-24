@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dandriscoll/trollbridge/internal/hostlist"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,11 +49,24 @@ func Generalize(path, list, pattern string, removeSources []string) (bool, error
 	if list != "allow" && list != "deny" {
 		return false, fmt.Errorf("generalize: unknown list %q", list)
 	}
+	srcSet := map[string]struct{}{}
+	for _, s := range removeSources {
+		srcSet[strings.TrimSpace(s)] = struct{}{}
+	}
 	return mutate(path, list, func(entries []string) []string {
-		for _, s := range removeSources {
-			entries = remove(entries, s)
+		var kept []string
+		for _, e := range entries {
+			// Drop an entry if it was an explicit source OR if the
+			// generalized pattern already covers it (#177): a wider
+			// method, dropped port, wildcarded path, or wildcarded host
+			// all make the specific entry redundant. The new pattern is
+			// re-added below, so an entry equal to it round-trips.
+			if _, isSrc := srcSet[strings.TrimSpace(e)]; isSrc || hostlist.Subsumes(pattern, e) {
+				continue
+			}
+			kept = append(kept, e)
 		}
-		return insertSorted(entries, pattern)
+		return insertSorted(kept, pattern)
 	})
 }
 

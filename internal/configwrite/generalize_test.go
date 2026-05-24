@@ -57,6 +57,46 @@ func TestGeneralize_SkipsAbsentSource(t *testing.T) {
 	}
 }
 
+// TestGeneralize_PrunesAllRedundantNotJustSources pins #177: accepting a
+// generalization removes every existing entry the new pattern covers —
+// not only the explicitly-selected sources — while leaving unrelated
+// entries and broader entries alone.
+func TestGeneralize_PrunesAllRedundantNotJustSources(t *testing.T) {
+	path := writeFixture(t)
+	for _, e := range []string{
+		"GET api.example.com/v1/users/1",
+		"GET api.example.com/v1/users/2",
+		"GET api.example.com/v1/users/3", // redundant but NOT a selected source
+		"GET api.example.com/v1/orders/9", // different path prefix — keep
+	} {
+		if _, err := AddAllow(path, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Only /1 and /2 are passed as sources; /3 must still be pruned.
+	_, err := Generalize(path, "allow", "GET api.example.com/v1/users/*",
+		[]string{"GET api.example.com/v1/users/1", "GET api.example.com/v1/users/2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := read(t, path)
+	if !strings.Contains(got, "GET api.example.com/v1/users/*") {
+		t.Errorf("pattern not added:\n%s", got)
+	}
+	for _, gone := range []string{"users/1", "users/2", "users/3"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("redundant entry %q not pruned:\n%s", gone, got)
+		}
+	}
+	// Unrelated and pre-existing entries survive.
+	for _, kept := range []string{"orders/9", "existing.example"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("non-redundant entry %q was wrongly pruned:\n%s", kept, got)
+		}
+	}
+}
+
 // TestGeneralize_RejectsUnknownList guards the list argument.
 func TestGeneralize_RejectsUnknownList(t *testing.T) {
 	path := writeFixture(t)
