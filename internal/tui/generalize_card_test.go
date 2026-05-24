@@ -5,6 +5,33 @@ import (
 	"testing"
 )
 
+// TestGeneralize_CardEnterAcceptsEscCancels pins #178: Enter accepts the
+// shown candidate (same as 'a'); Esc cancels (same as 'd').
+func TestGeneralize_CardEnterAcceptsEscCancels(t *testing.T) {
+	m := genModel()
+	m, _ = Apply(m, KeyEvent{Key: KeyShiftDown})
+	m, _ = Apply(m, KeyEvent{Rune: 'g'})
+	if m.GenCard == nil {
+		t.Fatal("setup: no card")
+	}
+	// Enter accepts → emits CmdGeneralizeAccept and dismisses the card.
+	acc, cmd := Apply(m, KeyEvent{Key: KeyEnter})
+	if acc.GenCard != nil {
+		t.Errorf("Enter did not dismiss the card")
+	}
+	if _, ok := cmd.(CmdGeneralizeAccept); !ok {
+		t.Errorf("Enter cmd = %T, want CmdGeneralizeAccept", cmd)
+	}
+	// Esc cancels → no write, card dismissed.
+	esc, cmd := Apply(m, KeyEvent{Key: KeyEsc})
+	if esc.GenCard != nil {
+		t.Errorf("Esc did not cancel the card")
+	}
+	if _, ok := cmd.(CmdNone); !ok {
+		t.Errorf("Esc cmd = %T, want CmdNone (no write)", cmd)
+	}
+}
+
 // genModel builds a URLs-pane model whose allow list contains two
 // entries that differ only in the trailing path segment — a non-
 // trivial fixture (insight): a no-op selection would NOT produce the

@@ -1287,7 +1287,8 @@ func urlsGeneralize(m Model) (Model, Cmd) {
 // key is swallowed so a/d/tab cannot reach approve/deny or focus.
 func applyKeyGenCard(m Model, e KeyEvent) (Model, Cmd) {
 	switch {
-	case e.Rune == 'a':
+	case e.Rune == 'a' || e.Key == KeyEnter:
+		// Enter accepts the shown candidate, same as 'a' (#178).
 		c := m.GenCard.Current()
 		m.GenCard = nil
 		m.LastErr = ""
