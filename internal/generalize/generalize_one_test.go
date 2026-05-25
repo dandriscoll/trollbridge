@@ -7,7 +7,7 @@ import (
 
 // TestGeneralizeOne_AxisCoverage pins #170 single-select generalize:
 // one concrete entry yields one candidate per applicable axis, in the
-// stable order url_segment, hostname_below_tld, ip_block, method.
+// stable order url_segment, hostname_below_tld, method.
 func TestGeneralizeOne_AxisCoverage(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -30,14 +30,15 @@ func TestGeneralizeOne_AxisCoverage(t *testing.T) {
 			},
 		},
 		{
-			name:  "ipv4_block_and_method",
+			// #181: ip_block dropped — an IPv4 entry yields only url_segment
+			// and method; it is never widened to a /24.
+			name:  "ipv4_no_block_axis",
 			entry: "POST 10.0.0.7/health",
 			want: []struct {
 				axis    Axis
 				pattern string
 			}{
 				{AxisURLSegment, "POST 10.0.0.7/*"},
-				{AxisIPBlock, "POST 10.0.0.0/24/health"},
 				{AxisMethod, "* 10.0.0.7/health"},
 			},
 		},

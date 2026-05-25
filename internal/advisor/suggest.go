@@ -158,17 +158,15 @@ func validateSuggestion(out SuggestionOutput, allowedAxes map[string]bool) error
 	return nil
 }
 
-// axisPriority orders the four axes for deterministic ranking. The
+// axisPriority orders the three axes for deterministic ranking. The
 // chosen priority reflects "narrower wildcard first": method (1
 // position widens) → url_segment (one path level) → hostname
-// (whole subdomain) → ip_block (whole /24). Operators prefer
-// smaller patterns; ranking the narrower ones first surfaces the
-// least-disruptive suggestion.
+// (whole subdomain). Operators prefer smaller patterns; ranking the
+// narrower ones first surfaces the least-disruptive suggestion.
 var axisPriority = map[string]int{
 	"method":             1,
 	"url_segment":        2,
 	"hostname_below_tld": 3,
-	"ip_block":           4,
 }
 
 func deterministicSuggest(in SuggestionInput) SuggestionOutput {
@@ -211,8 +209,6 @@ func buildTemplateReason(c SuggestionCandidate) string {
 		return fmt.Sprintf("%d entries differ only in their final path segment; %q would match all.", n, c.SuggestedPattern)
 	case "hostname_below_tld":
 		return fmt.Sprintf("%d entries are subdomains of a common parent; %q would match all.", n, c.SuggestedPattern)
-	case "ip_block":
-		return fmt.Sprintf("%d entries share a /24 IP block; %q would match all.", n, c.SuggestedPattern)
 	default:
 		return fmt.Sprintf("%d entries can be generalized to %q.", n, c.SuggestedPattern)
 	}

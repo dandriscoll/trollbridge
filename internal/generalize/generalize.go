@@ -6,9 +6,11 @@
 //
 // Closed-set axes per issue #168:
 //   - hostname_below_tld: api.example.com + auth.example.com → *.example.com
-//   - ip_block:           10.0.0.1 + 10.0.0.2 → 10.0.0.0/24
 //   - url_segment:        /api/v1/users/123 + /api/v1/users/456 → /api/v1/users/*
 //   - method:             GET /foo + POST /foo → * /foo
+//
+// An ip_block axis (10.0.0.1 + 10.0.0.2 → 10.0.0.0/24) was removed in #181:
+// hostlist has no CIDR host shape, so an accepted /24 pattern matched nothing.
 package generalize
 
 import (
@@ -21,24 +23,22 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-// Axis names the four allowed generalization classes. The set is
-// closed; adding a fifth axis means updating Axes AND the dispatch
+// Axis names the three allowed generalization classes. The set is
+// closed; adding a fourth axis means updating Axes AND the dispatch
 // in DetectAll.
 type Axis string
 
 const (
 	AxisHostnameBelowTLD Axis = "hostname_below_tld"
-	AxisIPBlock          Axis = "ip_block"
 	AxisURLSegment       Axis = "url_segment"
 	AxisMethod           Axis = "method"
 )
 
 // Axes is the closed set of supported generalization classes. The
-// presence test in generalize_test.go asserts len(Axes) == 4 and
+// presence test in generalize_test.go asserts len(Axes) == 3 and
 // that DetectAll dispatches every axis in this slice.
 var Axes = []Axis{
 	AxisHostnameBelowTLD,
-	AxisIPBlock,
 	AxisURLSegment,
 	AxisMethod,
 }
@@ -76,7 +76,6 @@ func DetectAll(allow, deny []string) []Candidate {
 		out = append(out, DetectMethod(list.entries, list.name)...)
 		out = append(out, DetectURLSegment(list.entries, list.name)...)
 		out = append(out, DetectHostnameBelowTLD(list.entries, list.name)...)
-		out = append(out, DetectIPBlock(list.entries, list.name)...)
 	}
 	return out
 }
@@ -443,66 +442,9 @@ func parentBelowPublicSuffix(host string) string {
 	return parent
 }
 
-// DetectIPBlock groups entries by (method, scheme, port, path) and
-// emits one Candidate per group of ≥2 IPv4 literals that share a
-// /24 block. Other prefix lengths are deliberately not auto-chosen
-// in v1; the /24 boundary is the operator-meaningful default
-// ("same subnet"). A future job can extend to operator-configured
-// prefix-length policy.
-func DetectIPBlock(entries []string, list string) []Candidate {
-	type bucket struct {
-		method, scheme, path string
-		port                 int
-		network              string
-		members              []parsed
-	}
-	by := map[string]*bucket{}
-	for _, e := range entries {
-		p := parseEntry(e)
-		if !p.ok || !p.isIP {
-			continue
-		}
-		ip := net.ParseIP(p.host).To4()
-		if ip == nil {
-			continue
-		}
-		network := fmt.Sprintf("%d.%d.%d.0/24", ip[0], ip[1], ip[2])
-		key := p.method + "|" + p.scheme + "|" + strconv.Itoa(p.port) + "|" + p.path + "|" + network
-		b := by[key]
-		if b == nil {
-			b = &bucket{method: p.method, scheme: p.scheme, port: p.port, path: p.path, network: network}
-			by[key] = b
-		}
-		b.members = append(b.members, p)
-	}
-	var out []Candidate
-	for _, b := range by {
-		ips := map[string]struct{}{}
-		for _, m := range b.members {
-			ips[m.host] = struct{}{}
-		}
-		if len(ips) < 2 {
-			continue
-		}
-		sources := rawSorted(b.members)
-		hostExpr := b.network
-		if b.port != 0 {
-			hostExpr += ":" + strconv.Itoa(b.port)
-		}
-		pattern := renderPattern(b.method, b.scheme, hostExpr, b.path)
-		out = append(out, Candidate{
-			Axis:             AxisIPBlock,
-			List:             list,
-			SourceEntries:    sources,
-			SuggestedPattern: pattern,
-		})
-	}
-	return out
-}
-
 // GeneralizeOne emits one Candidate per applicable generalization axis
 // for a SINGLE concrete entry, in stable axis order (url_segment,
-// hostname_below_tld, ip_block, method). Unlike the DetectAll detectors
+// hostname_below_tld, method). Unlike the DetectAll detectors
 // — which require ≥2 grouped entries — this powers the URLs-pane
 // single-select `g` (#170): the operator selects one entry and rotates
 // the axis options. SourceEntries is the single entry. Returns nil for
@@ -531,17 +473,6 @@ func GeneralizeOne(entry, list string) []Candidate {
 			}
 			pattern := renderPattern(p.method, p.scheme, hostExpr, p.path)
 			out = append(out, Candidate{Axis: AxisHostnameBelowTLD, List: list, SourceEntries: src, SuggestedPattern: pattern})
-		}
-	}
-	// ip_block: widen an IPv4 literal to its /24.
-	if p.isIP {
-		if ip := net.ParseIP(p.host).To4(); ip != nil {
-			hostExpr := fmt.Sprintf("%d.%d.%d.0/24", ip[0], ip[1], ip[2])
-			if p.port != 0 {
-				hostExpr += ":" + strconv.Itoa(p.port)
-			}
-			pattern := renderPattern(p.method, p.scheme, hostExpr, p.path)
-			out = append(out, Candidate{Axis: AxisIPBlock, List: list, SourceEntries: src, SuggestedPattern: pattern})
 		}
 	}
 	// method: widen a concrete verb to any.

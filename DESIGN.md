@@ -1008,13 +1008,11 @@ arrived for `approvals.suggestion.quiet_idle_seconds` (default
 
 **Deterministic detector.** When the predicate fires, `internal/
 generalize` scans the allow list and the deny list independently
-for any of four closed-set axes:
+for any of three closed-set axes:
 
 - **hostname below the TLD** — two or more hosts in the same list
   that share a common registrable-domain parent (computed via
   `golang.org/x/net/publicsuffix`, so `co.uk` is never wildcarded).
-- **IP block** — two or more IPv4 literals in the same list whose
-  /24 covers them both.
 - **URL segment** — two or more entries sharing scheme+host+port+
   method and differing only in their final path segment.
 - **method** — two or more entries sharing scheme+host+port+path

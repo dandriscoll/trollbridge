@@ -7,15 +7,14 @@ import (
 	"testing"
 )
 
-func TestAxesClosedSetIsFour(t *testing.T) {
-	// Closed-set guard. If a fifth axis is added the test fails,
+func TestAxesClosedSetIsThree(t *testing.T) {
+	// Closed-set guard. If a fourth axis is added the test fails,
 	// forcing the implementer to wire dispatch and update Axes.
-	if got := len(Axes); got != 4 {
-		t.Fatalf("Axes must enumerate exactly four axes; got %d (%v)", got, Axes)
+	if got := len(Axes); got != 3 {
+		t.Fatalf("Axes must enumerate exactly three axes; got %d (%v)", got, Axes)
 	}
 	want := map[Axis]bool{
 		AxisHostnameBelowTLD: true,
-		AxisIPBlock:          true,
 		AxisURLSegment:       true,
 		AxisMethod:           true,
 	}
@@ -181,7 +180,7 @@ func TestDetectHostnameBelowTLD(t *testing.T) {
 			wantPat: "* https://*.example.co.uk",
 		},
 		{
-			name: "IP literals are skipped (handled by IP-block axis)",
+			name: "IP literals are skipped (IPs are not generalized; #181 dropped ip_block)",
 			entries: []string{
 				"* https://10.0.0.1",
 				"* https://10.0.0.2",
@@ -215,62 +214,16 @@ func TestDetectHostnameBelowTLD(t *testing.T) {
 	}
 }
 
-func TestDetectIPBlock(t *testing.T) {
-	tests := []struct {
-		name    string
-		entries []string
-		wantOk  bool
-		wantPat string
-	}{
-		{
-			name: "two IPs in same /24",
-			entries: []string{
-				"* https://10.0.0.1",
-				"* https://10.0.0.2",
-			},
-			wantOk:  true,
-			wantPat: "* https://10.0.0.0/24",
-		},
-		{
-			name: "IPs in different /24 do not group",
-			entries: []string{
-				"* https://10.0.0.1",
-				"* https://10.0.1.1",
-			},
-			wantOk: false,
-		},
-		{
-			name: "hostname literals are skipped (handled by hostname axis)",
-			entries: []string{
-				"* https://api.example.com",
-				"* https://auth.example.com",
-			},
-			wantOk: false,
-		},
-		{
-			name: "single IP: no candidate",
-			entries: []string{
-				"* https://10.0.0.1",
-			},
-			wantOk: false,
-		},
+// TestDetectAll_IPLiteralsNotGeneralized guards the #181 decision: IP-literal
+// list entries must not produce any generalization candidate (the ip_block
+// axis was dropped because hostlist has no CIDR host shape).
+func TestDetectAll_IPLiteralsNotGeneralized(t *testing.T) {
+	allow := []string{
+		"* https://10.0.0.1",
+		"* https://10.0.0.2",
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := DetectIPBlock(tc.entries, "allow")
-			if !tc.wantOk {
-				if len(got) != 0 {
-					t.Fatalf("expected no candidates; got %v", got)
-				}
-				return
-			}
-			if len(got) != 1 {
-				t.Fatalf("expected 1 candidate; got %d (%v)", len(got), got)
-			}
-			if got[0].SuggestedPattern != tc.wantPat {
-				t.Fatalf("got pattern %q; want %q", got[0].SuggestedPattern, tc.wantPat)
-			}
-		})
+	if got := DetectAll(allow, nil); len(got) != 0 {
+		t.Fatalf("IP literals must yield no generalization candidate after #181; got %v", got)
 	}
 }
 
