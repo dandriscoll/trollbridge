@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.8.3 — 2026-05-25
+
 ### Declining a suggestion now sticks
 
 - **Declining a quiet-moment generalization suggestion no longer
