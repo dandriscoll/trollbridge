@@ -279,18 +279,7 @@ func newRunCmd() *cobra.Command {
 					"host", req.Host,
 					"port", req.Port,
 					"config_path", absPersistPath)
-				freshCfg, lerr := config.Load(configPath)
-				if lerr != nil {
-					opLog.Error("list-reload re-parse failed",
-						"event", oplog.EventAllowlistReloadFailure,
-						"error", lerr.Error())
-					return
-				}
-				_ = srv.ReloadListsFromConfig(freshCfg)
-				// Tell the external-edit watcher we already
-				// reloaded so its next poll skips the redundant
-				// fire (#80).
-				yamlWatcher.MarkReloaded()
+				_ = reloadAfterInternalWrite(srv, configPath, yamlWatcher, opLog)
 			})
 
 			// SIGHUP triggers YAML rule reload.
@@ -367,15 +356,7 @@ func newRunCmd() *cobra.Command {
 				advisorAdapter{srv.Advisor()},
 				writerAdapter{},
 				func() {
-					freshCfg, lerr := config.Load(configPath)
-					if lerr != nil {
-						opLog.Error("post-suggestion reload re-parse failed",
-							"event", oplog.EventAllowlistReloadFailure,
-							"error", lerr.Error())
-						return
-					}
-					_ = srv.ReloadListsFromConfig(freshCfg)
-					yamlWatcher.MarkReloaded()
+					_ = reloadAfterInternalWrite(srv, configPath, yamlWatcher, opLog)
 				},
 				opLog,
 			)
@@ -410,17 +391,8 @@ func newRunCmd() *cobra.Command {
 					ConfigPath: configPath,
 					LocalOnly:  true,
 					OnReload: func() {
-						freshCfg, err := config.Load(configPath)
-						if err != nil {
-							opLog.Error("list-reload re-parse failed",
-								"event", oplog.EventAllowlistReloadFailure,
-								"error", err.Error())
-							srv.RecordReload("lists", err)
-							return
-						}
-						listsErr := srv.ReloadListsFromConfig(freshCfg)
-						srv.RecordReload("lists", listsErr)
-						yamlWatcher.MarkReloaded()
+						srv.RecordReload("lists",
+							reloadAfterInternalWrite(srv, configPath, yamlWatcher, opLog))
 					},
 					OnTest:   replTestFn(configPath),
 					OnDoctor: replDoctorFn(configPath),
@@ -710,6 +682,27 @@ func (a queueAdapter) Pending() []suggestion.QueueSnapshot {
 		out = append(out, suggestion.QueueSnapshot{ID: p.ID})
 	}
 	return out
+}
+
+// reloadAfterInternalWrite re-parses the config the daemon itself just wrote
+// and refreshes BOTH the in-memory matcher (ReloadListsFromConfig) and the
+// cfg pointer the rest of the daemon reads (ReloadConfig), then tells the
+// external-edit watcher we already reloaded so it does not re-fire on our own
+// write (#80). Refreshing s.cfg is load-bearing: the suggestion engine reads
+// its lists via srv.Cfg(); a matcher-only reload leaves it scanning stale
+// lists and re-offering an already-accepted generalization (#183). Returns the
+// lists-reload error for callers that record reload status.
+func reloadAfterInternalWrite(srv *server.Server, configPath string, w *configwatch.Watcher, opLog *slog.Logger) error {
+	freshCfg, err := config.Load(configPath)
+	if err != nil {
+		opLog.Error("list-reload re-parse failed",
+			"event", oplog.EventAllowlistReloadFailure, "error", err.Error())
+		return err
+	}
+	listsErr := srv.ReloadListsFromConfig(freshCfg)
+	srv.ReloadConfig(freshCfg)
+	w.MarkReloaded()
+	return listsErr
 }
 
 // listsAdapter exposes the daemon's live config.Lists to the
