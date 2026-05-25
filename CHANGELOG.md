@@ -9,6 +9,25 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Generalize re-offer + ip_block fixes
+
+- **Accepting a generalize suggestion no longer re-offers the same
+  suggestion.** The daemon's post-write reload refreshed the matcher
+  but not the in-memory config the suggestion engine reads, so the next
+  quiet-moment scan saw the pre-accept list and re-suggested the
+  generalization it had just applied. Internal-write reloads now refresh
+  both (closes #183).
+- **Dropped the `ip_block` generalization axis** (#181). It emitted
+  `/24` CIDR patterns that the host matcher could not match — an
+  accepted block matched nothing and never pruned its member IPs.
+  Generalization now offers hostname-below-TLD, URL-segment, and method
+  only; IP literals are left as-is.
+
+### Other
+
+- **`trollbridge upgrade` is now a synonym for `trollbridge update`**
+  (#182).
+
 ## v0.8.0 — 2026-05-24
 
 ### Suspend the TUI to the shell (closes #176)
