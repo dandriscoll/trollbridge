@@ -8,6 +8,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/approvals"
+	"github.com/dandriscoll/trollbridge/internal/controlclient"
 	"github.com/dandriscoll/trollbridge/internal/generalize"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
 	"github.com/dandriscoll/trollbridge/internal/reloadstatus"
@@ -395,9 +397,16 @@ const (
 )
 
 // ActionResult arrives after an approve or deny POST completes.
+// Method/URL carry the acted-on request so that a hold-not-found
+// failure can fall back to writing the URL to the allow/deny list
+// (#184) — the hold is a transient pointer; the operator's intent to
+// allow/deny the URL stands even when the hold has already been
+// resolved out from under them.
 type ActionResult struct {
 	ID     string
 	Action string // "approve" | "deny"
+	Method string
+	URL    string
 	Err    error
 }
 
@@ -432,8 +441,20 @@ type Cmd interface{ cmd() }
 
 type CmdNone struct{}
 type CmdRefresh struct{}
-type CmdApprove struct{ ID string }
-type CmdDeny struct{ ID string }
+// CmdApprove / CmdDeny carry the acted-on request's Method and URL
+// alongside the hold id so the action-result handler can fall back to
+// an allow/deny-list write when the hold has already been resolved
+// (#184).
+type CmdApprove struct {
+	ID     string
+	Method string
+	URL    string
+}
+type CmdDeny struct {
+	ID     string
+	Method string
+	URL    string
+}
 
 // CmdRingBell is emitted on the tick where the pending count
 // transitions up (e.g. 0→1 or 2→3) and the chime is enabled. The
@@ -1444,10 +1465,10 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 			target := op.Method + " " + op.URL
 			if e.Rune == 'a' {
 				m.LastInfo = "approving " + target + "…"
-				return m, CmdApprove{ID: op.HoldID}
+				return m, CmdApprove{ID: op.HoldID, Method: op.Method, URL: op.URL}
 			}
 			m.LastInfo = "denying " + target + "…"
-			return m, CmdDeny{ID: op.HoldID}
+			return m, CmdDeny{ID: op.HoldID, Method: op.Method, URL: op.URL}
 		}
 		// Retroactive add to allow / deny list (closes #60). Routed
 		// through the console pane so the same configwrite + oplog
@@ -1463,11 +1484,7 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		if e.Rune == 'd' {
 			verb = "deny"
 		}
-		method := strings.ToUpper(strings.TrimSpace(op.Method))
-		if method == "" {
-			method = "*"
-		}
-		specific := method + " " + op.URL
+		specific := allowDenyPattern(op.Method, op.URL)
 		m.LastInfo = verb + "ing " + specific + "…"
 		// Pre-#168 the approve branch queued a 1/2/3 generalize-offer
 		// prompt here; #168 removed that surface in favor of the
@@ -1477,6 +1494,19 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		return m, CmdConsoleExec{Line: verb + " " + specific}
 	}
 	return m, CmdNone{}
+}
+
+// allowDenyPattern builds the list pattern for a request row: the
+// uppercased method (or "*" when absent) followed by the URL, matching
+// the shape the console's `allow`/`deny` commands expect. Shared by
+// the retroactive add-to-list keypress (#60/#85) and the approve/deny
+// hold-not-found fallback (#184) so the two never drift.
+func allowDenyPattern(method, url string) string {
+	m := strings.ToUpper(strings.TrimSpace(method))
+	if m == "" {
+		m = "*"
+	}
+	return m + " " + url
 }
 
 // splitURL breaks "scheme://host[:port]/path" or "host[:port]"
@@ -1550,6 +1580,23 @@ func applyKeyConsole(m Model, e KeyEvent) (Model, Cmd) {
 func applyActionResult(m Model, e ActionResult) (Model, Cmd) {
 	target := resolveActionTarget(m, e.ID)
 	if e.Err != nil {
+		// #184: a hold can be resolved out from under the operator
+		// (timeout, advisor, double-press) while its row still shows
+		// pending. The hold is a transient pointer — the operator's
+		// intent to allow/deny the URL still stands. When we have the
+		// URL, fall back to the same allow/deny-list write the
+		// retroactive add-to-list keypress uses (#60), so the action
+		// succeeds instead of dead-ending on "hold not found".
+		if errors.Is(e.Err, controlclient.ErrHoldNotFound) && e.URL != "" {
+			verb := "allow"
+			if e.Action == "deny" {
+				verb = "deny"
+			}
+			specific := allowDenyPattern(e.Method, e.URL)
+			m.LastInfo = verb + "ing " + specific + " (hold already resolved)…"
+			m.LastErr = ""
+			return m, CmdConsoleExec{Line: verb + " " + specific}
+		}
 		// Surface what the operator just did — URL is more meaningful
 		// than the queue id when something goes wrong (#92).
 		idForErr := target
@@ -1787,6 +1834,25 @@ func opIsResolved(status string) bool {
 	default:
 		return true
 	}
+}
+
+// opsPendingSplit returns the index in a DisplayedOps slice where the
+// non-resolved (pending / signaled / checking) tail begins.
+// DisplayedOps orders [resolved... | pending...], so this equals the
+// resolved count and len(displayed) when there is no pending tail. The
+// pending tail renders as a card pinned to the bottom of the operations
+// pane (#185); the resolved head scrolls independently above it. The
+// operator's selection index spans the whole slice unchanged, so the
+// cursor still crosses from resolved into pending by moving past the
+// last resolved row, and leaves pending (back into resolved) by moving
+// up off the first pending row.
+func opsPendingSplit(displayed []DisplayedOp) int {
+	for i := range displayed {
+		if !opIsResolved(displayed[i].Status) {
+			return i
+		}
+	}
+	return len(displayed)
 }
 
 // opGroupHostDir splits an op URL into the (host, directory) pair used

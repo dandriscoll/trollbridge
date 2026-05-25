@@ -260,7 +260,7 @@ func (c *inProcessClient) Approve(id string) error {
 		return errors.New("approvals queue not initialized")
 	}
 	if !c.q.Approve(id, "once", "tui") {
-		return fmt.Errorf("hold not found: %s", id)
+		return fmt.Errorf("%w: %s", controlclient.ErrHoldNotFound, id)
 	}
 	return nil
 }
@@ -270,7 +270,7 @@ func (c *inProcessClient) Deny(id, reason string) error {
 		return errors.New("approvals queue not initialized")
 	}
 	if !c.q.Deny(id, reason, "tui") {
-		return fmt.Errorf("hold not found: %s", id)
+		return fmt.Errorf("%w: %s", controlclient.ErrHoldNotFound, id)
 	}
 	return nil
 }
@@ -576,21 +576,21 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				}
 			}()
 		case CmdApprove:
-			id := c.ID
+			id, method, url := c.ID, c.Method, c.URL
 			go func() {
 				err := client.Approve(id)
 				select {
 				case <-loopCtx.Done():
-				case events <- ActionResult{ID: id, Action: "approve", Err: err}:
+				case events <- ActionResult{ID: id, Action: "approve", Method: method, URL: url, Err: err}:
 				}
 			}()
 		case CmdDeny:
-			id := c.ID
+			id, method, url := c.ID, c.Method, c.URL
 			go func() {
 				err := client.Deny(id, "operator denied")
 				select {
 				case <-loopCtx.Done():
-				case events <- ActionResult{ID: id, Action: "deny", Err: err}:
+				case events <- ActionResult{ID: id, Action: "deny", Method: method, URL: url, Err: err}:
 				}
 			}()
 		case CmdSuggestionAccept:
@@ -1098,52 +1098,78 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	if inner < 1 {
 		inner = 1
 	}
-	// The generalization card (#170) occupies the bottom of the body
-	// when active; op rows fill the remainder above it. Each card line
-	// is width-fitted so nothing renders off-screen (the reported bug).
-	// Card-slot precedence: a manual generalize card (modal) wins; else
-	// the daemon's ambient quiet-moment suggestion (#172), hidden while
-	// any hold is pending so it never competes with approve/deny. Both
-	// render width-fit so nothing is pushed off-screen.
-	var cardRows []string
+	const methodW, countW, statusW, timeW = 7, 1, 11, 14
+	urlW := inner - methodW - countW - statusW - timeW - 6 // 1 leading space + 4 column gaps + 1 trailing
+	if urlW < 8 {
+		urlW = 8
+	}
+	now := time.Now()
+
+	// #185: the non-resolved tail of DisplayedOps renders as a card
+	// pinned to the bottom of the pane (like the generalize/suggestion
+	// card), so pending requests stay on screen no matter how many
+	// resolved ops scroll above them. The resolved head scrolls
+	// independently in the list region.
+	split := opsPendingSplit(displayed)
+	resolved := displayed[:split]
+	pendingOps := displayed[split:]
+
+	// Top card slot (above pending): a manual generalize card (modal)
+	// wins; else the daemon's ambient quiet-moment suggestion (#172),
+	// shown only when no hold is pending so it never competes with the
+	// pending card / approve-deny. Each line is width-fit so nothing
+	// renders off-screen (the #170 bug).
+	var topCard []string
 	switch {
 	case m.GenCard != nil:
-		cardRows = formatGeneralizeCard(*m.GenCard, inner)
+		topCard = formatGeneralizeCard(*m.GenCard, inner)
 	case m.Suggestion != nil && len(m.Holds) == 0:
-		cardRows = formatSuggestionCard(*m.Suggestion, inner)
+		topCard = formatSuggestionCard(*m.Suggestion, inner)
 	}
-	if max := bodyLines - 1; len(cardRows) > max && max >= 0 {
-		cardRows = cardRows[:max]
+	if max := bodyLines - 1; len(topCard) > max && max >= 0 {
+		topCard = topCard[:max]
 	}
-	listLines := bodyLines - len(cardRows)
+
+	// Pending card budget: reserve one line for the resolved column
+	// header; pending is the load-bearing content (#156/#175) so it
+	// takes the remaining space when large.
+	selRel := -1
+	if m.Selected >= split {
+		selRel = m.Selected - split
+	}
+	pendMax := bodyLines - len(topCard) - 1
+	if pendMax < 0 {
+		pendMax = 0
+	}
+	pendCard := formatPendingCard(pendingOps, selRel, methodW, urlW, statusW+8, inner, pendMax, now)
+
+	listLines := bodyLines - len(topCard) - len(pendCard)
+	if listLines < 1 {
+		listLines = 1
+	}
 	used := 0
 	if len(displayed) == 0 {
 		b.WriteString(bodyLine(padRight(runeTrunc("  (no recent operations — waiting for traffic)", inner), inner), m.Cols, focused))
 		used++
 	} else {
-		const methodW, countW, statusW, timeW = 7, 1, 11, 14
-		urlW := inner - methodW - countW - statusW - timeW - 6 // 1 leading space + 4 column gaps + 1 trailing
-		if urlW < 8 {
-			urlW = 8
-		}
 		colHeader := fmt.Sprintf(" %-*s %-*s %s %-*s %s",
 			methodW, "METHOD", urlW, "URL", " ", statusW, "STATUS", "TIME")
 		b.WriteString(bodyLine(padRight(runeTrunc(colHeader, inner), inner), m.Cols, focused))
 		used++
-		now := time.Now()
-		// Bottom-anchored scroll so the pending region (tail of
-		// DisplayedOps) is never pushed off-screen (#175).
+		// Bottom-anchored scroll within the resolved head; the cursor
+		// follows up into resolved when it is there, and the window
+		// rests at the bottom while the cursor is in the pending card.
 		dataRows := listLines - 1
-		first := opsScrollOffset(m.Selected, dataRows, len(displayed))
+		first := opsScrollOffset(m.Selected, dataRows, len(resolved))
 		end := first + dataRows
-		if end > len(displayed) {
-			end = len(displayed)
+		if end > len(resolved) {
+			end = len(resolved)
 		}
 		for i := first; i < end; i++ {
 			if used >= listLines {
 				break
 			}
-			row := formatOpRow(displayed[i], methodW, urlW, statusW+8, now)
+			row := formatOpRow(resolved[i], methodW, urlW, statusW+8, now)
 			row = padRightVisible(row, inner)
 			if i == m.Selected {
 				row = "\x1b[7m" + row + "\x1b[0m"
@@ -1156,7 +1182,10 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
 		used++
 	}
-	for _, cr := range cardRows {
+	for _, cr := range topCard {
+		b.WriteString(bodyLine(cr, m.Cols, focused))
+	}
+	for _, cr := range pendCard {
 		b.WriteString(bodyLine(cr, m.Cols, focused))
 	}
 
@@ -1228,6 +1257,47 @@ func formatSuggestionCard(s Suggestion, inner int) []string {
 	out := make([]string, len(raw))
 	for i, l := range raw {
 		out[i] = "\x1b[36m" + padRight(runeTrunc(l, inner), inner) + "\x1b[0m"
+	}
+	return out
+}
+
+// formatPendingCard renders the non-resolved tail of DisplayedOps as a
+// card pinned to the bottom of the operations pane (#185), mirroring
+// the generalize/suggestion card slot. pendingOps is displayed[split:];
+// selRel is the selected row's index within pendingOps, or -1 when the
+// cursor is in the resolved list above. maxRows caps the card height
+// (a divider header plus rows); when pendingOps overflows, the rows are
+// windowed bottom-anchored (newest pending last, the idle-snap target)
+// while keeping the selected row visible. Returns inner-width content
+// lines — the caller wraps each in the pane border or writes it raw on
+// the no-border path. Returns nil when nothing is pending or no space.
+func formatPendingCard(pendingOps []DisplayedOp, selRel, methodW, urlW, statusW, inner, maxRows int, now time.Time) []string {
+	if len(pendingOps) == 0 || maxRows < 1 {
+		return nil
+	}
+	var out []string
+	dataRows := maxRows
+	if maxRows >= 2 {
+		// Divider header — fill the inner width with box-drawing dashes
+		// so the pending region reads as a distinct floating card.
+		hdr := fmt.Sprintf(" ── pending (%d) ", len(pendingOps))
+		if pad := inner - len([]rune(hdr)); pad > 0 {
+			hdr += strings.Repeat("─", pad)
+		}
+		out = append(out, "\x1b[1m"+runeTrunc(hdr, inner)+"\x1b[0m")
+		dataRows = maxRows - 1
+	}
+	first := opsScrollOffset(selRel, dataRows, len(pendingOps))
+	end := first + dataRows
+	if end > len(pendingOps) {
+		end = len(pendingOps)
+	}
+	for i := first; i < end; i++ {
+		row := padRightVisible(formatOpRow(pendingOps[i], methodW, urlW, statusW, now), inner)
+		if i == selRel {
+			row = "\x1b[7m" + row + "\x1b[0m"
+		}
+		out = append(out, row)
 	}
 	return out
 }
@@ -1458,35 +1528,54 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 	if bodyLines < 1 {
 		bodyLines = 1
 	}
+	const methodW, countW, statusW, timeW = 7, 1, 11, 14
+	urlW := m.Cols - methodW - countW - statusW - timeW - 6
+	if urlW < 8 {
+		urlW = 8
+	}
+	now := time.Now()
+
+	// #185: pin the pending tail to the bottom of the pane here too,
+	// so the narrow-terminal fallback matches the bordered renderer.
+	split := opsPendingSplit(displayed)
+	resolved := displayed[:split]
+	pendingOps := displayed[split:]
+	selRel := -1
+	if m.Selected >= split {
+		selRel = m.Selected - split
+	}
+	pendMax := bodyLines - 1
+	if pendMax < 0 {
+		pendMax = 0
+	}
+	pendCard := formatPendingCard(pendingOps, selRel, methodW, urlW, statusW, m.Cols, pendMax, now)
+	listLines := bodyLines - len(pendCard)
+	if listLines < 1 {
+		listLines = 1
+	}
+
 	used := 0
 	if len(displayed) == 0 {
 		b.WriteString(padRight("  (no recent operations — waiting for traffic)", m.Cols))
 		b.WriteString("\r\n")
 		used++
 	} else {
-		const methodW, countW, statusW, timeW = 7, 1, 11, 14
-		urlW := m.Cols - methodW - countW - statusW - timeW - 6
-		if urlW < 8 {
-			urlW = 8
-		}
 		colHeader := fmt.Sprintf(" %-*s %-*s %s %-*s %s",
 			methodW, "METHOD", urlW, "URL", " ", statusW, "STATUS", "TIME")
 		b.WriteString(padRight(colHeader, m.Cols))
 		b.WriteString("\r\n")
 		used++
-		now := time.Now()
-		// Bottom-anchored scroll so the pending region stays on screen (#175).
-		dataRows := bodyLines - 1
-		first := opsScrollOffset(m.Selected, dataRows, len(displayed))
+		dataRows := listLines - 1
+		first := opsScrollOffset(m.Selected, dataRows, len(resolved))
 		end := first + dataRows
-		if end > len(displayed) {
-			end = len(displayed)
+		if end > len(resolved) {
+			end = len(resolved)
 		}
 		for i := first; i < end; i++ {
-			if used >= bodyLines {
+			if used >= listLines {
 				break
 			}
-			row := formatOpRow(displayed[i], methodW, urlW, statusW, now)
+			row := formatOpRow(resolved[i], methodW, urlW, statusW, now)
 			if i == m.Selected {
 				b.WriteString("\x1b[7m")
 				b.WriteString(padRightVisible(row, m.Cols))
@@ -1498,10 +1587,14 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			used++
 		}
 	}
-	for used < bodyLines {
+	for used < listLines {
 		b.WriteString(padRight("", m.Cols))
 		b.WriteString("\r\n")
 		used++
+	}
+	for _, cr := range pendCard {
+		b.WriteString(cr)
+		b.WriteString("\r\n")
 	}
 
 	if m.LastErr != "" {

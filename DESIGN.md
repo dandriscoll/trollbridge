@@ -1661,6 +1661,19 @@ Layout:
   operations, refreshing automatically as the queue changes. Keys:
   `a` approve, `d` deny, `↑↓` (or `j`/`k`) select, `r` refresh now,
   `q` (or `Esc`) quit.
+- **Pinned pending region** — pending (and other not-yet-resolved)
+  holds render as a card floating at the bottom of the pane, like the
+  generalize/suggestion card, so they stay on screen no matter how far
+  the resolved history scrolls above them. The cursor crosses into the
+  pending region by moving down past the last resolved row and leaves
+  it by moving up off the top pending row; re-entering pending means
+  scrolling all the way to the bottom again (#185).
+- **Approving a resolved-away hold** — a hold can be resolved out from
+  under the operator (timeout, advisor, double-press) while its row
+  still shows pending. The hold id is a transient pointer; pressing `a`
+  / `d` on such a row falls back to writing the request URL to the
+  allow / deny list (the same path as the retroactive add on a resolved
+  row) instead of surfacing a "hold not found" error (#184).
 - **Row collapsing** — the approvals pane folds resolved operations
   that share a method, host, path directory (the URL path up to and
   including its last `/`), and status into a single row. CONNECT and

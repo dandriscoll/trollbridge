@@ -9,6 +9,22 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### TUI pending-list placement + resilient approve
+
+- **Pending holds now float pinned to the bottom of the operations
+  pane**, like the generalize/suggestion card, so they stay on screen
+  no matter how many resolved operations scroll above them — no more
+  scrolling a long history to reach the queue. The cursor enters the
+  pending region by moving down past the last resolved row and leaves
+  it by moving up off the top pending row (closes #185).
+- **Approving a hold that was already resolved no longer errors with
+  "hold not found".** A hold can be resolved out from under the
+  operator (timeout, advisor, double-press) while its row still shows
+  pending; the hold id is just a pointer. Pressing `a` / `d` on such a
+  row now falls back to writing the request URL to the allow / deny
+  list — the same write path as the retroactive add on a resolved row —
+  so the action succeeds (closes #184).
+
 ## v0.8.1 — 2026-05-25
 
 ### Generalize re-offer + ip_block fixes
