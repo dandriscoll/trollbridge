@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.8.2 — 2026-05-25
+
 ### Generalize suggestions prefer host-wide coverage first
 
 - **The quiet-moment generalizer now offers a host-wide `host/*`
