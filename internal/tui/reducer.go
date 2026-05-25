@@ -613,7 +613,7 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 			m.LastErr = "suggestion " + e.Action + ": " + truncate(e.Err.Error(), 200)
 			m.LastInfo = ""
 		} else {
-			m.LastInfo = "suggestion " + e.Action + "ed"
+			m.LastInfo = "suggestion " + suggestionActionPast(e.Action)
 			m.LastErr = ""
 			// Clear optimistically; the next poll re-fetches the
 			// authoritative active suggestion (likely nil now).
@@ -632,6 +632,20 @@ func Apply(m Model, ev Event) (Model, Cmd) {
 		return m, CmdNone{}
 	}
 	return m, CmdNone{}
+}
+
+// suggestionActionPast renders a suggestion action verb in past tense
+// for the status line. The verbs end in "e", so a bare "+ed" suffix
+// produced "declineed" (#187); map the known verbs explicitly.
+func suggestionActionPast(action string) string {
+	switch action {
+	case "accept":
+		return "accepted"
+	case "decline":
+		return "declined"
+	default:
+		return action + "ed"
+	}
 }
 
 func applyTick(m Model, e TickResult) (Model, Cmd) {

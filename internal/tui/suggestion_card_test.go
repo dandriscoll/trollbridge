@@ -83,6 +83,15 @@ func TestSuggestionActionResult_Status(t *testing.T) {
 	if ok.LastInfo == "" || ok.LastErr != "" {
 		t.Errorf("accept status: info=%q err=%q", ok.LastInfo, ok.LastErr)
 	}
+	if ok.LastInfo != "suggestion accepted" {
+		t.Errorf("accept status text = %q, want %q", ok.LastInfo, "suggestion accepted")
+	}
+	// #187: the success message must read "suggestion declined", not the
+	// "+ed" suffix bug "suggestion declineed".
+	okDec, _ := Apply(m, SuggestionActionResult{Action: "decline"})
+	if okDec.LastInfo != "suggestion declined" {
+		t.Errorf("decline status text = %q, want %q", okDec.LastInfo, "suggestion declined")
+	}
 	bad, _ := Apply(m, SuggestionActionResult{Action: "decline", Err: errSample})
 	if bad.LastErr == "" {
 		t.Errorf("failed decline did not set LastErr")
