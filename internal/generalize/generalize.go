@@ -7,6 +7,7 @@
 // Closed-set axes per issue #168:
 //   - hostname_below_tld: api.example.com + auth.example.com → *.example.com
 //   - url_segment:        /api/v1/users/123 + /api/v1/users/456 → /api/v1/users/*
+//     (host-wide, #186)   host/v1/users/1 + host/v1/orders/2 → host/*
 //   - method:             GET /foo + POST /foo → * /foo
 //
 // An ip_block axis (10.0.0.1 + 10.0.0.2 → 10.0.0.0/24) was removed in #181:
@@ -75,6 +76,7 @@ func DetectAll(allow, deny []string) []Candidate {
 	}{{"allow", allow}, {"deny", deny}} {
 		out = append(out, DetectMethod(list.entries, list.name)...)
 		out = append(out, DetectURLSegment(list.entries, list.name)...)
+		out = append(out, DetectHostPath(list.entries, list.name)...)
 		out = append(out, DetectHostnameBelowTLD(list.entries, list.name)...)
 	}
 	return out
@@ -334,6 +336,73 @@ func DetectURLSegment(entries []string, list string) []Candidate {
 		}
 		sources := rawSorted(b.members)
 		pattern := renderPattern(b.method, b.scheme, formatHost(b.host, b.port), b.prefix+"/*")
+		out = append(out, Candidate{
+			Axis:             AxisURLSegment,
+			List:             list,
+			SourceEntries:    sources,
+			SuggestedPattern: pattern,
+		})
+	}
+	return out
+}
+
+// DetectHostPath emits a host-wide path generalization — `host/*`,
+// matching every path on the host — for each (method, scheme, host,
+// port) group whose concrete path entries span ≥2 DISTINCT prefixes
+// (path up to the last `/`). It is the url_segment axis at prefix
+// depth 0: it covers ALL of a host's requests, so the suggester can
+// offer it before any narrower per-prefix subset (#186 — the prior
+// behavior got stuck at the deepest common prefix and never traversed
+// the whole list).
+//
+// The ≥2-distinct-prefixes gate is what separates this from
+// DetectURLSegment: when every path shares one prefix, DetectURLSegment
+// already produces the covering `host/prefix/*`, so DetectHostPath
+// stays quiet and there is no duplicate. When prefixes differ, no
+// single url_segment bucket covers them all (each deep bucket may even
+// be a singleton that emits nothing) — only the host-wide pattern does.
+func DetectHostPath(entries []string, list string) []Candidate {
+	type bucket struct {
+		method, scheme, host string
+		port                 int
+		members              []parsed
+	}
+	by := map[string]*bucket{}
+	for _, e := range entries {
+		p := parseEntry(e)
+		if !p.ok || p.path == "" {
+			continue
+		}
+		key := p.method + "|" + p.scheme + "|" + formatHost(p.host, p.port)
+		b := by[key]
+		if b == nil {
+			b = &bucket{method: p.method, scheme: p.scheme, host: p.host, port: p.port}
+			by[key] = b
+		}
+		b.members = append(b.members, p)
+	}
+	var out []Candidate
+	for _, b := range by {
+		prefixes := map[string]struct{}{}
+		paths := map[string]struct{}{}
+		for _, m := range b.members {
+			path := strings.TrimRight(m.path, "/")
+			i := strings.LastIndexByte(path, '/')
+			if i < 0 {
+				prefixes[""] = struct{}{}
+			} else {
+				prefixes[path[:i]] = struct{}{}
+			}
+			paths[path] = struct{}{}
+		}
+		// ≥2 distinct prefixes ⇒ no single url_segment subset covers
+		// the whole host; ≥2 distinct paths ⇒ a real generalization
+		// (not two identical entries).
+		if len(prefixes) < 2 || len(paths) < 2 {
+			continue
+		}
+		sources := rawSorted(b.members)
+		pattern := renderPattern(b.method, b.scheme, formatHost(b.host, b.port), "/*")
 		out = append(out, Candidate{
 			Axis:             AxisURLSegment,
 			List:             list,

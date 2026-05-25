@@ -319,12 +319,33 @@ func (m *Manager) produce(ctx context.Context, cfg *config.Config, maxCandidates
 	for _, c := range filtered2 {
 		groups[c.CanonicalKey()] = append(groups[c.CanonicalKey()], c)
 	}
-	// Pick the highest-priority group: most axes first, then
-	// lexicographically smallest key for determinism.
+	// Pick the highest-priority group. Coverage first: the group whose
+	// source set subsumes the most existing list entries wins, so a
+	// host-wide generalization is offered before any narrower subset of
+	// the same host (#186). Then most axes (more ways to refine the same
+	// set), then lexicographically smallest key for determinism. All
+	// members of a CanonicalKey group share the same source set, so
+	// group coverage is len(SourceEntries) of any member.
+	groupCoverage := func(g []generalize.Candidate) int {
+		if len(g) == 0 {
+			return 0
+		}
+		return len(g[0].SourceEntries)
+	}
 	var chosen []generalize.Candidate
 	bestKey := ""
 	for k, g := range groups {
-		if chosen == nil || len(g) > len(chosen) || (len(g) == len(chosen) && k < bestKey) {
+		better := chosen == nil
+		if !better {
+			if cg, cc := groupCoverage(g), groupCoverage(chosen); cg != cc {
+				better = cg > cc
+			} else if len(g) != len(chosen) {
+				better = len(g) > len(chosen)
+			} else {
+				better = k < bestKey
+			}
+		}
+		if better {
 			chosen = g
 			bestKey = k
 		}

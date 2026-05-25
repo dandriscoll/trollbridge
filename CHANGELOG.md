@@ -9,6 +9,18 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Generalize suggestions prefer host-wide coverage first
+
+- **The quiet-moment generalizer now offers a host-wide `host/*`
+  suggestion before any narrower per-path subset** when a host's
+  entries span more than one path prefix. Previously the detector got
+  stuck at the deepest common path prefix and could suggest a subset
+  (`api.example.com/v1/users/*`) — or nothing at all when each deep
+  prefix had a single entry — never the pattern covering every request
+  to the host. Candidate groups are now ranked by how many existing
+  list entries they subsume, so the broadest generalization is offered
+  first; declining it walks to the narrower options (closes #186).
+
 ### TUI pending-list placement + resilient approve
 
 - **Pending holds now float pinned to the bottom of the operations

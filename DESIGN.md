@@ -1014,14 +1014,23 @@ for any of three closed-set axes:
   that share a common registrable-domain parent (computed via
   `golang.org/x/net/publicsuffix`, so `co.uk` is never wildcarded).
 - **URL segment** — two or more entries sharing scheme+host+port+
-  method and differing only in their final path segment.
+  method and differing only in their final path segment. As a special
+  case at path depth 0, when a host's entries span ≥2 distinct path
+  prefixes (so no single per-prefix wildcard covers them all), the
+  detector also emits a host-wide `host/*` candidate covering every
+  request to that host (#186) — so the operator is offered "generalize
+  against all of api.example.com" before any narrower subset.
 - **method** — two or more entries sharing scheme+host+port+path
   and differing only in HTTP method.
 
 Each candidate is `{axis, list (allow|deny), source_entries,
 suggested_pattern}`. Single-entry inputs never produce a candidate
 (the directive's "two or more" rule). The detector emits no LLM
-call.
+call. When several candidate groups survive the filter, the suggester
+offers the group whose `source_entries` subsume the **most** existing
+list entries first (broadest coverage), so a host-wide generalization
+precedes a narrower subset of the same host; declining it walks to the
+narrower options (#186).
 
 **Decline filter.** Each candidate's sorted source-entry set is
 canonical-keyed and matched against `lists.declined_suggestions`
