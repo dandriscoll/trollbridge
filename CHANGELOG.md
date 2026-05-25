@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.8.1 — 2026-05-25
+
 ### Generalize re-offer + ip_block fixes
 
 - **Accepting a generalize suggestion no longer re-offers the same
