@@ -9,6 +9,17 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Declining a suggestion now sticks
+
+- **Declining a quiet-moment generalization suggestion no longer
+  re-offers the same candidate on the next detection cycle.** The
+  decline wrote its suppression row to disk but the daemon kept scanning
+  its pre-decline, in-memory list, so the suggestion reappeared
+  immediately — the operator could never dismiss it. Decline now
+  refreshes the daemon's config the same way Accept does (closes #188).
+- **Fixed the decline status line reading "suggestion declineed".** It
+  now reads "suggestion declined" (closes #187).
+
 ## v0.8.2 — 2026-05-25
 
 ### Generalize suggestions prefer host-wide coverage first
