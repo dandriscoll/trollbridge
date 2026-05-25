@@ -277,3 +277,21 @@ func TestUpdateCmd_NoPrefixFlag_PassesEmpty(t *testing.T) {
 		t.Errorf("default prefix should be empty; got %q", got)
 	}
 }
+
+// TestUpgradeAliasResolvesToUpdate pins #182: `trollbridge upgrade` is a
+// synonym for `trollbridge update`, resolving to the same command (with its
+// --check / --prefix flags) via cobra's alias mechanism — no network needed.
+func TestUpgradeAliasResolvesToUpdate(t *testing.T) {
+	root := newRootCmd()
+	cmd, _, err := root.Find([]string{"upgrade"})
+	if err != nil {
+		t.Fatalf("Find(upgrade): %v", err)
+	}
+	if cmd.Name() != "update" {
+		t.Fatalf("`upgrade` resolved to %q, want the `update` command", cmd.Name())
+	}
+	if cmd.Flags().Lookup("check") == nil || cmd.Flags().Lookup("prefix") == nil {
+		t.Errorf("alias target missing update flags: check=%v prefix=%v",
+			cmd.Flags().Lookup("check") != nil, cmd.Flags().Lookup("prefix") != nil)
+	}
+}

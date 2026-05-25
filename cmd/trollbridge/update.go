@@ -20,8 +20,9 @@ func newUpdateCmd() *cobra.Command {
 	var checkOnly bool
 	var prefix string
 	cmd := &cobra.Command{
-		Use:   "update",
-		Short: "Update trollbridge to the latest release.",
+		Use:     "update",
+		Aliases: []string{"upgrade"},
+		Short:   "Update trollbridge to the latest release.",
 		Long: `Runs the trollbridge.dev installer to fetch the latest released
 binary for this host's OS and architecture, verify it against the
 release SHA256SUMS, and install it to ~/.local/bin in user mode.
