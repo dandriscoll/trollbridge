@@ -240,6 +240,104 @@ func TestDeclineWritesRowWhenSingleAxis(t *testing.T) {
 	}
 }
 
+// #188: declining a suggestion must refresh the daemon's in-memory
+// config the same way Accept does. The decline row is written to YAML
+// by AddDeclinedSuggestion, but the suggestion engine reads its lists
+// (including DeclinedSuggestions) via the cfg getter; without a reload
+// the engine keeps scanning the stale, pre-decline list and re-offers
+// the just-declined candidate forever ("stuck re-recommending").
+// Same class as #183 on the Accept path.
+func TestDeclineReloadsConfigAfterRowWritten(t *testing.T) {
+	cfg := enabledConfig()
+	lists := &stubLists{allow: []string{
+		"GET https://api.example.com/v1/users/123",
+		"GET https://api.example.com/v1/users/456",
+	}}
+	writer := &fakeWriter{}
+	m, reloaded := newTestManager(t, cfg, &stubQueue{}, lists, writer)
+	m.Tick(context.Background())
+	active := m.Active()
+	if active == nil {
+		t.Fatal("expected active suggestion")
+	}
+	if err := m.Decline(context.Background(), active.ID); err != nil {
+		t.Fatalf("Decline: %v", err)
+	}
+	if len(writer.declined) != 1 {
+		t.Fatalf("expected decline row written; got %v", writer.declined)
+	}
+	if !*reloaded {
+		t.Errorf("expected reload after Decline wrote a decline row (#188); " +
+			"without it the daemon scans stale lists and re-offers")
+	}
+}
+
+// reloadableLists mirrors the production wiring: the daemon's
+// reloadAfterInternalWrite re-parses the YAML the writer just wrote
+// and refreshes the cfg the suggestion engine reads. Here the reload
+// closure folds the fakeWriter's persisted decline rows back into the
+// lists provider, so an end-to-end Decline → Tick cycle exercises the
+// real re-offer path rather than a static stub.
+type reloadableLists struct {
+	allow, deny []string
+	writer      *fakeWriter
+	synced      bool
+}
+
+func (r *reloadableLists) CurrentLists() ([]string, []string, []config.DeclinedSuggestion) {
+	if !r.synced {
+		return r.allow, r.deny, nil
+	}
+	var declined []config.DeclinedSuggestion
+	r.writer.mu.Lock()
+	for _, d := range r.writer.declined {
+		declined = append(declined, config.DeclinedSuggestion{SourceEntries: d.sources})
+	}
+	r.writer.mu.Unlock()
+	return r.allow, r.deny, declined
+}
+
+// TestDeclineDoesNotReofferEndToEnd is the #188 symptom test: decline a
+// suggestion, then run another detection cycle, and confirm the same
+// candidate is NOT re-offered.
+func TestDeclineDoesNotReofferEndToEnd(t *testing.T) {
+	cfg := enabledConfig()
+	writer := &fakeWriter{}
+	lists := &reloadableLists{
+		allow: []string{
+			"GET https://api.example.com/v1/users/123",
+			"GET https://api.example.com/v1/users/456",
+		},
+		writer: writer,
+	}
+	reloaded := false
+	cfgGetter := func() *config.Config { return cfg }
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := New("/tmp/test-trollbridge.yaml", cfgGetter, &stubQueue{}, lists, stubAdvisor{}, writer,
+		func() { reloaded = true; lists.synced = true }, logger)
+	now := time.Unix(1_000_000_000, 0)
+	m.now = func() time.Time { return now }
+	m.inbound.store(now.Add(-time.Hour))
+
+	m.Tick(context.Background())
+	active := m.Active()
+	if active == nil {
+		t.Fatal("expected active suggestion on first tick")
+	}
+	if err := m.Decline(context.Background(), active.ID); err != nil {
+		t.Fatalf("Decline: %v", err)
+	}
+	if !reloaded {
+		t.Fatalf("Decline did not reload; the daemon will re-offer (#188)")
+	}
+	// Next detection cycle: the just-declined candidate must be
+	// decline-filtered, not re-offered.
+	m.Tick(context.Background())
+	if got := m.Active(); got != nil {
+		t.Errorf("declined candidate was re-offered (#188 loop): %+v", got.Candidate)
+	}
+}
+
 func TestDeclineFilterPreventsReoffer(t *testing.T) {
 	cfg := enabledConfig()
 	lists := &stubLists{

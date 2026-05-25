@@ -595,6 +595,14 @@ func (m *Manager) Decline(ctx context.Context, id string) error {
 		"source_count", len(active.Candidate.SourceEntries),
 		"decline_row_written", changed,
 	)
+	// Refresh the daemon's in-memory config so the just-written decline
+	// row is visible to the next detection cycle. Without this the
+	// engine keeps scanning the stale pre-decline list and re-offers the
+	// candidate forever (#188) — the decline-path twin of the #183
+	// accept-path stale-list re-offer.
+	if m.reload != nil {
+		m.reload()
+	}
 	return nil
 }
 
