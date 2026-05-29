@@ -9,6 +9,17 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Cursor sticks to pending across a burst-drain (re-closure of #191)
+
+- **The cursor now snaps back to a newly-arriving pending row immediately**,
+  even after a burst resolved every pending in the queue. The v0.8.4 fix
+  correctly enforced the "stay on pending" rule within a single tick, but
+  when a burst drained the entire pending list and a new pending arrived
+  moments later, the cursor sat on resolved for ~6 seconds (until the
+  existing idle-snap fired). A new sticky preference flag, latched while
+  the cursor is on pending and cleared only by an explicit Up arrow,
+  bridges that gap (closes #191 — re-closure after operator reopen).
+
 ### Suggester prefers a narrower allow when entries concentrate under one prefix
 
 - **When 80% or more of a host's existing list entries cluster under a

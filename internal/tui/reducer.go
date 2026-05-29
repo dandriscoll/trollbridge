@@ -187,6 +187,19 @@ type Model struct {
 	// derives a frame index from this value.
 	TickCount int
 
+	// CursorPreferPending is the sticky "operator wants to be on
+	// pending" flag (closes #191 reopen). Set true at end of every
+	// tick where the cursor lands on a non-resolved row. Cleared
+	// when the operator presses Up arrow off pending (the only
+	// explicit escape per the directive). Used by applyTick/
+	// applyOpsTick to snap the cursor back to bottommost pending
+	// immediately when pending re-appears after a burst-drain
+	// window — without waiting for idleSnapTicks. The prior fix
+	// (commit ade96fa) routed the cursor to pending within a tick
+	// when pending was available; this flag bridges the gap across
+	// ticks when pending was momentarily absent.
+	CursorPreferPending bool
+
 	// History, when non-nil, is consulted at row-render time to detect
 	// decision reversals on a host (closes #192). Wired by the in-
 	// process client from the policy engine's sliding-window history;
@@ -679,10 +692,19 @@ func applyTick(m Model, e TickResult) (Model, Cmd) {
 		return m, CmdNone{}
 	}
 	prevGroup, prevReq, wasOnPending := selectionAnchors(m)
+	if wasOnPending {
+		// #191 reopen: latch the sticky-pending preference at
+		// pre-tick capture time. If the cursor was on pending when
+		// the tick started, the operator's intent is "stay on
+		// pending" — even if this tick's mutation drains all
+		// pending and the cursor temporarily falls to resolved.
+		m.CursorPreferPending = true
+	}
 	m.Holds = e.Holds
 	m.LastErr = ""
 	preserveSelection(&m, prevGroup, prevReq, wasOnPending)
 	clampSelection(&m)
+	applyCursorPendingStickiness(&m)
 	return m, CmdNone{}
 }
 
@@ -696,10 +718,16 @@ func applyOpsTick(m Model, e OpsTickResult) (Model, Cmd) {
 		return m, CmdNone{}
 	}
 	prevGroup, prevReq, wasOnPending := selectionAnchors(m)
+	if wasOnPending {
+		// #191 reopen: latch sticky-pending preference at pre-tick
+		// capture time (see applyTick for the rationale).
+		m.CursorPreferPending = true
+	}
 	m.Ops = e.Ops
 	m.LastErr = ""
 	preserveSelection(&m, prevGroup, prevReq, wasOnPending)
 	clampSelection(&m)
+	applyCursorPendingStickiness(&m)
 	// #192: advance the per-row animation tick. Only fires when the
 	// tick is not paused — a paused pane should not have spinners
 	// continuing to rotate (jarring) while the rest of the pane is
@@ -1522,8 +1550,17 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	}
 	displayed := DisplayedOps(m)
 	if e.Key == KeyUp || e.Rune == 'k' {
+		wasOnPending := m.Selected >= 0 && m.Selected < len(displayed) && !opIsResolved(displayed[m.Selected].Status)
 		if m.Selected > 0 {
 			m.Selected--
+		}
+		// #191 reopen: Up is the operator's explicit "leave pending"
+		// signal. If Up took the cursor from a pending row to a
+		// (now resolved) row, clear the sticky-pending preference so
+		// the cross-tick auto-snap doesn't fight the operator's
+		// explicit navigation.
+		if wasOnPending && m.Selected >= 0 && m.Selected < len(displayed) && opIsResolved(displayed[m.Selected].Status) {
+			m.CursorPreferPending = false
 		}
 		// Pause the auto-refresh while the operator is navigating
 		// (#89): the list (and the info pane that mirrors the
@@ -1829,6 +1866,50 @@ func clampSelection(m *Model) {
 	if m.Selected >= len(displayed) {
 		m.Selected = len(displayed) - 1
 	}
+}
+
+// applyCursorPendingStickiness implements the cross-tick half of
+// the #191 invariant ("cursor stays on pending unless the user
+// presses Up"). preserveSelection handles the within-tick case;
+// this handles the burst-drain gap:
+//
+//  1. If the cursor is currently on a non-resolved row, set the
+//     sticky flag so future ticks remember the operator wants to
+//     be on pending.
+//  2. If the flag is set and the cursor is on a resolved row but
+//     pending rows exist in the rebuilt list, snap the cursor to
+//     the bottommost pending — without waiting for idleSnapTicks.
+//     This closes the window where pending drains completely
+//     (cursor falls to resolved via clampSelection) and a new
+//     pending arrives moments later (cursor would otherwise sit
+//     on resolved for ~6s until idle-snap fires).
+//
+// The flag is cleared by applyKeyApprovals when the user presses
+// Up arrow off a pending row — Up is the only explicit "leave
+// pending" signal per the issue.
+func applyCursorPendingStickiness(m *Model) {
+	displayed := DisplayedOps(*m)
+	if len(displayed) == 0 {
+		return
+	}
+	onPending := m.Selected >= 0 && m.Selected < len(displayed) && !opIsResolved(displayed[m.Selected].Status)
+	if onPending {
+		m.CursorPreferPending = true
+		return
+	}
+	if !m.CursorPreferPending {
+		return
+	}
+	// Cursor is on resolved but the sticky flag says the operator
+	// wants pending. Snap to bottommost pending if any exists.
+	for i := len(displayed) - 1; i >= 0; i-- {
+		if !opIsResolved(displayed[i].Status) {
+			m.Selected = i
+			return
+		}
+	}
+	// No pending row exists — keep the flag set so the next tick
+	// that brings pending will snap immediately.
 }
 
 // DisplayedOp wraps an opstream.Op with a Count of how many
