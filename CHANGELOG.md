@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.8.4 — 2026-05-29
+
 ### Security: the LLM advisor no longer mutates the allow/deny lists
 
 - **Alignment principle §1 is now enforced in code.** The LLM advisor's
