@@ -148,7 +148,13 @@ func (s *Service) SetLogger(l Logger) { s.opLog = l }
 // disabled and Classify always returns ErrDisabled.
 func New(cfg Config, prov Provider) *Service {
 	if cfg.ConfidenceFloor == "" {
-		cfg.ConfidenceFloor = "medium"
+		// #195: default raised from "medium" to "high". Per the
+		// issue's framing, only HIGH-confidence verdicts should
+		// auto-resolve a hold without operator review; MEDIUM and
+		// LOW fall back to ask_user. Operators set
+		// `llm.confidence_floor: medium` to opt back into the
+		// prior behavior.
+		cfg.ConfidenceFloor = "high"
 	}
 	if cfg.OnUnavailable == "" {
 		cfg.OnUnavailable = "ask_user"

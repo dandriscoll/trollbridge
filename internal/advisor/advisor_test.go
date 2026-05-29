@@ -420,15 +420,18 @@ func TestTranslatorFor_FallsBackToAnthropic(t *testing.T) {
 // ConfidenceFloor that advisor.New applies when Config leaves it
 // empty (closes the audit-the-default bullet of #106). Operators
 // relying on the default behavior would see silent semantic drift
-// if a future PR raised this to "high" or lowered it to "low"
-// without a paired CHANGELOG entry; this test fails first.
+// if a future PR changed this without a paired CHANGELOG entry;
+// this test fails first.
 //
-// Today's default is "medium": advisor still runs when the LLM
-// reports medium confidence; only "low" gets dropped.
-func TestAdvisor_DefaultConfidenceFloorIsMedium(t *testing.T) {
+// Today's default is "high" (raised from "medium" in #195 per the
+// user's request — only HIGH-confidence verdicts auto-resolve
+// holds; MEDIUM and LOW fall back to ask_user). Operators set
+// `llm.confidence_floor: medium` to opt back into the prior
+// behavior.
+func TestAdvisor_DefaultConfidenceFloorIsHigh(t *testing.T) {
 	s := New(Config{Enabled: true}, &MockProvider{})
-	if s.cfg.ConfidenceFloor != "medium" {
+	if s.cfg.ConfidenceFloor != "high" {
 		t.Errorf("default ConfidenceFloor = %q, want %q (silent regression — bump CHANGELOG before changing)",
-			s.cfg.ConfidenceFloor, "medium")
+			s.cfg.ConfidenceFloor, "high")
 	}
 }
