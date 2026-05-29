@@ -407,6 +407,16 @@ func newRunCmd() *cobra.Command {
 			)
 			srv.SetInboundHook(sugMgr.NoteInbound)
 			srv.Control().SetSuggestion(suggestion.ControlAdapter{M: sugMgr})
+			// #189: wire the list-edit writer so attach-mode operators
+			// can mutate allow/deny via /v1/lists/allow + /deny. Each
+			// mutation reloads the in-memory matcher / suggestion view
+			// (reloadAfterInternalWrite) to match the in-process
+			// operator path's reload semantics.
+			srv.Control().SetListWriter(listWriterAdapter{
+				path:    absPersistPath,
+				reload:  func() { _ = reloadAfterInternalWrite(srv, configPath, yamlWatcher, opLog) },
+				opLog:   opLog,
+			})
 			go func() {
 				t := time.NewTicker(5 * time.Second)
 				defer t.Stop()
@@ -831,6 +841,95 @@ func (a tuiHistoryAdapter) PriorOppositeEffect(host, currentEffect string) bool 
 		return false
 	}
 	return a.h.HasOppositeEffect(host, currentEffect)
+}
+
+// listWriterAdapter satisfies control.ListWriter on the proxy
+// side (#189). Routes add operations through OperatorApprove /
+// OperatorDeny (the consolidate-then-add primitive from #194) so
+// attach-mode mutations and in-process operator mutations
+// produce identical YAML outcomes. Calls reload after every
+// successful write so the in-memory matcher / suggestion view /
+// cfg.Cfg() observer all see the new state.
+type listWriterAdapter struct {
+	path   string
+	reload func()
+	opLog  *slog.Logger
+}
+
+func (a listWriterAdapter) AddAllow(pattern string) (bool, error) {
+	_, changed, _, err := configwrite.OperatorApprove(a.path, pattern)
+	if err != nil {
+		return false, err
+	}
+	if changed && a.reload != nil {
+		a.reload()
+	}
+	a.logMutation("allow_added", pattern, changed)
+	return changed, nil
+}
+
+func (a listWriterAdapter) AddDeny(pattern string) (bool, error) {
+	_, changed, _, err := configwrite.OperatorDeny(a.path, pattern)
+	if err != nil {
+		return false, err
+	}
+	if changed && a.reload != nil {
+		a.reload()
+	}
+	a.logMutation("deny_added", pattern, changed)
+	return changed, nil
+}
+
+func (a listWriterAdapter) RemoveAllow(pattern string) (bool, error) {
+	changed, err := configwrite.RemoveAllow(a.path, pattern)
+	if err != nil {
+		return false, err
+	}
+	if changed && a.reload != nil {
+		a.reload()
+	}
+	a.logMutation("allow_removed", pattern, changed)
+	return changed, nil
+}
+
+func (a listWriterAdapter) RemoveDeny(pattern string) (bool, error) {
+	changed, err := configwrite.RemoveDeny(a.path, pattern)
+	if err != nil {
+		return false, err
+	}
+	if changed && a.reload != nil {
+		a.reload()
+	}
+	a.logMutation("deny_removed", pattern, changed)
+	return changed, nil
+}
+
+func (a listWriterAdapter) logMutation(action, pattern string, changed bool) {
+	if a.opLog == nil {
+		return
+	}
+	event := oplog.EventAllowlistAdded
+	switch action {
+	case "deny_added":
+		event = oplog.EventDenylistAdded
+	case "allow_removed", "deny_removed":
+		// Reuse the list-mutation event class so operators can
+		// grep allowlist_added / denylist_added for the
+		// canonical mutation surface. The action field carries
+		// the direction.
+		event = oplog.EventAllowlistAdded
+		if action == "deny_removed" {
+			event = oplog.EventDenylistAdded
+		}
+	}
+	a.opLog.Info("list persisted (attach)",
+		"event", event,
+		"pattern", pattern,
+		"source", "attach",
+		"reason", action,
+		"changed", changed,
+		"config_path", a.path,
+	)
 }
 
 // advisorAdapter wraps advisor.Service so the suggestion package

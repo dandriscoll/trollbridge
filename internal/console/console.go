@@ -56,6 +56,25 @@ type Backend struct {
 	// one-line "not available in attach mode" hint instead of
 	// silently failing.
 	LocalOnly bool
+
+	// Remote, when non-nil and LocalOnly is false, replaces the
+	// "not available in attach mode" stub for the allow / deny /
+	// remove verbs with a HTTP-mediated mutation against the
+	// proxy's control plane (#189). The attach.go callsite wires
+	// this; the in-process daemon leaves it nil (LocalOnly is true
+	// there and the local configwrite path is taken).
+	Remote RemoteListWriter
+}
+
+// RemoteListWriter is the surface console.Backend uses to perform
+// list mutations in attach mode (#189). The concrete
+// implementation lives in cmd/trollbridge and wraps the
+// controlclient HTTP call.
+type RemoteListWriter interface {
+	AddAllow(pattern string) (bool, error)
+	AddDeny(pattern string) (bool, error)
+	RemoveAllow(pattern string) (bool, error)
+	RemoveDeny(pattern string) (bool, error)
 }
 
 // Execute runs one command line and writes its output to out. The
@@ -70,10 +89,24 @@ func (b *Backend) Execute(out io.Writer, line string) (quit bool) {
 	cmd, arg := splitCmd(line)
 	switch strings.ToLower(cmd) {
 	case "allow":
+		if b.runRemote(out, "allow", "add", arg) {
+			break
+		}
 		b.runLocal(out, "allow", func() { b.addPattern(out, "allow", arg) })
 	case "deny":
+		if b.runRemote(out, "deny", "add", arg) {
+			break
+		}
 		b.runLocal(out, "deny", func() { b.addPattern(out, "deny", arg) })
 	case "remove", "rm":
+		// Remote-remove ambiguity: the local `remove <pattern>` is
+		// list-agnostic (strips from whichever list contains the
+		// pattern). The remote API needs the list named. For attach
+		// v1, fall through to "not available" when Remote is wired —
+		// operators run `remove` from the URLs pane keyboard surface
+		// which already knows the list (`x` on a selected entry).
+		// Filed in 008 if operator feedback indicates the typed
+		// `remove <pattern>` verb is wanted remotely too.
 		b.runLocal(out, "remove", func() { b.removePattern(out, arg) })
 	case "move", "mv":
 		b.runLocal(out, "move", func() { b.movePattern(out, arg) })
@@ -116,6 +149,50 @@ func (b *Backend) runLocal(out io.Writer, name string, fn func()) {
 		return
 	}
 	fn()
+}
+
+// runRemote dispatches an allow / deny / remove verb to the
+// proxy's control-plane endpoints in attach mode (#189). Used by
+// the allow / deny / remove paths when b.Remote is wired. Returns
+// without writing when b.Remote is nil — the caller should fall
+// back to runLocal's "not available in attach mode" stub.
+func (b *Backend) runRemote(out io.Writer, list, verb, pattern string) (handled bool) {
+	if b.LocalOnly || b.Remote == nil {
+		return false
+	}
+	var (
+		changed bool
+		err     error
+	)
+	switch verb {
+	case "add":
+		if list == "allow" {
+			changed, err = b.Remote.AddAllow(pattern)
+		} else {
+			changed, err = b.Remote.AddDeny(pattern)
+		}
+	case "remove":
+		if list == "allow" {
+			changed, err = b.Remote.RemoveAllow(pattern)
+		} else {
+			changed, err = b.Remote.RemoveDeny(pattern)
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(out, "%s %s (remote): %s\n", verb, list, err)
+		return true
+	}
+	if !changed {
+		fmt.Fprintf(out, "%s already in %s list (remote no-op)\n", pattern, list)
+		return true
+	}
+	switch verb {
+	case "add":
+		fmt.Fprintf(out, "added %s to %s (via proxy)\n", pattern, list)
+	case "remove":
+		fmt.Fprintf(out, "removed %s from %s (via proxy)\n", pattern, list)
+	}
+	return true
 }
 
 func (b *Backend) runTest(out io.Writer, arg string) {

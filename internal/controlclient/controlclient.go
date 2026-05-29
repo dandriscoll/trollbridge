@@ -70,6 +70,39 @@ func Post(cfg *config.Config, path string, body []byte) ([]byte, error) {
 	return respBody, nil
 }
 
+// ListEdit performs an add or remove on the daemon's allow/deny
+// list via /v1/lists/<list> (#189 — attach-mode list editing).
+// method must be http.MethodPost (add) or http.MethodDelete
+// (remove). list must be "allow" or "deny". Body sends a JSON
+// {"pattern": pattern} payload. Returns (changed, err) — changed
+// true when the daemon's YAML was mutated.
+func ListEdit(cfg *config.Config, method, list, pattern string) (bool, error) {
+	url := controllerURL(cfg, "/v1/lists/"+list)
+	body, _ := json.Marshal(map[string]string{"pattern": pattern})
+	cli, err := httpsClient(cfg)
+	if err != nil {
+		return false, err
+	}
+	req, _ := http.NewRequest(method, url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := cli.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("control API: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return false, fmt.Errorf("control API: %s: %s", resp.Status, string(respBody))
+	}
+	var out struct {
+		Changed bool `json:"changed"`
+	}
+	if err := json.Unmarshal(respBody, &out); err != nil {
+		return false, fmt.Errorf("control API: decode response: %w", err)
+	}
+	return out.Changed, nil
+}
+
 // HoldAction POSTs an approve or deny against /v1/holds/<id>/<action>.
 // `action` must be "approve" or "deny". On 404 it returns
 // ErrHoldNotFound; other non-2xx responses become formatted errors.

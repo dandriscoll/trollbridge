@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -49,6 +50,27 @@ type TLSProvider interface {
 type ListsProvider interface {
 	AllowPatterns() []string
 	DenyPatterns() []string
+}
+
+// ListWriter performs operator-driven list mutations on the
+// daemon's persisted trollbridge.yaml. Used by the attach-mode
+// list-edit endpoints (#189) so a consumer-host operator can
+// approve / deny URLs without SSHing to the proxy. The concrete
+// implementer (in cmd/trollbridge/run.go) routes through the
+// configwrite.OperatorApprove / OperatorDeny primitives so the
+// reload-after-write invariant matches the in-process operator
+// path (#194).
+type ListWriter interface {
+	// AddAllow / AddDeny consolidate (remove from opposite list)
+	// then add to the named list. Idempotent on the named-list
+	// side; returns true when at least one of the two operations
+	// mutated the YAML.
+	AddAllow(pattern string) (bool, error)
+	AddDeny(pattern string) (bool, error)
+	// RemoveAllow / RemoveDeny strip the pattern from the named
+	// list. Idempotent: no-op when the pattern is absent.
+	RemoveAllow(pattern string) (bool, error)
+	RemoveDeny(pattern string) (bool, error)
 }
 
 // DigestsProvider exposes the advisor's digest ring to the control
@@ -109,6 +131,7 @@ type Server struct {
 	engine       *policy.Engine
 	ops          *opstream.Ring
 	lists        ListsProvider
+	listWriter   ListWriter
 	digests      DigestsProvider
 	advisorStats AdvisorMetricsProvider
 	reloadStatus ReloadStatusProvider
@@ -147,6 +170,11 @@ func (s *Server) SetOps(r *opstream.Ring) { s.ops = r }
 // SetLists wires the daemon's current allow/deny lists into the
 // control plane so /v1/lists can return them. Closes #99 part 1.
 func (s *Server) SetLists(p ListsProvider) { s.lists = p }
+
+// SetListWriter wires the list-mutation primitive used by the
+// attach-mode list-edit endpoints (#189). nil disables the
+// mutation endpoints (they return 405 / 503).
+func (s *Server) SetListWriter(w ListWriter) { s.listWriter = w }
 
 // SetDigests wires the advisor's digest ring into the control plane
 // so /v1/llm-digests can return recent classifications. Closes #99
@@ -227,6 +255,8 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	mux.HandleFunc("/v1/holds/", authd(s.holdAction)) // /v1/holds/<id>/approve|deny
 	mux.HandleFunc("/v1/ops", authd(s.listOps))
 	mux.HandleFunc("/v1/lists", authd(s.listLists))             // closes #99 part 1
+	mux.HandleFunc("/v1/lists/allow", authd(s.listEditAllow))   // #189: POST add, DELETE remove
+	mux.HandleFunc("/v1/lists/deny", authd(s.listEditDeny))     // #189: POST add, DELETE remove
 	mux.HandleFunc("/v1/llm-digests", authd(s.listLLMDigests))  // closes #99 part 2
 	mux.HandleFunc("/v1/advisor/metrics", authd(s.advisorMetrics)) // #137
 	mux.HandleFunc("/v1/sessions", authd(s.listSessions))
@@ -349,6 +379,83 @@ func (s *Server) listLists(w http.ResponseWriter, r *http.Request) {
 		"allow": s.lists.AllowPatterns(),
 		"deny":  s.lists.DenyPatterns(),
 	})
+}
+
+// listEditAllow handles POST/DELETE on /v1/lists/allow for #189
+// attach-mode list editing. Body: {"pattern": "..."}.
+//   POST   → AddAllow (consolidates: removes from deny first).
+//   DELETE → RemoveAllow.
+// Returns {"changed": true|false}. 503 when no ListWriter is wired
+// (in-process daemon misconfiguration); 405 for unsupported
+// methods; 400 for missing pattern.
+func (s *Server) listEditAllow(w http.ResponseWriter, r *http.Request) {
+	s.listEdit(w, r, "allow")
+}
+
+func (s *Server) listEditDeny(w http.ResponseWriter, r *http.Request) {
+	s.listEdit(w, r, "deny")
+}
+
+func (s *Server) listEdit(w http.ResponseWriter, r *http.Request, list string) {
+	if s.listWriter == nil {
+		writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "list mutation not available — daemon was not started with the list-edit writer",
+		})
+		return
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodDelete:
+		// supported
+	default:
+		w.Header().Set("Allow", "POST, DELETE")
+		writeJSONStatus(w, http.StatusMethodNotAllowed, map[string]string{
+			"error": "use POST to add, DELETE to remove",
+		})
+		return
+	}
+	body := struct {
+		Pattern string `json:"pattern"`
+	}{}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid JSON body: " + err.Error(),
+		})
+		return
+	}
+	pattern := strings.TrimSpace(body.Pattern)
+	if pattern == "" {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{
+			"error": `pattern is required (JSON body: {"pattern": "..."})`,
+		})
+		return
+	}
+	var (
+		changed bool
+		err     error
+	)
+	switch r.Method {
+	case http.MethodPost:
+		switch list {
+		case "allow":
+			changed, err = s.listWriter.AddAllow(pattern)
+		case "deny":
+			changed, err = s.listWriter.AddDeny(pattern)
+		}
+	case http.MethodDelete:
+		switch list {
+		case "allow":
+			changed, err = s.listWriter.RemoveAllow(pattern)
+		case "deny":
+			changed, err = s.listWriter.RemoveDeny(pattern)
+		}
+	}
+	if err != nil {
+		writeJSONStatus(w, http.StatusInternalServerError, map[string]string{
+			"error": err.Error(),
+		})
+		return
+	}
+	writeJSON(w, map[string]bool{"changed": changed})
 }
 
 // listLLMDigests returns the advisor's recent classification ring.
@@ -532,6 +639,17 @@ func mapSuggestionErr(w http.ResponseWriter, err error) {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(v)
+}
+
+// writeJSONStatus writes the given HTTP status code AND a JSON body
+// (#189). Used by the list-edit handlers so the attach client gets
+// a structured error to render.
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)

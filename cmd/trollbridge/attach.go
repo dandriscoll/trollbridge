@@ -62,7 +62,14 @@ Keys:
 				printAttachCertError(cmd.ErrOrStderr(), cfg, err)
 				return &configErr{err}
 			}
-			backend := &console.Backend{LocalOnly: false}
+			backend := &console.Backend{
+				LocalOnly: false,
+				// #189: wire the remote list-writer so allow / deny
+				// verbs in the attach-mode console call the proxy's
+				// /v1/lists/allow + /deny endpoints instead of the
+				// "not available in attach mode" stub.
+				Remote: remoteListWriterClient{cfg: cfg},
+			}
 			// requestShutdown is nil: attach is a remote consumer-host
 			// client that does not own the proxy daemon, so quitting the
 			// TUI must not propagate a cancel anywhere.
@@ -107,4 +114,23 @@ func printAttachCertError(out io.Writer, cfg *config.Config, cause error) {
 	fmt.Fprintln(out, "       into ~/.trollbridge/ on this host (or set the")
 	fmt.Fprintln(out, "       TROLLBRIDGE_CONTROLLER_CERT/_KEY env vars).")
 	fmt.Fprintln(out, "    3. Re-run `trollbridge attach`.")
+}
+
+// remoteListWriterClient implements console.RemoteListWriter by
+// calling the proxy's /v1/lists/{allow,deny} endpoints over the
+// existing mTLS-authenticated control plane (#189). The cfg
+// carries the controller cert/key and base URL.
+type remoteListWriterClient struct{ cfg *config.Config }
+
+func (c remoteListWriterClient) AddAllow(pattern string) (bool, error) {
+	return controlclient.ListEdit(c.cfg, "POST", "allow", pattern)
+}
+func (c remoteListWriterClient) AddDeny(pattern string) (bool, error) {
+	return controlclient.ListEdit(c.cfg, "POST", "deny", pattern)
+}
+func (c remoteListWriterClient) RemoveAllow(pattern string) (bool, error) {
+	return controlclient.ListEdit(c.cfg, "DELETE", "allow", pattern)
+}
+func (c remoteListWriterClient) RemoveDeny(pattern string) (bool, error) {
+	return controlclient.ListEdit(c.cfg, "DELETE", "deny", pattern)
 }
