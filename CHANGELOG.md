@@ -9,6 +9,23 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### List state now stays consolidated across every operator action
+
+- **Approving a previously-denied URL now removes the deny entry**, and
+  symmetrically denying a previously-approved URL removes the allow entry.
+  Before this fix, the operator-approval persist callback wrote to one
+  list without reconciling the other; the URL ended up on both lists and
+  deny won on reload, silently negating the operator's action. The fix
+  routes both the daemon's persist callback and the console's list-edit
+  verbs through a single load-bearing primitive
+  (`configwrite.OperatorApprove`/`OperatorDeny`), so a URL is never on
+  both lists after any operator action (closes #194, recurrence-class
+  closure for #179).
+- **Sweep test added** to assert the consolidation invariant across every
+  known operator-action persistence path. Adding a new persist path that
+  bypasses the consolidation primitive will fail this test in CI before
+  it can ship.
+
 ## v0.8.4 — 2026-05-29
 
 ### Security: the LLM advisor no longer mutates the allow/deny lists

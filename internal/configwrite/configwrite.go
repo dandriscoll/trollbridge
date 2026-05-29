@@ -85,6 +85,52 @@ func RemoveDeny(path, pattern string) (bool, error) {
 	})
 }
 
+// OperatorApprove records the operator's "allow this pattern"
+// decision in trollbridge.yaml. It is the consolidate-then-add
+// primitive every operator-action persistence path MUST use to
+// avoid leaving the pattern on both lists (closes #194, prior
+// recurrence #179).
+//
+// Implementation: removes the pattern from `lists.deny` (best-
+// effort — a missing entry is not an error) then adds it to
+// `lists.allow`. Returns:
+//
+//   - removed: true when an entry on deny was removed (the
+//     consolidation step did something).
+//   - changed: true when the allow list was actually mutated
+//     (AddAllow is idempotent; existing pattern → changed=false).
+//   - removeErr / addErr: errors from each step. removeErr is
+//     non-fatal in production callers (they log and continue);
+//     addErr is fatal (the add is the operator's intent).
+//
+// Used by:
+//   - cmd/trollbridge/run.go SetDecisionPersist callback (every
+//     in-process operator approve via the TUI hold queue).
+//   - internal/console/console.go addPattern (every `allow X` /
+//     console-issued list edit, including the TUI's retroactive
+//     approve / +add / edit / undo paths).
+//
+// Adding a NEW operator-action persist path? Route it through
+// here. Calling AddAllow directly from a NEW path will
+// re-introduce the #194 recurrence shape; the structural test
+// at internal/server/persist_consolidation_test.go enumerates
+// known callers explicitly.
+func OperatorApprove(path, pattern string) (removed, changed bool, removeErr, addErr error) {
+	removed, removeErr = RemoveDeny(path, pattern)
+	changed, addErr = AddAllow(path, pattern)
+	return
+}
+
+// OperatorDeny is the symmetric counterpart to OperatorApprove
+// (closes #194): removes the pattern from allow, adds it to deny.
+// Same caller discipline applies — operator-action persist paths
+// MUST use this, not AddDeny directly.
+func OperatorDeny(path, pattern string) (removed, changed bool, removeErr, addErr error) {
+	removed, removeErr = RemoveAllow(path, pattern)
+	changed, addErr = AddDeny(path, pattern)
+	return
+}
+
 // DeclinedSuggestion is the on-disk shape recorded by
 // AddDeclinedSuggestion. Mirrors config.DeclinedSuggestion (kept
 // local to avoid an import cycle between configwrite and config).

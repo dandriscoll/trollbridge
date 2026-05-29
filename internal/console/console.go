@@ -203,24 +203,23 @@ func (b *Backend) addPattern(out io.Writer, label, pattern string) {
 		changed bool
 		err     error
 	)
-	// Reconcile the two lists on input (#179): adding a pattern to one
-	// list removes the same pattern from the other, so a URL never ends
-	// up on both. Without this, approving (allow) a URL that is still on
-	// the deny list leaves it denied — deny wins on reload — and the
-	// approve silently does nothing.
+	// Consolidate-then-add via the single operator-action primitive
+	// (#179, #194): the operator allowing a pattern that is still on
+	// deny would otherwise leave the URL on both lists and deny wins
+	// on reload, silently no-op'ing the approve. Routing through
+	// OperatorApprove / OperatorDeny converges this code path with
+	// the daemon's hold-queue persist callback on the same primitive,
+	// so a single rule governs every operator-action write.
+	var removeErr error
 	switch label {
 	case "allow":
-		if _, rerr := configwrite.RemoveDeny(b.ConfigPath, pattern); rerr != nil {
-			fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, rerr)
-			return
-		}
-		changed, err = configwrite.AddAllow(b.ConfigPath, pattern)
+		_, changed, removeErr, err = configwrite.OperatorApprove(b.ConfigPath, pattern)
 	case "deny":
-		if _, rerr := configwrite.RemoveAllow(b.ConfigPath, pattern); rerr != nil {
-			fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, rerr)
-			return
-		}
-		changed, err = configwrite.AddDeny(b.ConfigPath, pattern)
+		_, changed, removeErr, err = configwrite.OperatorDeny(b.ConfigPath, pattern)
+	}
+	if removeErr != nil {
+		fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, removeErr)
+		return
 	}
 	if err != nil {
 		fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, err)

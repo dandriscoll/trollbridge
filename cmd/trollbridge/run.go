@@ -263,18 +263,46 @@ func newRunCmd() *cobra.Command {
 					event   string
 					reason  string
 				)
+				// #194: route through OperatorApprove / OperatorDeny so
+				// the pattern is removed from the OPPOSITE list before
+				// being added to the target list. AddAllow / AddDeny
+				// alone leave the pattern on both lists and deny wins
+				// on reload (silently no-op'ing the operator's action).
+				// The consolidate-then-add primitive is the single
+				// load-bearing write path for operator actions; see
+				// internal/configwrite/configwrite.go OperatorApprove
+				// doc for caller discipline.
+				var (
+					removed     bool
+					removeErr   error
+				)
 				switch effect {
 				case types.EffectAllow:
-					changed, werr = configwrite.AddAllow(absPersistPath, pattern)
+					removed, changed, removeErr, werr = configwrite.OperatorApprove(absPersistPath, pattern)
 					event = oplog.EventAllowlistAdded
 					reason = "manual_approval"
 				case types.EffectDeny:
-					changed, werr = configwrite.AddDeny(absPersistPath, pattern)
+					removed, changed, removeErr, werr = configwrite.OperatorDeny(absPersistPath, pattern)
 					event = oplog.EventDenylistAdded
 					reason = "manual_denial"
 				default:
 					return
 				}
+				if removeErr != nil {
+					opLog.Warn("list consolidation remove failure",
+						"event", oplog.EventListPersistFailure,
+						"pattern", pattern,
+						"source", source,
+						"reason", reason,
+						"error", removeErr.Error(),
+						"config_path", absPersistPath)
+					// Best-effort: continue to the add. Pattern may end
+					// up on both lists if the add succeeds, but failing
+					// the whole persist would lose the operator's intent
+					// entirely. The structural test guards against the
+					// happy-path case.
+				}
+				_ = removed // currently informational; could be logged at INFO if useful
 				if werr != nil {
 					opLog.Warn("list persist failure",
 						"event", oplog.EventListPersistFailure,
