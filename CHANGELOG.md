@@ -9,6 +9,16 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Home and End jump the cursor to the first / last item
+
+- **Home and End now navigate to the start and end of the focused
+  list panel** — operations, urls, and llm. Previously the keys were
+  recognized by the terminal but silently swallowed by the TUI's
+  CSI parser. Recognized in every common terminal form
+  (`ESC [ H` / `ESC [ F` and the VT-style `ESC [ {1,7} ~` /
+  `ESC [ {4,8} ~`). The info pane is excluded — it shows per-op
+  metadata, not a list (closes #196).
+
 ### List state now stays consolidated across every operator action
 
 - **Approving a previously-denied URL now removes the deny entry**, and

@@ -69,8 +69,13 @@ func TestReadKeys_ModifierArrows_NoRuneLeak(t *testing.T) {
 		{"shift_tab", []byte{0x1b, '[', 'Z'}, []KeyEvent{{Key: KeyShiftTab}}},
 		{"delete", []byte{0x1b, '[', '3', '~'}, []KeyEvent{{Key: KeyDelete}}},
 		{"esc_alone", []byte{0x1b}, []KeyEvent{{Key: KeyEsc}}},
-		// Unknown CSI (Home = ESC [ H) is swallowed, not leaked.
-		{"home_swallowed", []byte{0x1b, '[', 'H'}, nil},
+		// #196: Home and End on every CSI form terminals emit them.
+		{"home_csi_H", []byte{0x1b, '[', 'H'}, []KeyEvent{{Key: KeyHome}}},
+		{"end_csi_F", []byte{0x1b, '[', 'F'}, []KeyEvent{{Key: KeyEnd}}},
+		{"home_csi_1_tilde", []byte{0x1b, '[', '1', '~'}, []KeyEvent{{Key: KeyHome}}},
+		{"home_csi_7_tilde", []byte{0x1b, '[', '7', '~'}, []KeyEvent{{Key: KeyHome}}},
+		{"end_csi_4_tilde", []byte{0x1b, '[', '4', '~'}, []KeyEvent{{Key: KeyEnd}}},
+		{"end_csi_8_tilde", []byte{0x1b, '[', '8', '~'}, []KeyEvent{{Key: KeyEnd}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -409,6 +409,12 @@ const (
 	// issue #170 gives them multi-select meaning in the URLs pane.
 	KeyShiftUp
 	KeyShiftDown
+	// KeyHome / KeyEnd jump the cursor to the first / last row of
+	// the focused list panel (#196). Terminals send Home as either
+	// `ESC [ H` or `ESC [ 1 ~` and End as `ESC [ F` or `ESC [ 4 ~`;
+	// csiKeyEvent maps all four forms to these KeyCodes.
+	KeyHome
+	KeyEnd
 )
 
 // ActionResult arrives after an approve or deny POST completes.
@@ -1143,6 +1149,27 @@ func applyKeyLLM(m Model, e KeyEvent) (Model, Cmd) {
 		m.DigestExpanded = true
 		return m, CmdNone{}
 	}
+	// #196: Home jumps to the first digest (index 0 = newest, per
+	// the existing j/k semantics where Up moves toward newer);
+	// End jumps to the last (oldest) digest.
+	if e.Key == KeyHome {
+		if len(m.Digests) > 0 {
+			if d, ok := digestAtDisplayIndex(m, 0); ok {
+				m.DigestSelected = d.RequestID
+				m.DigestExpanded = true
+			}
+		}
+		return m, CmdNone{}
+	}
+	if e.Key == KeyEnd {
+		if len(m.Digests) > 0 {
+			if d, ok := digestAtDisplayIndex(m, len(m.Digests)-1); ok {
+				m.DigestSelected = d.RequestID
+				m.DigestExpanded = true
+			}
+		}
+		return m, CmdNone{}
+	}
 	return m, CmdNone{}
 }
 
@@ -1195,6 +1222,21 @@ func applyKeyURLs(m Model, e KeyEvent) (Model, Cmd) {
 		m.URLsAnchor = -1
 		if m.URLsSelected < combinedLen-1 {
 			m.URLsSelected++
+		}
+		return m, CmdNone{}
+	}
+	// #196: Home/End jump to first / last entry of the URLs list.
+	if e.Key == KeyHome {
+		m.URLsAnchor = -1
+		if combinedLen > 0 {
+			m.URLsSelected = 0
+		}
+		return m, CmdNone{}
+	}
+	if e.Key == KeyEnd {
+		m.URLsAnchor = -1
+		if combinedLen > 0 {
+			m.URLsSelected = combinedLen - 1
 		}
 		return m, CmdNone{}
 	}
@@ -1492,6 +1534,21 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	if e.Key == KeyDown || e.Rune == 'j' {
 		if m.Selected < len(displayed)-1 {
 			m.Selected++
+		}
+		m.OpsPausedTicks = opsPauseTicks
+		return m, CmdNone{}
+	}
+	// #196: Home/End jump to first / last row of the operations list.
+	if e.Key == KeyHome {
+		if len(displayed) > 0 {
+			m.Selected = 0
+		}
+		m.OpsPausedTicks = opsPauseTicks
+		return m, CmdNone{}
+	}
+	if e.Key == KeyEnd {
+		if len(displayed) > 0 {
+			m.Selected = len(displayed) - 1
 		}
 		m.OpsPausedTicks = opsPauseTicks
 		return m, CmdNone{}

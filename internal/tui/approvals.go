@@ -919,9 +919,26 @@ func csiKeyEvent(params []byte, final byte) (KeyEvent, bool) {
 	case 'Z':
 		// Shift-Tab as emitted by xterm/screen/tmux.
 		return KeyEvent{Key: KeyShiftTab}, true
+	case 'H':
+		// `ESC [ H` — Home (#196).
+		return KeyEvent{Key: KeyHome}, true
+	case 'F':
+		// `ESC [ F` — End (#196).
+		return KeyEvent{Key: KeyEnd}, true
 	case '~':
-		if len(params) > 0 && strings.Split(string(params), ";")[0] == "3" {
+		head := ""
+		if len(params) > 0 {
+			head = strings.Split(string(params), ";")[0]
+		}
+		switch head {
+		case "3":
 			return KeyEvent{Key: KeyDelete}, true
+		case "1", "7":
+			// VT-style Home (`ESC [ 1 ~` / `ESC [ 7 ~`) — #196.
+			return KeyEvent{Key: KeyHome}, true
+		case "4", "8":
+			// VT-style End (`ESC [ 4 ~` / `ESC [ 8 ~`) — #196.
+			return KeyEvent{Key: KeyEnd}, true
 		}
 	}
 	return KeyEvent{}, false
