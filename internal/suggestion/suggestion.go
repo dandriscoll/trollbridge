@@ -701,6 +701,28 @@ func (m *Manager) Accept(ctx context.Context, id string) error {
 		// Matches the source on the persist-failure line above.
 		"source", "suggestion",
 	)
+	// #172/#174 follow-up: also fire the standard list-mutation
+	// event so operators grep'ing `allowlist_added` / `denylist_added`
+	// see every list mutation in one place. The `source` field
+	// distinguishes suggestion-driven from manual operator entries.
+	// Prior to this, suggestion-accepted patterns only appeared in
+	// `suggestion_accepted` — operators auditing list mutations had
+	// to query two event classes.
+	if changed {
+		listEvent := oplog.EventAllowlistAdded
+		reason := "suggestion_accepted_allow"
+		if active.Candidate.List == "deny" {
+			listEvent = oplog.EventDenylistAdded
+			reason = "suggestion_accepted_deny"
+		}
+		m.opLog.Info("list persisted",
+			"event", listEvent,
+			"pattern", pat,
+			"source", "suggestion",
+			"reason", reason,
+			"suggestion_id", active.ID,
+		)
+	}
 	if m.reload != nil {
 		m.reload()
 	}
