@@ -389,6 +389,16 @@ func (s *Server) finishServe(err error) error {
 	return err
 }
 
+// Close releases the server's open file resources — primarily the
+// audit log writer. Safe to call multiple times. Tests that
+// construct a Server but never call ListenAndServe (so finishServe
+// never runs) MUST defer Close so the audit-log file handle is
+// released before t.TempDir cleanup runs (closes #199 — on
+// Windows, an open file blocks the temp-dir RemoveAll cleanup).
+func (s *Server) Close() error {
+	return s.audit.Close()
+}
+
 func (s *Server) trackConn(c net.Conn) {
 	s.connsMu.Lock()
 	s.conns[c] = struct{}{}

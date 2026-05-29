@@ -61,6 +61,10 @@ approvals:
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}
+	// #199: release the audit-log file handle before t.TempDir's
+	// RemoveAll runs on cleanup. On Windows, an open file blocks
+	// the temp-dir deletion and the test fails on cleanup.
+	t.Cleanup(func() { _ = srv.Close() })
 	if err := srv.SetLists(cfg.Lists.Allow, cfg.Lists.Deny); err != nil {
 		t.Fatalf("SetLists: %v", err)
 	}
