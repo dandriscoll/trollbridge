@@ -657,10 +657,10 @@ func applyTick(m Model, e TickResult) (Model, Cmd) {
 		m.OpsPausedTicks--
 		return m, CmdNone{}
 	}
-	prevGroup, prevReq := selectionAnchors(m)
+	prevGroup, prevReq, wasOnPending := selectionAnchors(m)
 	m.Holds = e.Holds
 	m.LastErr = ""
-	preserveSelection(&m, prevGroup, prevReq)
+	preserveSelection(&m, prevGroup, prevReq, wasOnPending)
 	clampSelection(&m)
 	return m, CmdNone{}
 }
@@ -674,10 +674,10 @@ func applyOpsTick(m Model, e OpsTickResult) (Model, Cmd) {
 		m.OpsPausedTicks--
 		return m, CmdNone{}
 	}
-	prevGroup, prevReq := selectionAnchors(m)
+	prevGroup, prevReq, wasOnPending := selectionAnchors(m)
 	m.Ops = e.Ops
 	m.LastErr = ""
-	preserveSelection(&m, prevGroup, prevReq)
+	preserveSelection(&m, prevGroup, prevReq, wasOnPending)
 	clampSelection(&m)
 
 	// #180: time out a lingering info status. LastErr clears above on
@@ -747,34 +747,40 @@ func PendingCount(m Model) int {
 	return n
 }
 
-// selectionAnchors returns two stable identifiers for the operator's
+// selectionAnchors returns three stable identifiers for the operator's
 // currently-selected row, captured BEFORE m.Ops / m.Holds is replaced
 // by a tick so the post-tick preserve-selection step can re-locate
-// the same logical row (closes #89 part 2, #119):
+// the same logical row (closes #89 part 2, #119, #191):
 //
 //   - group: the row's GroupKey — the folded group's identity, stable
 //     across a representative flip when a newer op joins the group.
 //   - req: the representative op's request_id (or `hold:<holdID>`) —
 //     a fallback for when the group itself changed shape.
+//   - wasOnPending: true when the selected row is in the non-resolved
+//     region (pending / signaled / checking). Lets preserveSelection
+//     keep the cursor in the pending region across a status flip —
+//     the #191 invariant that "only Up arrow moves the cursor off
+//     pending."
 //
-// Both are "" when no row is selected.
-func selectionAnchors(m Model) (group, req string) {
+// group and req are "" and wasOnPending is false when no row is
+// selected.
+func selectionAnchors(m Model) (group, req string, wasOnPending bool) {
 	displayed := DisplayedOps(m)
 	if m.Selected < 0 || m.Selected >= len(displayed) {
-		return "", ""
+		return "", "", false
 	}
 	sel := displayed[m.Selected]
 	req = sel.RequestID
 	if req == "" {
 		req = "hold:" + sel.HoldID
 	}
-	return sel.GroupKey, req
+	return sel.GroupKey, req, !opIsResolved(sel.Status)
 }
 
 // preserveSelection keeps the operator's selection on the same logical
-// row across refresh ticks (closes #39, #52, #89, #119). The caller
-// passes the anchors captured by selectionAnchors BEFORE the new
-// m.Ops/m.Holds was written.
+// row across refresh ticks (closes #39, #52, #89, #119, #191). The
+// caller passes the anchors captured by selectionAnchors BEFORE the
+// new m.Ops/m.Holds was written.
 //
 // It matches by GroupKey first: a folded group keeps its identity even
 // when a newer op joins and flips the representative — the case #119's
@@ -784,15 +790,30 @@ func selectionAnchors(m Model) (group, req string) {
 // which covers a row whose group key changed shape between ticks (e.g.
 // a pending op resolving). If neither matches, Selected resets to -1
 // and clampSelection moves it onto the head of the list afterwards.
-func preserveSelection(m *Model, prevGroup, prevReq string) {
+//
+// Section affinity (#191): when wasOnPending is true, a match in the
+// resolved region is rejected — the operator was working through
+// pending requests and the cursor must not follow the row it was on
+// into resolved just because that row's status flipped. The fall-
+// through routes the cursor to the bottommost pending row, the same
+// landing site the #156 idle-snap uses. When no pending row remains,
+// the invariant is vacuous and the cursor falls through to whatever
+// clampSelection picks afterwards.
+func preserveSelection(m *Model, prevGroup, prevReq string, wasOnPending bool) {
 	if prevGroup == "" && prevReq == "" {
 		return
 	}
 	rebuilt := DisplayedOps(*m)
 	m.Selected = -1
+	acceptSection := func(o DisplayedOp) bool {
+		if !wasOnPending {
+			return true
+		}
+		return !opIsResolved(o.Status)
+	}
 	if prevGroup != "" {
 		for i, o := range rebuilt {
-			if o.GroupKey == prevGroup {
+			if o.GroupKey == prevGroup && acceptSection(o) {
 				m.Selected = i
 				return
 			}
@@ -804,7 +825,21 @@ func preserveSelection(m *Model, prevGroup, prevReq string) {
 			if key == "" {
 				key = "hold:" + o.HoldID
 			}
-			if key == prevReq {
+			if key == prevReq && acceptSection(o) {
+				m.Selected = i
+				return
+			}
+		}
+	}
+	// No same-anchor match in the acceptable region. If the cursor was
+	// on pending and any pending row remains, snap to the bottommost
+	// pending row (matches the #156 idle-snap target — newest pending,
+	// the operator's next actionable work). When no pending row
+	// remains, leave Selected at -1 for clampSelection to land on
+	// row 0.
+	if wasOnPending {
+		for i := len(rebuilt) - 1; i >= 0; i-- {
+			if !opIsResolved(rebuilt[i].Status) {
 				m.Selected = i
 				return
 			}

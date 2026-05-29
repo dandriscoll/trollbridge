@@ -9,6 +9,17 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### TUI cursor now stays on the pending region across activity
+
+- **The TUI cursor no longer drifts off the pending list when a
+  background tick resolves the row the operator was on.** Approving a
+  pending request used to land the cursor on the now-resolved row in
+  the resolved section, forcing the operator to re-navigate to the
+  next pending row before they could approve again. The cursor now
+  rides any composition change — status flips, bursts of resolves,
+  new pending arrivals — and only an explicit up-arrow keystroke
+  moves it off the pending region (closes #191).
+
 ## v0.8.3 — 2026-05-25
 
 ### Declining a suggestion now sticks
