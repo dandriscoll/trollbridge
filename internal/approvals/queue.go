@@ -331,6 +331,15 @@ func (q *Queue) Deny(id, reason, source string) bool {
 // The Decision the advisor produces carries Source=SourceLLMAdvisor
 // and the AdvisorID it was emitted under, so the audit log
 // attributes the resolution to the LLM rather than the queue.
+//
+// **Alignment principle §1 (closes #193): an advisor-driven
+// resolution NEVER fires the decision-persist callback.** The
+// LLM may decide a single request — that is what releasing the
+// hold does — but the operator's allow/deny lists are
+// human-only. PersistCb is the path to lists.allow / lists.deny;
+// only operator-driven Approve/Deny may take it. The audit log
+// still records the LLM's verdict (Source=SourceLLMAdvisor); the
+// YAML lists are not touched.
 func (q *Queue) ResolveByAdvisor(id string, d types.Decision) bool {
 	h := q.claim(id)
 	if h == nil {
@@ -361,9 +370,10 @@ func (q *Queue) ResolveByAdvisor(id string, d types.Decision) bool {
 			"advisor_id", d.AdvisorID,
 			"resolved_by", "llm-advisor")
 	}
-	if q.persistCb != nil && (d.Effect == types.EffectAllow || d.Effect == types.EffectDeny) {
-		q.persistCb(h.Request, d.Effect, "llm-advisor")
-	}
+	// Intentionally NO persistCb call here. See alignment principle
+	// §1 above. Past code did fire persistCb with source="llm-advisor"
+	// and that wrote to lists.allow / lists.deny; #193 is the closure
+	// of that regression.
 	return true
 }
 

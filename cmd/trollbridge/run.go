@@ -236,6 +236,23 @@ func newRunCmd() *cobra.Command {
 				absPersistPath = configPath
 			}
 			srv.Queue().SetDecisionPersist(func(req *types.RequestEvent, effect types.Effect, source string) {
+				// #193 defense-in-depth: alignment principle §1 — the LLM
+				// advisor's verdicts must never write to lists.allow /
+				// lists.deny. queue.go ResolveByAdvisor was patched to
+				// never fire this callback for advisor decisions, but
+				// this guard rejects the write at the callback layer
+				// too, so a future re-wiring of advisor → persistCb is
+				// caught and surfaced (WARN) instead of silently
+				// mutating the operator's lists.
+				if source == "llm-advisor" {
+					opLog.Warn("advisor list mutation refused",
+						"event", oplog.EventAdvisorListMutationRefused,
+						"effect", string(effect),
+						"source", source,
+						"host", req.Host,
+						"reason", "alignment_principle_1_lists_are_human_only")
+					return
+				}
 				pattern := derivePersistPattern(req)
 				if pattern == "" {
 					return

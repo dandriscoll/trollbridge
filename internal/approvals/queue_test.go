@@ -367,11 +367,12 @@ func TestQueue_ApproveAfterAdvisorResolved_DoesNotDoubleFire(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 1 {
-		t.Fatalf("persistCb fired %d times, want 1: %v", len(calls), calls)
-	}
-	if calls[0] != types.EffectDeny {
-		t.Errorf("persistCb effect = %v, want %v", calls[0], types.EffectDeny)
+	// #193: an advisor-driven resolve does NOT fire persistCb (only
+	// operator-driven approve/deny does). Approve here returns false
+	// because the hold is already resolved, so persistCb stays at 0.
+	// The at-most-once contract is preserved (0 fires <= 1).
+	if len(calls) != 0 {
+		t.Fatalf("persistCb fired %d times after advisor-Deny then Approve-rejected; want 0 (LLM never persists; Approve was rejected). calls=%v", len(calls), calls)
 	}
 }
 
@@ -435,11 +436,11 @@ func TestQueue_DenyAfterAdvisorResolved_DoesNotDoubleFire(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(calls) != 1 {
-		t.Fatalf("persistCb fired %d times, want 1: %v", len(calls), calls)
-	}
-	if calls[0] != types.EffectAllow {
-		t.Errorf("persistCb effect = %v, want %v", calls[0], types.EffectAllow)
+	// #193: an advisor-driven resolve does NOT fire persistCb. Deny
+	// here returns false because the hold is already resolved, so
+	// persistCb stays at 0. The at-most-once contract is preserved.
+	if len(calls) != 0 {
+		t.Fatalf("persistCb fired %d times after advisor-Allow then Deny-rejected; want 0 (LLM never persists; Deny was rejected). calls=%v", len(calls), calls)
 	}
 }
 

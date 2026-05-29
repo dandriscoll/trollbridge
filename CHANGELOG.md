@@ -9,6 +9,18 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Security: the LLM advisor no longer mutates the allow/deny lists
+
+- **Alignment principle §1 is now enforced in code.** The LLM advisor's
+  allow/deny verdicts used to flow through `queue.ResolveByAdvisor` →
+  the daemon's decision-persist callback → `lists.allow` / `lists.deny`
+  YAML writes — an LLM that should only be deciding a single request
+  was effectively granting itself persistent permissions. The advisor
+  now resolves the hold without firing the persist callback, and a
+  defense-in-depth guard in the callback layer rejects (and WARN-logs
+  via the new `advisor_list_mutation_refused` event) any future regression
+  that tries to re-wire that path (closes #193).
+
 ### Expanded TUI status colors
 
 - **LLM-checking and human-waiting render differently now.** The approvals

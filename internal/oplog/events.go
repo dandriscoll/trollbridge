@@ -51,6 +51,16 @@ const (
 	EventDenylistAdded      = "denylist_added"       // INFO; manual deny persisted to lists.deny
 	EventListPersistFailure = "list_persist_failure" // WARN; configwrite returned an error
 
+	// EventAdvisorListMutationRefused fires when the decision-persist
+	// callback rejects a write request whose source is the LLM
+	// advisor (closes #193). Alignment principle §1: the operator's
+	// allow/deny lists are human-only; an LLM-sourced verdict must
+	// never reach this callback. The fix in queue.go ResolveByAdvisor
+	// makes the call impossible from the inside; this event fires only
+	// if a future regression re-wires the path. WARN level so the
+	// rejection is visible to operators / alerts.
+	EventAdvisorListMutationRefused = "advisor_list_mutation_refused" // WARN
+
 	// Advisor lifecycle events. The *_fail constants formalize the
 	// string literals introduced by issue #25.
 	EventAdvisorConsulted    = "advisor_consulted"     // INFO
