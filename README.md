@@ -72,11 +72,11 @@ verify end-to-end on Linux, macOS, or Windows.
 ## More
 
 - **Windows or direct download.** Grab
-  [`trollbridge_v0.8.5_linux_amd64.tar.gz`](https://github.com/dandriscoll/trollbridge/releases/download/v0.8.5/trollbridge_v0.8.5_linux_amd64.tar.gz)
+  [`trollbridge_v0.8.6_linux_amd64.tar.gz`](https://github.com/dandriscoll/trollbridge/releases/download/v0.8.6/trollbridge_v0.8.6_linux_amd64.tar.gz)
   (or the matching `windows_amd64.exe` / `darwin_*` build) from the
   [releases page](https://github.com/dandriscoll/trollbridge/releases),
   verify against SHA256SUMS, extract, and
-  `sudo install -m 0755 trollbridge_v0.8.5_linux_amd64/trollbridge /usr/local/bin/trollbridge`.
+  `sudo install -m 0755 trollbridge_v0.8.6_linux_amd64/trollbridge /usr/local/bin/trollbridge`.
 - **Deploying to a host or fleet.** [`PROXY-SETUP-AGENT.md`](PROXY-SETUP-AGENT.md) walks the operator install (CA, mTLS, TLS interception); [`docs/deploy.md`](docs/deploy.md) covers topologies (user-mode, Incus VM, container sidecar).
 - **Pointing an agent's egress at a running trollbridge.** [`CLIENT-SETUP-AGENT.md`](CLIENT-SETUP-AGENT.md).
 - **Operator UI keymap, daemon mode, audit log correlation (`request_id=`).** [`docs/operator-ui.md`](docs/operator-ui.md). Verbose per-request logs: `--verbose`, `--log-level=debug`, or `TROLLBRIDGE_LOG_LEVEL=debug`.

@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.8.6 — 2026-05-29
+
 ### Attach mode can now edit allow/deny lists
 
 - **`trollbridge attach` no longer requires SSHing to the proxy host to
