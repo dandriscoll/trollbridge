@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.8.5 — 2026-05-29
+
 ### TUI columns no longer corrupt on ANSI-bearing cells
 
 - **Status cells now render at their intended visible width.** The
