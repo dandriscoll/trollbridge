@@ -65,6 +65,31 @@ func (h *History) Record(req *types.RequestEvent, d types.Decision, when time.Ti
 	h.buf = append(h.buf, e)
 }
 
+// HasOppositeEffect reports whether the buffer contains any
+// recorded decision on the given host whose effect differs from
+// currentEffect. Walks newest to oldest; the whole buffer is in
+// scope (no time window — capacity bounds the lookback). Used by
+// the TUI to flag decision reversals at row-render time
+// (closes #192). Read-only over the existing history surface; no
+// state change.
+func (h *History) HasOppositeEffect(host, currentEffect string) bool {
+	if h == nil || host == "" || currentEffect == "" {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := len(h.buf) - 1; i >= 0; i-- {
+		e := h.buf[i]
+		if e.Host != host {
+			continue
+		}
+		if e.Effect != "" && e.Effect != currentEffect {
+			return true
+		}
+	}
+	return false
+}
+
 // Match returns true if any entry in the last `within` seconds
 // matches the configured criteria.
 func (h *History) Match(req *types.RequestEvent, m *PriorDecisionMatch, now time.Time) bool {

@@ -425,7 +425,11 @@ func newRunCmd() *cobra.Command {
 						}
 					}()
 					inproc := tui.NewInProcessClientWithSuggestion(srv.Queue(), srv.Ops(), srv.Advisor(), srv, tuiSuggestionAdapter{m: sugMgr})
-					if err := tui.RunOperator(ctx, inproc, os.Stdin, os.Stdout, backend, welcome, cancel, tui.Options{ChimeEnabled: cfg.TUI.Alerts.ChimeEnabled()}); err != nil {
+					histAdapter := tuiHistoryAdapter{h: srv.Engine().History()}
+					if err := tui.RunOperator(ctx, inproc, os.Stdin, os.Stdout, backend, welcome, cancel, tui.Options{
+						ChimeEnabled: cfg.TUI.Alerts.ChimeEnabled(),
+						History:      histAdapter,
+					}); err != nil {
 						opLog.Warn("operator UI exited",
 							"event", oplog.EventOperatorUIError,
 							"error", err.Error())
@@ -768,6 +772,20 @@ func (a tuiSuggestionAdapter) DeclineSuggestion(id string) error {
 func (a tuiSuggestionAdapter) SuggestNow() *tui.Suggestion {
 	a.m.SuggestNow(context.Background())
 	return a.ActiveSuggestion()
+}
+
+// tuiHistoryAdapter satisfies tui.DecisionHistorySource over the
+// policy engine's sliding-window decision history (closes #192).
+// The TUI consults it at row-render time to wrap rows whose
+// current decision contradicts a recent prior decision on the
+// same host.
+type tuiHistoryAdapter struct{ h *policy.History }
+
+func (a tuiHistoryAdapter) PriorOppositeEffect(host, currentEffect string) bool {
+	if a.h == nil || host == "" || currentEffect == "" {
+		return false
+	}
+	return a.h.HasOppositeEffect(host, currentEffect)
 }
 
 // advisorAdapter wraps advisor.Service so the suggestion package

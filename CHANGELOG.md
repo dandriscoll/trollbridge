@@ -9,6 +9,20 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Expanded TUI status colors
+
+- **LLM-checking and human-waiting render differently now.** The approvals
+  pane used to color both states the same yellow; the operator couldn't tell
+  whether they were the blocker or the LLM was. `checking` rows now render
+  in magenta with a small cycling Braille spinner, while `pending` stays
+  static yellow (closes #192).
+- **Decision reversals on a host are flagged in bright orange.** When a
+  resolved row's effect contradicts a recent prior decision on the same
+  host (you denied earlier, just approved, or vice versa), the row's status
+  cell is wrapped in bright orange around the existing per-status color, so
+  the inconsistency is visible at a glance. Render-time lookup against the
+  daemon's existing in-memory decision history; per-host granularity for v1.
+
 ### TUI cursor now stays on the pending region across activity
 
 - **The TUI cursor no longer drifts off the pending list when a

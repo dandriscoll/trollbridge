@@ -742,7 +742,7 @@ func TestFormatOpRow_StructureAndContent(t *testing.T) {
 		},
 		Count: 1,
 	}
-	row := formatOpRow(op, 7, 30, 11, now)
+	row := formatOpRow(op, 7, 30, 11, now, 0, nil)
 	if !strings.Contains(row, "GET") {
 		t.Errorf("missing method; row=%q", row)
 	}

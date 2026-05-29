@@ -179,6 +179,21 @@ type Model struct {
 	// idle window — the counter resets to 0 after a snap.
 	LastInputTicks int
 
+	// TickCount is a monotonic ops-tick counter driving per-row
+	// animation (e.g. the LLM-checking spinner — #192). Advanced by
+	// applyOpsTick only when the tick is not paused (OpsPausedTicks
+	// would otherwise let the spinner spin while the rest of the pane
+	// is frozen). Reading-only outside the reducer; the renderer
+	// derives a frame index from this value.
+	TickCount int
+
+	// History, when non-nil, is consulted at row-render time to detect
+	// decision reversals on a host (closes #192). Wired by the in-
+	// process client from the policy engine's sliding-window history;
+	// attach mode passes nil — reversal coloring then degrades to
+	// off.
+	History DecisionHistorySource
+
 	// GeneralizeOffer was the post-approve 1/2/3 keystroke prompt
 	// added by #85 and removed by #168 (the daemon-owned quiet-
 	// moment suggestion lifecycle replaced it). The field is gone;
@@ -679,6 +694,11 @@ func applyOpsTick(m Model, e OpsTickResult) (Model, Cmd) {
 	m.LastErr = ""
 	preserveSelection(&m, prevGroup, prevReq, wasOnPending)
 	clampSelection(&m)
+	// #192: advance the per-row animation tick. Only fires when the
+	// tick is not paused — a paused pane should not have spinners
+	// continuing to rotate (jarring) while the rest of the pane is
+	// frozen.
+	m.TickCount++
 
 	// #180: time out a lingering info status. LastErr clears above on
 	// every successful tick; LastInfo used to persist until the next

@@ -392,6 +392,12 @@ type Options struct {
 	// `b` still unmutes (#72).
 	ChimeEnabled bool
 
+	// History, when non-nil, drives the reversal-color indicator
+	// on resolved rows (closes #192). Wired by the in-process
+	// client over the policy engine's decision history; attach
+	// passes nil and the reversal indicator is suppressed.
+	History DecisionHistorySource
+
 	// suspend, when non-nil, performs a job-control suspend (#176):
 	// restore the cooked terminal, raise SIGTSTP so the host shell
 	// regains control, and on resume (fg) re-enter raw mode + the
@@ -475,6 +481,7 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 		Focused:    PaneApprovals,
 		Console:    ConsoleModel{Prompt: "trollbridge> "},
 		Alerts:     AlertsState{ChimeEnabled: opts.ChimeEnabled},
+		History:    opts.History,
 	}
 	if welcome != "" {
 		for _, line := range splitLines(welcome) {
@@ -1141,7 +1148,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	if pendMax < 0 {
 		pendMax = 0
 	}
-	pendCard := formatPendingCard(pendingOps, selRel, methodW, urlW, statusW+8, inner, pendMax, now)
+	pendCard := formatPendingCard(pendingOps, selRel, methodW, urlW, statusW+8, inner, pendMax, now, m.TickCount, m.History)
 
 	listLines := bodyLines - len(topCard) - len(pendCard)
 	if listLines < 1 {
@@ -1169,7 +1176,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			if used >= listLines {
 				break
 			}
-			row := formatOpRow(resolved[i], methodW, urlW, statusW+8, now)
+			row := formatOpRow(resolved[i], methodW, urlW, statusW+8, now, m.TickCount, m.History)
 			row = padRightVisible(row, inner)
 			if i == m.Selected {
 				row = "\x1b[7m" + row + "\x1b[0m"
@@ -1271,7 +1278,7 @@ func formatSuggestionCard(s Suggestion, inner int) []string {
 // while keeping the selected row visible. Returns inner-width content
 // lines — the caller wraps each in the pane border or writes it raw on
 // the no-border path. Returns nil when nothing is pending or no space.
-func formatPendingCard(pendingOps []DisplayedOp, selRel, methodW, urlW, statusW, inner, maxRows int, now time.Time) []string {
+func formatPendingCard(pendingOps []DisplayedOp, selRel, methodW, urlW, statusW, inner, maxRows int, now time.Time, tickCount int, history DecisionHistorySource) []string {
 	if len(pendingOps) == 0 || maxRows < 1 {
 		return nil
 	}
@@ -1293,7 +1300,7 @@ func formatPendingCard(pendingOps []DisplayedOp, selRel, methodW, urlW, statusW,
 		end = len(pendingOps)
 	}
 	for i := first; i < end; i++ {
-		row := padRightVisible(formatOpRow(pendingOps[i], methodW, urlW, statusW, now), inner)
+		row := padRightVisible(formatOpRow(pendingOps[i], methodW, urlW, statusW, now, tickCount, history), inner)
 		if i == selRel {
 			row = "\x1b[7m" + row + "\x1b[0m"
 		}
@@ -1316,14 +1323,17 @@ func formatPendingCard(pendingOps []DisplayedOp, selRel, methodW, urlW, statusW,
 // passes `statusW+8` (visible width plus typical ANSI overhead)
 // while the no-border path passes `statusW` (visible width only)
 // and relies on `padRightVisible` to fix outer padding.
-func formatOpRow(o DisplayedOp, methodW, urlW, statusW int, now time.Time) string {
+func formatOpRow(o DisplayedOp, methodW, urlW, statusW int, now time.Time, tickCount int, history DecisionHistorySource) string {
 	urlCell := runeTrunc(o.URL, urlW)
 	urlCellPadded := padRight(urlCell, urlW)
+	host := extractHostForStatusColor(o.URL)
+	effect := deriveOperatorEffect(o.Status)
+	statusCell := colorizeStatusForRow(o.Status, host, effect, tickCount, history)
 	return fmt.Sprintf(" %-*s %s %s %-*s %s",
 		methodW, runeTrunc(o.Method, methodW),
 		colorizeURLForRow(urlCellPadded, o.URL),
 		brailleCounter(o.Count),
-		statusW, runeTrunc(colorizeStatus(o.Status), statusW),
+		statusW, runeTrunc(statusCell, statusW),
 		formatOpTime(o.UpdatedAt, now),
 	)
 }
@@ -1437,17 +1447,25 @@ func formatOpsPaneLabelText(total, pending int, reloadFailed bool, reloadSource 
 }
 
 // colorizeStatus wraps the status in a class color per #57's
-// vocabulary: green for running/2xx, yellow for checking/pending/
-// signaled, red for denied/error/4xx/5xx, cyan for 3xx. Unknown
-// statuses pass through uncolored. The "denied" and "signaled"
-// tokens replace the trollbridge-internal 470/471 wire codes per
-// #71.
+// vocabulary: green for running/2xx, magenta for LLM-checking
+// (#192), yellow for human-pending/signaled, red for denied/
+// error/4xx/5xx, cyan for 3xx. Unknown statuses pass through
+// uncolored. The "denied" and "signaled" tokens replace the
+// trollbridge-internal 470/471 wire codes per #71.
+//
+// Per-status color only — animation and reversal wrap live in
+// colorizeStatusForRow, the row-context variant.
 func colorizeStatus(status string) string {
 	color := ""
 	switch status {
 	case opstream.StatusRunning:
 		color = "\x1b[32m"
-	case opstream.StatusChecking, opstream.StatusPending, opstream.StatusSignaled:
+	case opstream.StatusChecking:
+		// #192: LLM-processing has its own color so the operator can
+		// tell at a glance whether they are blocking (Pending) or the
+		// LLM is (Checking).
+		color = "\x1b[35m"
+	case opstream.StatusPending, opstream.StatusSignaled:
 		color = "\x1b[33m"
 	case opstream.StatusError, opstream.StatusDenied, opstream.StatusTLSFailed:
 		color = "\x1b[31m"
@@ -1466,6 +1484,105 @@ func colorizeStatus(status string) string {
 		return status
 	}
 	return color + status + "\x1b[0m"
+}
+
+// DecisionHistorySource is the small read-only surface
+// colorizeStatusForRow consults to detect decision reversals
+// (closes #192). The implementation lives in the daemon (a thin
+// adapter over policy.History) and is wired through tui.Options
+// for the in-process client; attach mode passes nil.
+type DecisionHistorySource interface {
+	// PriorOppositeEffect reports whether the given host has a
+	// recent recorded decision whose effect differs from
+	// currentEffect. currentEffect is "allow" or "deny"; an empty
+	// string returns false (no current effect → nothing to compare).
+	PriorOppositeEffect(host, currentEffect string) bool
+}
+
+// spinnerFrames is the LLM-checking animation glyph set. Six
+// frames matches a smooth Braille rotation at the existing 1.5s
+// tick cadence (~9s for a full revolution — visible motion
+// without distracting). The frame set is exported indirectly via
+// the cycling render and pinned by status_colors_test.go.
+var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴'}
+
+// reversalWrap is the ANSI 256-color escape used to mark a row
+// whose current decision contradicts a recent prior decision on
+// the same host (closes #192). Bright orange (color 208) reads
+// as a warning without the harshness of red and is distinct from
+// every existing palette entry.
+const reversalWrap = "\x1b[38;5;208m"
+
+// colorizeStatusForRow renders the status cell with all #192
+// affordances applied:
+//
+//   - StatusChecking gets the magenta per-status color plus a
+//     cycling spinner glyph prefixed before the status word; the
+//     glyph index is `tickCount % len(spinnerFrames)`.
+//   - Resolved rows (HTTP code or StatusDenied) with effect != ""
+//     are looked up against history; on opposite-effect prior
+//     decision, the colorized cell is wrapped in the reversal
+//     color before the trailing reset. The per-status color stays
+//     inside the wrap so the operator still sees what the decision
+//     was — the wrap signals "this contradicts a prior call."
+//   - All other status classes pass through colorizeStatus
+//     unchanged.
+//
+// history may be nil (attach mode); reversal coloring then
+// degrades to off. effect is "allow", "deny", or "" (the caller
+// derives it from status — see deriveOperatorEffect).
+func colorizeStatusForRow(status, host, effect string, tickCount int, history DecisionHistorySource) string {
+	if status == opstream.StatusChecking {
+		// Spinner glyph prepended to the status word; both wrapped
+		// in the magenta per-status color.
+		frame := spinnerFrames[((tickCount%len(spinnerFrames))+len(spinnerFrames))%len(spinnerFrames)]
+		return "\x1b[35m" + string(frame) + " " + status + "\x1b[0m"
+	}
+	colored := colorizeStatus(status)
+	if effect != "" && history != nil && history.PriorOppositeEffect(host, effect) {
+		// Wrap the colorized cell in the reversal color. The inner
+		// per-status color stays so the operator still sees the
+		// decision; the outer wrap signals the reversal.
+		return reversalWrap + colored + "\x1b[0m"
+	}
+	return colored
+}
+
+// deriveOperatorEffect maps an op's Status to the operator effect
+// the row represents, for reversal lookup (#192):
+//
+//   - "200"…"599"  → "allow" (operator allowed; upstream returned
+//     that status)
+//   - StatusDenied → "deny"
+//   - everything else → "" (no clear operator effect — pre-
+//     decision rows, transport errors, etc. — never trigger
+//     reversal coloring)
+//
+// 4xx and 5xx codes are "allow" rather than "deny" because the
+// operator approved the request and the upstream returned the
+// non-2xx — that is not the operator's deny. Distinguishing
+// rule-deny-emitted-4xx from upstream-emitted-4xx is out of
+// scope (filed for future-state).
+func deriveOperatorEffect(status string) string {
+	if status == opstream.StatusDenied {
+		return "deny"
+	}
+	if len(status) == 3 && status[0] >= '2' && status[0] <= '5' {
+		return "allow"
+	}
+	return ""
+}
+
+// extractHostForStatusColor returns the host portion of a URL
+// for reversal-history lookup (#192). It mirrors opGroupHostDir's
+// host-extraction logic — handling both scheme://host/path URLs
+// and the bare host:port form recorded for CONNECT/TLS ops —
+// without pulling in the path-directory component the grouping
+// key also returns. Returns "" when the URL cannot be parsed
+// usefully; the caller treats that as "no reversal lookup."
+func extractHostForStatusColor(rawURL string) string {
+	host, _ := opGroupHostDir(rawURL)
+	return host
 }
 
 // padRightVisible pads s to width visible cells, ignoring ANSI escape
@@ -1548,7 +1665,7 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 	if pendMax < 0 {
 		pendMax = 0
 	}
-	pendCard := formatPendingCard(pendingOps, selRel, methodW, urlW, statusW, m.Cols, pendMax, now)
+	pendCard := formatPendingCard(pendingOps, selRel, methodW, urlW, statusW, m.Cols, pendMax, now, m.TickCount, m.History)
 	listLines := bodyLines - len(pendCard)
 	if listLines < 1 {
 		listLines = 1
@@ -1575,7 +1692,7 @@ func renderApprovalsPaneNoBorder(b *strings.Builder, m Model, rows int) {
 			if used >= listLines {
 				break
 			}
-			row := formatOpRow(resolved[i], methodW, urlW, statusW, now)
+			row := formatOpRow(resolved[i], methodW, urlW, statusW, now, m.TickCount, m.History)
 			if i == m.Selected {
 				b.WriteString("\x1b[7m")
 				b.WriteString(padRightVisible(row, m.Cols))
