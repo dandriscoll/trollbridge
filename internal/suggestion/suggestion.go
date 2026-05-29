@@ -41,6 +41,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -350,6 +353,17 @@ func (m *Manager) produce(ctx context.Context, cfg *config.Config, maxCandidates
 			bestKey = k
 		}
 	}
+	// #190: when the broadest group's source entries cluster
+	// heavily under a single 1-segment path prefix, prefer the
+	// narrower candidate. The broader-by-default policy (#186)
+	// is correct when the operator's list spans the host evenly;
+	// it overshoots when the operator has been approving one
+	// subset. The narrower candidate is offered when (a) its
+	// source set is a strict subset of the chosen, (b) the ratio
+	// of subset / chosen entries is >= the configured threshold
+	// (default 0.8), and (c) the narrower has the highest
+	// qualifying ratio.
+	chosen = preferNarrowerOnConcentration(chosen, groups, cfg.Approvals.Suggestion.PathConcentrationThreshold)
 	if len(chosen) > maxCandidates {
 		chosen = chosen[:maxCandidates]
 	}
@@ -441,6 +455,203 @@ func (m *Manager) produce(ctx context.Context, cfg *config.Config, maxCandidates
 		"source_count", len(top.SourceEntries),
 		"axes_remaining", remainingAxesCount(chosen, sug.OfferedAxes),
 	)
+}
+
+// preferNarrowerOnConcentration implements #190's concentration-
+// aware scorer pass. The detector's broadest candidate (`host/*`)
+// is the right offer when the operator's entries are evenly
+// distributed across paths under a host; it overshoots when one
+// path prefix dominates. Two strategies, tried in order:
+//
+//  1. Existing-candidate swap. If a narrower group is already in
+//     the detector's output (e.g., `host/api/users/*`) and its
+//     source set is a strict subset of chosen's with ratio >=
+//     threshold, swap to it.
+//
+//  2. Synthesized 1-segment narrower. The detector emits
+//     deepest-common-prefix subsets (`host/api/users/*`,
+//     `host/api/orders/*`) and the host-wide rollup (`host/*`)
+//     but does not enumerate intermediate-depth prefixes
+//     (`host/api/*`). When >= threshold of chosen's entries share
+//     a 1-segment path prefix, synthesize that intermediate
+//     candidate. The synthesized SourceEntries are exactly the
+//     entries under that prefix, so the operator's accept will
+//     correctly prune them.
+//
+// Returns chosen unchanged when no qualifying narrower exists,
+// when chosen is empty, when threshold is out of range, or when
+// the entries cannot be parsed (defensive fall-through).
+func preferNarrowerOnConcentration(chosen []generalize.Candidate, groups map[string][]generalize.Candidate, threshold float64) []generalize.Candidate {
+	if len(chosen) == 0 || threshold <= 0 || threshold > 1 {
+		return chosen
+	}
+	chosenSize := len(chosen[0].SourceEntries)
+	if chosenSize == 0 {
+		return chosen
+	}
+
+	// Strategy 1: subset swap.
+	chosenSet := map[string]struct{}{}
+	for _, s := range chosen[0].SourceEntries {
+		chosenSet[s] = struct{}{}
+	}
+	var best []generalize.Candidate
+	bestRatio := 0.0
+	for _, g := range groups {
+		if len(g) == 0 {
+			continue
+		}
+		size := len(g[0].SourceEntries)
+		if size >= chosenSize {
+			continue
+		}
+		subset := true
+		for _, s := range g[0].SourceEntries {
+			if _, ok := chosenSet[s]; !ok {
+				subset = false
+				break
+			}
+		}
+		if !subset {
+			continue
+		}
+		ratio := float64(size) / float64(chosenSize)
+		if ratio < threshold {
+			continue
+		}
+		if best == nil || ratio > bestRatio || (ratio == bestRatio && len(g) < len(best)) {
+			best = g
+			bestRatio = ratio
+		}
+	}
+	if best != nil {
+		return best
+	}
+
+	// Strategy 2: synthesize an intermediate-depth narrower.
+	if synth, ok := synthesizeNarrowerFromConcentration(chosen[0], threshold); ok {
+		return []generalize.Candidate{synth}
+	}
+	return chosen
+}
+
+// synthesizeNarrowerFromConcentration computes the 1-segment path
+// prefix distribution among chosen's source entries. If a single
+// prefix accounts for >= threshold of the entries, returns a
+// synthesized `METHOD scheme://host/<prefix>/*` candidate with
+// SourceEntries set to the matching subset.
+//
+// Returns ok=false when entries can't be parsed, when no prefix
+// dominates, when all entries share a single existing-detector
+// shape (no concentration to find), or when chosen's pattern
+// isn't a host-wide rollup (intermediate-depth synthesis only
+// makes sense as a narrowing of `host/*`).
+func synthesizeNarrowerFromConcentration(chosen generalize.Candidate, threshold float64) (generalize.Candidate, bool) {
+	// Only narrow host-wide rollups; method/hostname-below-TLD
+	// candidates have no path-prefix dimension.
+	if !strings.HasSuffix(chosen.SuggestedPattern, "/*") {
+		return generalize.Candidate{}, false
+	}
+	method, schemeHost, ok := splitMethodSchemeHost(chosen.SuggestedPattern)
+	if !ok {
+		return generalize.Candidate{}, false
+	}
+	// Cluster the entries by their 1-segment path prefix.
+	clusters := map[string][]string{}
+	total := 0
+	for _, e := range chosen.SourceEntries {
+		seg, ok := firstPathSegmentOfEntry(e, method)
+		if !ok || seg == "" {
+			// An unparseable entry breaks the synthesis assumption
+			// (the chosen group should have homogeneous shape).
+			return generalize.Candidate{}, false
+		}
+		clusters[seg] = append(clusters[seg], e)
+		total++
+	}
+	if total == 0 {
+		return generalize.Candidate{}, false
+	}
+	// Find the largest cluster. Deterministic tiebreak: alphabetical
+	// segment name (stable across runs even when two segments tie).
+	keys := make([]string, 0, len(clusters))
+	for k := range clusters {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	bigSeg := ""
+	bigCount := 0
+	for _, k := range keys {
+		if len(clusters[k]) > bigCount {
+			bigSeg = k
+			bigCount = len(clusters[k])
+		}
+	}
+	if bigSeg == "" {
+		return generalize.Candidate{}, false
+	}
+	if float64(bigCount)/float64(total) < threshold {
+		return generalize.Candidate{}, false
+	}
+	// Don't synthesize if the cluster IS the chosen (would offer
+	// the same pattern). E.g., a single-prefix chosen with all
+	// entries already under one segment — the host-wide is the
+	// natural offer there.
+	if bigCount == total {
+		return generalize.Candidate{}, false
+	}
+	sources := append([]string(nil), clusters[bigSeg]...)
+	sort.Strings(sources)
+	return generalize.Candidate{
+		Axis:             chosen.Axis,
+		List:             chosen.List,
+		SourceEntries:    sources,
+		SuggestedPattern: method + " " + schemeHost + "/" + bigSeg + "/*",
+	}, true
+}
+
+// splitMethodSchemeHost decomposes a host-wide rollup pattern of
+// shape "METHOD scheme://host/*" into (method, "scheme://host",
+// ok). Defensive: returns ok=false for any non-matching shape.
+func splitMethodSchemeHost(pattern string) (method, schemeHost string, ok bool) {
+	parts := strings.SplitN(pattern, " ", 2)
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	method = parts[0]
+	rest := parts[1]
+	if !strings.HasSuffix(rest, "/*") {
+		return "", "", false
+	}
+	rest = strings.TrimSuffix(rest, "/*")
+	// `rest` should now be `scheme://host` (no trailing path).
+	if !strings.Contains(rest, "://") {
+		return "", "", false
+	}
+	return method, rest, true
+}
+
+// firstPathSegmentOfEntry parses a list entry of shape
+// "METHOD scheme://host/path/..." and returns the first non-empty
+// path segment. Returns ok=false when the entry doesn't match
+// the method or can't be URL-parsed.
+func firstPathSegmentOfEntry(entry, wantMethod string) (string, bool) {
+	parts := strings.SplitN(entry, " ", 2)
+	if len(parts) != 2 || parts[0] != wantMethod {
+		return "", false
+	}
+	u, err := url.Parse(parts[1])
+	if err != nil {
+		return "", false
+	}
+	p := strings.Trim(u.Path, "/")
+	if p == "" {
+		return "", false
+	}
+	if i := strings.IndexByte(p, '/'); i >= 0 {
+		return p[:i], true
+	}
+	return p, true
 }
 
 // Accept resolves the active suggestion by persisting its pattern

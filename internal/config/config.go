@@ -365,6 +365,14 @@ type ApprovalsSuggestion struct {
 	// MaxCandidates caps the number of detector candidates passed
 	// to the LLM in one ask. Default 8.
 	MaxCandidates int `yaml:"max_candidates"`
+	// PathConcentrationThreshold (#190) lets the scorer prefer a
+	// narrower allow when the broader candidate's source entries
+	// cluster heavily under a single 1-segment path prefix. Range
+	// (0, 1]. Default 0.8: at least 80% of the broader's entries
+	// must share a prefix with the narrower candidate to swap. A
+	// zero value uses the default — operators set this to a non-
+	// zero fraction to tune, not to disable.
+	PathConcentrationThreshold float64 `yaml:"path_concentration_threshold"`
 }
 
 // EnabledFor reports whether the suggestion flow should run given
@@ -509,6 +517,10 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Approvals.Suggestion.MaxCandidates == 0 {
 		c.Approvals.Suggestion.MaxCandidates = 8
+	}
+	if c.Approvals.Suggestion.PathConcentrationThreshold <= 0 ||
+		c.Approvals.Suggestion.PathConcentrationThreshold > 1 {
+		c.Approvals.Suggestion.PathConcentrationThreshold = 0.8
 	}
 	if c.Forwarder.MaxIdleConns == 0 {
 		c.Forwarder.MaxIdleConns = 256

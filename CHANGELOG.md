@@ -9,6 +9,18 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Suggester prefers a narrower allow when entries concentrate under one prefix
+
+- **When 80% or more of a host's existing list entries cluster under a
+  single 1-segment path prefix, the quiet-moment suggester now offers
+  `host/<prefix>/*` instead of the broader `host/*`.** Previously the
+  scorer always picked the broadest covering candidate, which
+  overshoots when the operator has been approving (say) `api/*`
+  exclusively and a single `webhook/*` outlier is the only thing
+  pulling them apart. The threshold is tunable via
+  `approvals.suggestion.path_concentration_threshold` (default 0.8);
+  even-breadth lists continue to surface the broader allow (closes #190).
+
 ### Home and End jump the cursor to the first / last item
 
 - **Home and End now navigate to the start and end of the focused

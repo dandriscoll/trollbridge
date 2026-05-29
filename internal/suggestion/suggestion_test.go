@@ -110,6 +110,10 @@ func enabledConfig() *config.Config {
 	cfg.Approvals.Suggestion.Enabled = &t
 	cfg.Approvals.Suggestion.QuietIdleSeconds = 30
 	cfg.Approvals.Suggestion.MaxCandidates = 8
+	// Match the default that config.applyDefaults installs in
+	// production so tests exercise the same scorer behavior the
+	// daemon ships with (#190).
+	cfg.Approvals.Suggestion.PathConcentrationThreshold = 0.8
 	return cfg
 }
 
