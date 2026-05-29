@@ -1516,13 +1516,6 @@ type DecisionHistorySource interface {
 	PriorOppositeEffect(host, currentEffect string) bool
 }
 
-// spinnerFrames is the LLM-checking animation glyph set. Six
-// frames matches a smooth Braille rotation at the existing 1.5s
-// tick cadence (~9s for a full revolution — visible motion
-// without distracting). The frame set is exported indirectly via
-// the cycling render and pinned by status_colors_test.go.
-var spinnerFrames = []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴'}
-
 // reversalWrap is the ANSI 256-color escape used to mark a row
 // whose current decision contradicts a recent prior decision on
 // the same host (closes #192). Bright orange (color 208) reads
@@ -1550,10 +1543,14 @@ const reversalWrap = "\x1b[38;5;208m"
 // derives it from status — see deriveOperatorEffect).
 func colorizeStatusForRow(status, host, effect string, tickCount int, history DecisionHistorySource) string {
 	if status == opstream.StatusChecking {
-		// Spinner glyph prepended to the status word; both wrapped
-		// in the magenta per-status color.
-		frame := spinnerFrames[((tickCount%len(spinnerFrames))+len(spinnerFrames))%len(spinnerFrames)]
-		return "\x1b[35m" + string(frame) + " " + status + "\x1b[0m"
+		// #192 reopen: previous animation advanced one frame per
+		// ops tick (~1.5s), too subtle and too slow per operator
+		// feedback. Replaced with ANSI blink (SGR 5) — terminal-
+		// native, immediate, and unambiguous. Distinct glyph + the
+		// more evocative term "thinking" (wire-format StatusChecking
+		// is unchanged; this is a render-time substitution).
+		_ = tickCount // animation no longer tick-driven
+		return "\x1b[35;5m◌ thinking\x1b[0m"
 	}
 	colored := colorizeStatus(status)
 	if effect != "" && history != nil && history.PriorOppositeEffect(host, effect) {
@@ -1591,14 +1588,38 @@ func deriveOperatorEffect(status string) string {
 }
 
 // extractHostForStatusColor returns the host portion of a URL
-// for reversal-history lookup (#192). It mirrors opGroupHostDir's
-// host-extraction logic — handling both scheme://host/path URLs
-// and the bare host:port form recorded for CONNECT/TLS ops —
-// without pulling in the path-directory component the grouping
-// key also returns. Returns "" when the URL cannot be parsed
-// usefully; the caller treats that as "no reversal lookup."
+// (without port) for reversal-history lookup (#192). It mirrors
+// opGroupHostDir's host-extraction but strips the port so the
+// result matches policy.History's `req.Host` field (which is
+// the hostname only — port is stored separately). Pre-#192-
+// reopen, this returned `host:port` and never matched the
+// stored entries, so the reversal lookup silently returned
+// false.
 func extractHostForStatusColor(rawURL string) string {
 	host, _ := opGroupHostDir(rawURL)
+	// Strip the trailing :port for IPv4 and host. IPv6 bracketed
+	// hosts come back from url.Parse as `[::1]:443`; the last `:`
+	// before the port is preserved by SplitHostPort. Defensive:
+	// if the split fails (no port), use the raw host.
+	if i := strings.LastIndexByte(host, ':'); i >= 0 {
+		// Guard against IPv6 unbracketed: if there are multiple ':',
+		// only strip when the part after the last ':' is all digits.
+		port := host[i+1:]
+		allDigits := port != ""
+		for _, r := range port {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			host = host[:i]
+		}
+	}
+	// Strip IPv6 brackets if present after port-stripping.
+	if len(host) >= 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		host = host[1 : len(host)-1]
+	}
 	return host
 }
 

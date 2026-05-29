@@ -9,6 +9,25 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### LLM-checking now reads "thinking" with an immediate blink (re-closure of #192)
+
+- **Waiting on the LLM is now immediately distinguishable from waiting
+  on the operator.** The v0.8.4 spinner advanced one frame per ops tick
+  (~1.5s) — too subtle, too slow. Replaced with the ANSI blink escape on
+  a magenta `◌ thinking` cell; blink is terminal-managed and immediate.
+  The wire-format `StatusChecking` value is unchanged — the term
+  substitution is render-time only.
+- **Reversal coloring now actually fires** when an operator-resolved
+  decision contradicts a prior decision on the same host. Two bugs hid
+  the v0.8.4 wrap from rendering: the TUI extracted the host WITH port
+  (`example.com:443`) while the policy engine stores hosts without port;
+  and operator-resolved decisions record with the verbose
+  `ask_user_resolved_{allow,deny}` effect string while the TUI compared
+  to the abbreviated `allow`/`deny`. Both now normalized.
+- **`trollbridge quickstart` users get the reversal indicator too** —
+  the previous wiring only landed in `trollbridge run`. Attach mode is
+  still suppressed (needs an HTTP endpoint to expose history).
+
 ### Cursor sticks to pending across a burst-drain (re-closure of #191)
 
 - **The cursor now snaps back to a newly-arriving pending row immediately**,

@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -72,10 +73,18 @@ func (h *History) Record(req *types.RequestEvent, d types.Decision, when time.Ti
 // the TUI to flag decision reversals at row-render time
 // (closes #192). Read-only over the existing history surface; no
 // state change.
+//
+// Effect normalization (#192 reopen): operator-resolved decisions
+// record with the verbose `Effect = "ask_user_resolved_allow"` /
+// `_deny` strings; the TUI passes the abbreviated `"allow"` /
+// `"deny"`. Both stored values and currentEffect are normalized
+// via trimAskUserResolvedPrefix so the comparison is on the
+// effective direction, not the literal string.
 func (h *History) HasOppositeEffect(host, currentEffect string) bool {
 	if h == nil || host == "" || currentEffect == "" {
 		return false
 	}
+	wantEffect := trimAskUserResolvedPrefix(currentEffect)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for i := len(h.buf) - 1; i >= 0; i-- {
@@ -83,11 +92,20 @@ func (h *History) HasOppositeEffect(host, currentEffect string) bool {
 		if e.Host != host {
 			continue
 		}
-		if e.Effect != "" && e.Effect != currentEffect {
+		got := trimAskUserResolvedPrefix(e.Effect)
+		if got != "" && got != wantEffect {
 			return true
 		}
 	}
 	return false
+}
+
+// trimAskUserResolvedPrefix maps EffectAskUserResolved{Allow,Deny}
+// values to their abbreviated allow/deny equivalent so the
+// HasOppositeEffect comparison is on the effective direction
+// rather than the literal recorded string.
+func trimAskUserResolvedPrefix(effect string) string {
+	return strings.TrimPrefix(effect, "ask_user_resolved_")
 }
 
 // Match returns true if any entry in the last `within` seconds

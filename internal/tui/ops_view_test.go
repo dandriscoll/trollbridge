@@ -87,8 +87,10 @@ func TestRender_StatusUpdateIsInPlace(t *testing.T) {
 	if r1 == "" || r2 == "" {
 		t.Fatalf("URL row missing in one of the frames")
 	}
-	if !strings.Contains(r1, "checking") {
-		t.Errorf("frame 1 row missing 'checking': %q", r1)
+	// #192 reopen: render-time substitution shows "thinking" (the
+	// wire-format StatusChecking is still "checking", unchanged).
+	if !strings.Contains(r1, "thinking") {
+		t.Errorf("frame 1 row missing 'thinking' (#192 reopen render-substitution): %q", r1)
 	}
 	if !strings.Contains(r2, "200") {
 		t.Errorf("frame 2 row missing '200': %q", r2)

@@ -57,26 +57,38 @@ func TestColorizeStatus_LLMCheckingHasOwnColor(t *testing.T) {
 	}
 }
 
-// TestColorizeStatusForRow_LLMSpinnerCyclesPerTick pins the
-// per-tick animation: same op + status, varying tick counts produce
-// distinct glyphs at deterministic frame indices.
-func TestColorizeStatusForRow_LLMSpinnerCyclesPerTick(t *testing.T) {
-	// Frame set (must match the implementation's spinner glyphs).
-	wantFrames := []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴'}
-	for tick := 0; tick < len(wantFrames)*2; tick++ {
-		out := colorizeStatusForRow(opstream.StatusChecking, "example.com", "", tick, nil)
-		want := wantFrames[tick%len(wantFrames)]
-		if !strings.ContainsRune(out, want) {
-			t.Errorf("tick %d: rendered %q does not contain expected frame %q (frame index %d)",
-				tick, out, want, tick%len(wantFrames))
-		}
+// TestColorizeStatusForRow_LLMUsesBlinkAndDistinctTerm pins the
+// post-#192-reopen rendering: the prior per-tick Braille spinner
+// was too subtle ("one frame per 1.5s"), so it's been replaced
+// with the ANSI blink escape (SGR 5 = "\x1b[5m") combined with
+// magenta (35) and the distinct term "thinking" (so the operator
+// sees something visibly different from a static yellow
+// "pending" — and waiting-on-LLM reads differently from
+// waiting-on-human).
+//
+// The blink is terminal-managed and immediate — no tick-driven
+// frame cycling.
+func TestColorizeStatusForRow_LLMUsesBlinkAndDistinctTerm(t *testing.T) {
+	out := colorizeStatusForRow(opstream.StatusChecking, "example.com", "", 0, nil)
+	// Must contain the SGR-5 blink escape.
+	if !strings.Contains(out, "\x1b[35;5m") {
+		t.Errorf("LLM-checking render missing the SGR-5 blink escape; out=%q", out)
 	}
-	// Cross-check that two adjacent ticks render DIFFERENT glyphs
-	// (catches a single-frame stuck implementation).
+	// Must contain the distinct term "thinking" (not "checking").
+	if !strings.Contains(out, "thinking") {
+		t.Errorf("LLM-checking render missing the distinct term 'thinking'; out=%q", out)
+	}
+	if strings.Contains(out, "checking") {
+		t.Errorf("LLM-checking render still says 'checking' — the wire-format value leaked through "+
+			"the render-time substitution; out=%q", out)
+	}
+	// Adjacent ticks should render IDENTICALLY (blink is terminal-
+	// managed, not tick-driven). This is a positive assertion of
+	// the new design: no tick-dependence in the LLM-checking cell.
 	a := colorizeStatusForRow(opstream.StatusChecking, "example.com", "", 0, nil)
-	b := colorizeStatusForRow(opstream.StatusChecking, "example.com", "", 1, nil)
-	if a == b {
-		t.Errorf("spinner did not advance between tick 0 and tick 1: %q == %q", a, b)
+	b := colorizeStatusForRow(opstream.StatusChecking, "example.com", "", 100, nil)
+	if a != b {
+		t.Errorf("LLM-checking render changed between ticks (no longer tick-driven post-#192-reopen); a=%q b=%q", a, b)
 	}
 }
 
@@ -150,6 +162,31 @@ func TestColorizeStatusForRow_NoReversalForCheckingOrPending(t *testing.T) {
 		out := colorizeStatusForRow(s, "b.example", "", 0, hist)
 		if strings.Contains(out, ansiReversal) {
 			t.Errorf("reversal wrap fired for pre-decision status %q; out=%q", s, out)
+		}
+	}
+}
+
+// TestExtractHostForStatusColor_StripsPort pins the #192 reopen
+// fix: extractHostForStatusColor must return the host WITHOUT
+// the port, because policy.History stores `req.Host` as hostname
+// only (port is a separate field). Pre-fix, this returned
+// "example.com:443" and never matched stored "example.com"
+// entries — reversal lookup silently returned false.
+func TestExtractHostForStatusColor_StripsPort(t *testing.T) {
+	cases := []struct {
+		url  string
+		want string
+	}{
+		{"https://example.com:443/path", "example.com"},
+		{"http://example.com:8080/api", "example.com"},
+		{"https://example.com/", "example.com"},
+		// IPv6 with bracketed host + port.
+		{"https://[::1]:443/p", "::1"},
+	}
+	for _, c := range cases {
+		got := extractHostForStatusColor(c.url)
+		if got != c.want {
+			t.Errorf("extractHostForStatusColor(%q) = %q; want %q", c.url, got, c.want)
 		}
 	}
 }
