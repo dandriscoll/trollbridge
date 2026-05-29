@@ -1165,7 +1165,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	if pendMax < 0 {
 		pendMax = 0
 	}
-	pendCard := formatPendingCard(pendingOps, selRel, methodW, urlW, statusW+8, inner, pendMax, now, m.TickCount, m.History)
+	pendCard := formatPendingCard(pendingOps, selRel, methodW, urlW, statusW, inner, pendMax, now, m.TickCount, m.History)
 
 	listLines := bodyLines - len(topCard) - len(pendCard)
 	if listLines < 1 {
@@ -1193,7 +1193,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			if used >= listLines {
 				break
 			}
-			row := formatOpRow(resolved[i], methodW, urlW, statusW+8, now, m.TickCount, m.History)
+			row := formatOpRow(resolved[i], methodW, urlW, statusW, now, m.TickCount, m.History)
 			row = padRightVisible(row, inner)
 			if i == m.Selected {
 				row = "\x1b[7m" + row + "\x1b[0m"
@@ -1345,12 +1345,22 @@ func formatOpRow(o DisplayedOp, methodW, urlW, statusW int, now time.Time, tickC
 	urlCellPadded := padRight(urlCell, urlW)
 	host := extractHostForStatusColor(o.URL)
 	effect := deriveOperatorEffect(o.Status)
+	// #197: render the status cell at exactly statusW visible
+	// chars (ANSI bytes excluded). Pre-fix, runeTrunc operated on
+	// the already-colorized cell — rune count includes ANSI escape
+	// bytes, so the truncation cut INTO the escape sequence and
+	// produced fragments like "\x1b[33mpendi…" that rendered as
+	// "pendi…" — narrower than statusW, displacing the TIME column.
+	// padRightVisible sizes the colored cell at exactly statusW
+	// visible chars; the bordered-render `+8` byte buffer becomes
+	// unnecessary.
 	statusCell := colorizeStatusForRow(o.Status, host, effect, tickCount, history)
-	return fmt.Sprintf(" %-*s %s %s %-*s %s",
+	statusCell = padRightVisible(statusCell, statusW)
+	return fmt.Sprintf(" %-*s %s %s %s %s",
 		methodW, runeTrunc(o.Method, methodW),
 		colorizeURLForRow(urlCellPadded, o.URL),
 		brailleCounter(o.Count),
-		statusW, runeTrunc(statusCell, statusW),
+		statusCell,
 		formatOpTime(o.UpdatedAt, now),
 	)
 }

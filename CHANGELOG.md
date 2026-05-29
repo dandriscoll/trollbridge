@@ -9,6 +9,17 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### TUI columns no longer corrupt on ANSI-bearing cells
+
+- **Status cells now render at their intended visible width.** The
+  approvals pane's status column used to display fragments like `pendi…`
+  with the timestamp displaced leftward when the colorized cell's ANSI
+  bytes pushed the rune-counted truncation INTO the escape sequence. The
+  cell is now sized by visible width directly via `padRightVisible`; the
+  byte-buffer hack the bordered render path leaned on is gone (closes
+  #197). The bug was pre-existing but amplified by the v0.8.4 reversal
+  wrap and the #192-reopen blink rendering.
+
 ### LLM-checking now reads "thinking" with an immediate blink (re-closure of #192)
 
 - **Waiting on the LLM is now immediately distinguishable from waiting
