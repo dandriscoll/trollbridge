@@ -442,24 +442,28 @@ func digestsN(n int) []advisor.Digest {
 
 // TestLLMDigestStartIndex_NewestSelectedReturnsHead pins that when
 // the selection is the newest digest (display index 0), iteration
-// starts from the slice tail — no shift needed (#117).
+// starts from the top of the display (#117, updated for #198 to
+// use display indices). Post-#198, llmDigestStartIndex returns a
+// display index (0 = newest in TIME mode), and the render loop
+// iterates forward from that index.
 func TestLLMDigestStartIndex_NewestSelectedReturnsHead(t *testing.T) {
 	m := modelWithDigests(digestsN(20))
-	m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID // newest
+	m.DigestSelected = m.Digests[len(m.Digests)-1].RequestID // newest = display idx 0
 	got := llmDigestStartIndex(m, 5)
-	if got != len(m.Digests)-1 {
-		t.Errorf("start = %d, want %d (no shift when selection is newest)", got, len(m.Digests)-1)
+	if got != 0 {
+		t.Errorf("start = %d, want 0 (newest selected → top of display)", got)
 	}
 }
 
 // TestLLMDigestStartIndex_NoSelectionReturnsHead pins that an empty
-// DigestSelected leaves the iteration starting from newest.
+// DigestSelected leaves the iteration starting from the top of
+// the display.
 func TestLLMDigestStartIndex_NoSelectionReturnsHead(t *testing.T) {
 	m := modelWithDigests(digestsN(20))
 	m.DigestSelected = ""
 	got := llmDigestStartIndex(m, 5)
-	if got != len(m.Digests)-1 {
-		t.Errorf("start = %d, want %d (no selection)", got, len(m.Digests)-1)
+	if got != 0 {
+		t.Errorf("start = %d, want 0 (no selection → top of display)", got)
 	}
 }
 
@@ -474,35 +478,35 @@ func TestLLMDigestStartIndex_EmptyDigestsReturnsMinusOne(t *testing.T) {
 }
 
 // TestLLMDigestStartIndex_SelectionWithinWindowReturnsHead pins
-// that when the selection is within the newest-first bodyLines
-// window, iteration still starts from the newest — no shift.
+// that when the selection is within the visible bodyLines window
+// from the top, iteration still starts from the top — no shift.
+// Post-#198: display index 0 = top of display.
 func TestLLMDigestStartIndex_SelectionWithinWindowReturnsHead(t *testing.T) {
 	digests := digestsN(20)
 	m := modelWithDigests(digests)
-	// Display index 3 is digests[len-1-3] = digests[16].
+	// Display index 3 is digests[len-1-3] = digests[16] in TIME mode.
 	m.DigestSelected = digests[16].RequestID
 	got := llmDigestStartIndex(m, 5) // budget 5; display idx 3 fits.
-	if got != len(digests)-1 {
-		t.Errorf("start = %d, want %d (selection at display idx 3 fits in budget 5)", got, len(digests)-1)
+	if got != 0 {
+		t.Errorf("start = %d, want 0 (selection at display idx 3 fits in budget 5)", got)
 	}
 }
 
 // TestLLMDigestStartIndex_SelectionBelowWindowShifts pins the core
-// fix: when the selection sits below the visible newest-first
-// window, the start shifts so the selection is the last visible
-// row (anchor-at-bottom).
+// fix: when the selection sits below the visible window, the
+// start shifts so the selection is the last visible row
+// (anchor-at-bottom). Post-#198: shift = displayIdx - budget + 1.
 func TestLLMDigestStartIndex_SelectionBelowWindowShifts(t *testing.T) {
 	digests := digestsN(20)
 	m := modelWithDigests(digests)
 	// Pick display index 10 (i.e., digests[len-1-10] = digests[9]).
 	m.DigestSelected = digests[9].RequestID
 	// With bodyLines=5 and no expanded extra, budget=5.
-	// shift = 10 - 5 + 1 = 6.
-	// start = (len-1) - shift = 19 - 6 = 13.
+	// start = displayIdx - budget + 1 = 10 - 5 + 1 = 6.
 	got := llmDigestStartIndex(m, 5)
-	want := 13
+	want := 6
 	if got != want {
-		t.Errorf("start = %d, want %d (display idx 10, budget 5 → shift 6)", got, want)
+		t.Errorf("start = %d, want %d (display idx 10, budget 5)", got, want)
 	}
 }
 
@@ -528,13 +532,12 @@ func TestLLMDigestStartIndex_ExpandedReducesBudget(t *testing.T) {
 	if digestBudget < 1 {
 		digestBudget = 1
 	}
-	shift := 10 - digestBudget + 1
-	if shift < 0 {
-		shift = 0
+	want := 10 - digestBudget + 1
+	if want < 0 {
+		want = 0
 	}
-	want := (len(digests) - 1) - shift
 	if got := llmDigestStartIndex(m, bodyLines); got != want {
-		t.Errorf("start = %d, want %d (expanded extra=%d budget=%d)", got, want, extra, digestBudget)
+		t.Errorf("start = %d, want %d (expanded extra=%d budget=%d, display idx 10)", got, want, extra, digestBudget)
 	}
 }
 

@@ -100,8 +100,16 @@ type Model struct {
 	// 1/2/3/4 hotkeys (closes #66, reactivation).
 	BottomPanelOpen bool
 	// Digests is the rolling advisor-classify log shown by the LLM
-	// bottom panel. Filled by DigestTickResult events.
+	// bottom panel. Filled by DigestTickResult events. Stored in the
+	// daemon's chronological order; the display sort lives in
+	// displayedDigests() per LLMSortByURL (#198).
 	Digests []advisor.Digest
+
+	// LLMSortByURL toggles the LLM panel's display order. Default
+	// false → newest-first by time (chronological reverse, matches
+	// the historical behavior). True → alphabetical by URL.
+	// Operator toggles with `s` in the LLM panel (#198).
+	LLMSortByURL bool
 	// DigestSelected is the RequestID of the digest currently
 	// highlighted in the LLM bottom panel. Empty string means no
 	// selection (panel empty or never focused). Tracked by stable
@@ -1087,29 +1095,75 @@ func reconcileDigestSelection(m *Model) {
 	m.DigestExpanded = true
 }
 
+// displayedDigests returns m.Digests in the LLM panel's display
+// order. Default (LLMSortByURL=false) is newest-first
+// (chronological reverse). LLMSortByURL=true returns the same
+// entries sorted by URL ascending — operator toggle via `s` in
+// the LLM panel (#198). The returned slice is a fresh copy; the
+// underlying ring entries are not mutated.
+func displayedDigests(m Model) []advisor.Digest {
+	if len(m.Digests) == 0 {
+		return nil
+	}
+	out := make([]advisor.Digest, len(m.Digests))
+	if m.LLMSortByURL {
+		copy(out, m.Digests)
+		sort.SliceStable(out, func(i, j int) bool {
+			ui := digestURLString(out[i])
+			uj := digestURLString(out[j])
+			if ui == uj {
+				// Stable tiebreak: newer-first within equal URLs.
+				return out[i].Timestamp.After(out[j].Timestamp)
+			}
+			return ui < uj
+		})
+		return out
+	}
+	// Newest first: reverse copy.
+	for i := range out {
+		out[i] = m.Digests[len(m.Digests)-1-i]
+	}
+	return out
+}
+
+// digestURLString reconstructs the comparable URL of a digest for
+// LLM-panel URL-sort. Scheme+host+port+path; CONNECT/TLS digests
+// (no path) compare on host:port alone.
+func digestURLString(d advisor.Digest) string {
+	host := d.Host
+	if d.Port > 0 {
+		host = host + ":" + strconv.Itoa(d.Port)
+	}
+	if d.Scheme == "" || d.Path == "" {
+		return d.Method + " " + host
+	}
+	return d.Method + " " + d.Scheme + "://" + host + d.Path
+}
+
 // digestSelectedIndex returns the index of the selected digest in
-// newest-first display order, or -1 if there is no selection or it
-// has been evicted. Newest-first order matches the renderer's
-// iteration.
+// the current display order, or -1 if there is no selection or it
+// has been evicted. The display order follows LLMSortByURL.
 func digestSelectedIndex(m Model) int {
 	if m.DigestSelected == "" || len(m.Digests) == 0 {
 		return -1
 	}
-	for i := len(m.Digests) - 1; i >= 0; i-- {
-		if m.Digests[i].RequestID == m.DigestSelected {
-			return (len(m.Digests) - 1) - i
+	d := displayedDigests(m)
+	for i, e := range d {
+		if e.RequestID == m.DigestSelected {
+			return i
 		}
 	}
 	return -1
 }
 
-// digestAtDisplayIndex returns the digest at the given newest-first
-// display index, or false if out of range.
+// digestAtDisplayIndex returns the digest at the given display
+// index in the current sort order, or false if out of range.
 func digestAtDisplayIndex(m Model, idx int) (advisor.Digest, bool) {
-	if idx < 0 || idx >= len(m.Digests) {
+	d := displayedDigests(m)
+	if idx < 0 || idx >= len(d) {
 		return advisor.Digest{}, false
 	}
-	return m.Digests[len(m.Digests)-1-idx], true
+	return d[idx], true
 }
 
 // applyKeyLLM handles keystrokes when the LLM bottom panel is open
@@ -1196,6 +1250,13 @@ func applyKeyLLM(m Model, e KeyEvent) (Model, Cmd) {
 				m.DigestExpanded = true
 			}
 		}
+		return m, CmdNone{}
+	}
+	// #198: 's' toggles the LLM panel sort order between newest-first
+	// time (default) and URL-ascending. Selection survives the toggle
+	// because m.DigestSelected is keyed by RequestID, not by index.
+	if e.Rune == 's' {
+		m.LLMSortByURL = !m.LLMSortByURL
 		return m, CmdNone{}
 	}
 	return m, CmdNone{}

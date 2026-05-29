@@ -2251,19 +2251,25 @@ func leadingMark(selected, focused bool) string {
 // subtracts the extra rows the expanded selection consumes
 // (DigestExpanded ⇒ multi-line detail block).
 //
+// Returns the DISPLAY index in displayedDigests(m) where the
+// renderer should start its FORWARD iteration. #198 reworked from
+// returning a m.Digests chronological-reverse index to a
+// display-order index so the sort-by-URL toggle works.
+//
 // Stateless: recomputed on every render from
-// (DigestSelected, m.Digests, bodyLines). No Model field tracks
-// scroll position. Both renderLLMPane and renderLLMPaneNoBorder
-// use this helper — kept in lockstep by virtue of the shared call.
+// (DigestSelected, displayedDigests(m), bodyLines). No Model field
+// tracks scroll position. Both renderLLMPane and
+// renderLLMPaneNoBorder use this helper.
 func llmDigestStartIndex(m Model, bodyLines int) int {
-	if len(m.Digests) == 0 {
+	displayed := displayedDigests(m)
+	if len(displayed) == 0 {
 		return -1
 	}
 	displayIdx := digestSelectedIndex(m)
 	if displayIdx <= 0 {
-		// No selection (-1), or selection is the newest digest (0).
-		// Either way, start from the newest.
-		return len(m.Digests) - 1
+		// No selection (-1), or selection is the first displayed
+		// row (0). Either way, start from the top.
+		return 0
 	}
 	// Approximate the digest budget given the expanded-detail rows.
 	// The expanded selection still counts as one "digest slot" — the
@@ -2280,11 +2286,7 @@ func llmDigestStartIndex(m Model, bodyLines int) int {
 	if digestBudget < 1 {
 		digestBudget = 1
 	}
-	shift := displayIdx - digestBudget + 1
-	if shift < 0 {
-		shift = 0
-	}
-	start := (len(m.Digests) - 1) - shift
+	start := displayIdx - digestBudget + 1
 	if start < 0 {
 		start = 0
 	}
@@ -2332,11 +2334,14 @@ func renderLLMPane(b *strings.Builder, m Model, rows int) {
 		b.WriteString(bodyLine(mark+body, m.Cols, focused))
 		used++
 	}
-	if len(m.Digests) == 0 {
+	displayed := displayedDigests(m)
+	if len(displayed) == 0 {
 		writeLine("(no LLM evaluations yet — advisor disabled or no traffic)", false)
 	} else {
-		for i := llmDigestStartIndex(m, bodyLines); i >= 0 && used < bodyLines; i-- {
-			d := m.Digests[i]
+		// #198: iterate displayedDigests forward from the start
+		// index (start is a DISPLAY index, not a m.Digests index).
+		for i := llmDigestStartIndex(m, bodyLines); i >= 0 && i < len(displayed) && used < bodyLines; i++ {
+			d := displayed[i]
 			selected := d.RequestID == m.DigestSelected
 			if selected && m.DigestExpanded {
 				for _, line := range digestDetailLines(d, contentWidth) {
@@ -2392,9 +2397,10 @@ func renderLLMPaneNoBorder(b *strings.Builder, m Model, rows int) {
 	}
 	// No-border path uses the full row budget for the body (no
 	// chrome border rows to subtract). The same scroll-offset rule
-	// applies (#117).
-	for i := llmDigestStartIndex(m, rows); i >= 0 && used < rows; i-- {
-		d := m.Digests[i]
+	// applies (#117). #198: iterate displayedDigests forward.
+	displayed := displayedDigests(m)
+	for i := llmDigestStartIndex(m, rows); i >= 0 && i < len(displayed) && used < rows; i++ {
+		d := displayed[i]
 		selected := d.RequestID == m.DigestSelected
 		if selected && m.DigestExpanded {
 			for _, line := range digestDetailLines(d, contentWidth) {
