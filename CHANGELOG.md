@@ -9,6 +9,51 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Attach mode can now edit allow/deny lists
+
+- **`trollbridge attach` no longer requires SSHing to the proxy host to
+  approve, deny, or remove a URL.** New control-plane endpoints
+  (`POST` / `DELETE` on `/v1/lists/{allow,deny}`) mutate the daemon's
+  YAML via the same `OperatorApprove` / `OperatorDeny` primitive the
+  in-process operator path uses, so the consolidate-then-add invariant
+  from v0.8.5 also holds for attach mutations. The attach client's
+  `allow` / `deny` console verbs now route through HTTP instead of
+  printing "not available in attach mode" (closes #189).
+
+### LLM auto-approval default raised to HIGH confidence
+
+- **The LLM advisor now only auto-resolves a hold when the LLM reports
+  HIGH confidence.** Prior default was MEDIUM. Operators wanting the
+  prior behavior set `llm.confidence_floor: medium` in trollbridge.yaml.
+  The advisor prompt also gained explicit guidance for what HIGH /
+  MEDIUM / LOW mean — HIGH for semantically-close-to-approvals;
+  MEDIUM for conceptually-related (other package-management registries,
+  well-known services); LOW for standalone URLs (closes #195).
+
+### LLM panel: sort toggle
+
+- **Press `s` in the LLM panel to toggle the digest sort** between
+  newest-first time (the default, current behavior) and URL-ascending.
+  Selection survives the toggle (cursor anchored by request id,
+  not index) (closes #198).
+
+### Suggestion accept fires the standard list-mutation event
+
+- **A suggestion-driven list mutation now also emits the
+  `allowlist_added` / `denylist_added` oplog event** (with
+  `source=suggestion`), alongside the existing `suggestion_accepted`
+  event. Operators auditing list mutations can grep ONE event class
+  for every list change, distinguishing origin via the `source` field
+  (`tui` / `attach` / `suggestion`) (closes #172, #174).
+
+### CI: Windows audit-file cleanup
+
+- **Internal `server.Server.Close()` releases the audit-log file
+  handle** so tests that construct a Server can defer cleanup. The
+  prior Linux-only behavior allowed temp-dir deletion with the file
+  still open; Windows refused, breaking the Windows CI lane (closes
+  #199).
+
 ## v0.8.5 — 2026-05-29
 
 ### TUI columns no longer corrupt on ANSI-bearing cells
