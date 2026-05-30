@@ -24,3 +24,6 @@ rules.yaml
 # Built test/debug binaries; release artifacts live under dist/
 /trollbridge
 /trollbridge.exe
+# Local agent/tooling state — never commit
+.devbox/
+.claude/
