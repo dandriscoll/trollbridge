@@ -26,6 +26,27 @@ type RequestEvent struct {
 	BodyAvailable bool
 	BodySize      int64
 	BodySample    []byte // up to MaxBodySample bytes; redacted
+
+	// MatchedPattern is the recognition decoration set by the
+	// server before rule evaluation. nil if no built-in URL
+	// pattern (azure_arm, azure_keyvault, …) recognized the
+	// request. Populated once, never mutated after.
+	//
+	// Lives on RequestEvent (and not in Decision) because the
+	// audit log records the pattern on every request that fits a
+	// known shape, regardless of whether a rule referenced it —
+	// so the operator can grep all ARM traffic by pattern_name.
+	MatchedPattern *MatchedPattern
+}
+
+// MatchedPattern is the recognition record for a built-in URL
+// pattern (defined in internal/pattern). It is a copy of the
+// pattern package's MatchedPattern, repeated here so the types
+// package — which other packages already import — does not have to
+// pull in the pattern package.
+type MatchedPattern struct {
+	Name       string
+	Components map[string]string
 }
 
 // Effect is the outcome of a policy Decision.

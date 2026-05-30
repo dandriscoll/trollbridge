@@ -92,3 +92,46 @@
   match:
     identity: coding-agent
   effect: ask_llm
+
+# Built-in URL patterns (#203). `pattern: azure_arm` and
+# `pattern: azure_keyvault` reference Go-level recognizers that
+# extract structural components from the request URL. `components`
+# constrains the rule to specific values (case-insensitive);
+# omitting a component or setting it to "*" matches any value.
+# Unknown pattern names and component keys are rejected at load.
+
+- id: allow-arm-reads-prod-subscription
+  description: |
+    Read-only ARM calls against the prod subscription. Component
+    matching is case-insensitive; subscription IDs are the literal
+    string from the URL.
+  priority: 200
+  match:
+    pattern: azure_arm
+    components:
+      subscription: "12345678-1234-1234-1234-123456789abc"
+    method: GET
+  effect: allow
+
+- id: ask-on-arm-deletes
+  description: |
+    Any DELETE against the Azure control plane requires approval,
+    regardless of subscription or resource type.
+  priority: 400
+  match:
+    pattern: azure_arm
+    method: DELETE
+  effect: ask_user
+
+- id: allow-keyvault-reads-my-vault
+  description: |
+    Read-only access to a specific Key Vault. v1 patterns scope
+    Key Vault at the host level — the `vault` component is the
+    subdomain prefix.
+  priority: 200
+  match:
+    pattern: azure_keyvault
+    components:
+      vault: my-prod-vault
+    method: GET
+  effect: allow

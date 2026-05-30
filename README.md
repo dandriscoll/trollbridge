@@ -27,6 +27,13 @@ approval. Single static Go binary, no runtime deps.
 - **Hold the rest for one keystroke.** Unapproved destinations
   pause and surface in the operator UI. Press `a` to approve, `d`
   to deny. The held request resumes — no agent restart.
+- **Recognize structured URL families.** Built-in patterns for
+  Azure Resource Manager (`management.azure.com`) and Azure Key
+  Vault (`*.vault.azure.net`) let you write semantic rules —
+  "allow GETs in this subscription", "deny DELETEs of any
+  virtual machine" — instead of per-resource lines. The audit
+  log records the recognized pattern and its components on
+  every matching request.
 
 ## Pair with a sandbox
 

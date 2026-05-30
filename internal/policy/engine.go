@@ -26,9 +26,40 @@ type Engine struct {
 	rules   []Rule
 	version string
 	knownModifiers map[string]bool
+	patterns       PatternValidator
 
 	history *History
 	clock   func() time.Time
+}
+
+// PatternValidator validates pattern names and component keys at
+// rule-load time. The Engine consults it when a Rule carries a
+// non-empty Match.Pattern. Returning a non-nil error from
+// ValidateRuleMatch aborts the Reload — the prior rule set is
+// retained.
+//
+// Concrete implementation lives in internal/pattern (Registry
+// satisfies this interface) but the Engine takes the interface to
+// avoid a policy → pattern import cycle.
+type PatternValidator interface {
+	ValidateRuleMatch(patternName string, componentKeys []string) error
+}
+
+// SetPatternValidator wires a PatternValidator into the engine and
+// re-runs Reload so any rules already loaded are re-validated
+// against it. Callers wire the validator after NewEngine so the
+// engine constructor stays simple; the post-set Reload turns
+// missing-validator into a runtime defense rather than a silent
+// pass.
+//
+// If Reload returns an error, the engine retains its prior rule
+// set (per Reload's contract). The caller (daemon startup) is
+// expected to fail-fast on a non-nil return.
+func (e *Engine) SetPatternValidator(v PatternValidator) error {
+	e.mu.Lock()
+	e.patterns = v
+	e.mu.Unlock()
+	return e.Reload()
 }
 
 // NewEngine constructs an Engine from a top-level mode and a list
@@ -131,6 +162,18 @@ func (e *Engine) Reload() error {
 			for _, mod := range r.Modifiers {
 				if e.knownModifiers != nil && !e.knownModifiers[mod] {
 					return fmt.Errorf("rule load error in %s (id: %s): unknown modifier %q. Run `trollbridge validate` to list known modifiers.", path, r.ID, mod)
+				}
+			}
+			if r.Match.Pattern == "" && len(r.Match.Components) > 0 {
+				return fmt.Errorf("rule load error in %s (id: %s): `match.components` is set without `match.pattern`. Set `match.pattern` to a registered pattern (e.g. `azure_arm`) or remove `components`.", path, r.ID)
+			}
+			if r.Match.Pattern != "" && e.patterns != nil {
+				keys := make([]string, 0, len(r.Match.Components))
+				for k := range r.Match.Components {
+					keys = append(keys, k)
+				}
+				if err := e.patterns.ValidateRuleMatch(r.Match.Pattern, keys); err != nil {
+					return fmt.Errorf("rule load error in %s (id: %s): %w", path, r.ID, err)
 				}
 			}
 			if r.Priority == 0 {

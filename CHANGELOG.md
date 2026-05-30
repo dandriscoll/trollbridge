@@ -9,6 +9,56 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### URL pattern model — Azure ARM and Azure Key Vault
+
+Closes #203. Trollbridge now recognizes structured URL families before
+rule evaluation and exposes the recognition in rules and the audit log.
+Two built-in patterns ship:
+
+- **`azure_arm`** — matches `management.azure.com` URLs and extracts
+  `subscription`, `resource_group`, `provider`, `resource_type`, and
+  `resource_name` from the canonical ARM path
+  (`/subscriptions/.../resourceGroups/.../providers/...`).
+- **`azure_keyvault`** — matches `*.vault.azure.net` and extracts the
+  `vault` name.
+
+Rules may reference a recognized pattern via two new Match clauses:
+
+```yaml
+- id: allow-arm-vm-reads-prod
+  description: GET on virtual machines in the prod subscription
+  match:
+    pattern: azure_arm
+    components:
+      subscription: "12345678-1234-1234-1234-123456789abc"
+      resource_type: virtualMachines
+    method: GET
+  effect: allow
+```
+
+`components` values are matched case-insensitively; `"*"` (or omitting
+the key) matches any value. Unknown pattern names and component keys
+are rejected at rule load with a clear error citing the rule ID.
+
+The audit log records `pattern_name` and `pattern_components` on every
+request that fits a known shape, regardless of which rule matched — so
+an operator can grep all ARM traffic with `jq 'select(.pattern_name=="azure_arm")'`.
+
+Operational log emits `event=pattern_match_eval` at INFO when a
+pattern recognizes a request (per the ask-case telemetry completeness
+rule). At startup, `event=patterns_registered` lists the registered
+patterns.
+
+**Forward-only schema:** rule files that use `match.pattern` /
+`match.components` cannot be loaded by pre-v0.8.8 binaries (the strict
+YAML decoder rejects unknown keys).
+
+**Deferred (out of scope this release):** the *suggester* does not yet
+propose pattern-shaped generalizations. Pattern rules must be hand-
+authored in v0.8.8; suggester-side detection lands in a follow-up.
+Existing flat-axis suggestions (hostname_below_tld, url_segment,
+method) continue to work unchanged.
+
 ## v0.8.7 — 2026-05-30
 
 ### TUI no longer flickers on every refresh tick

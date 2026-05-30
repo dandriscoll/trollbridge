@@ -239,6 +239,8 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	)
 	rlog.Debug("received", "phase", oplog.PhaseReceived, "path", req.Path)
 
+	s.recognizePattern(req, rlog)
+
 	decision, fastHit := s.fastPathDecide(req.Method, "https", host, port, req.Path)
 	if fastHit {
 		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval,

@@ -91,6 +91,21 @@ const (
 	EventSuggestionDeclined        = "suggestion_declined"         // INFO; per-cycle final decline (decline-row written)
 	EventSuggestionDeclineFiltered = "decline_filter_suppressed"   // INFO; a candidate matched an existing decline row
 	EventSuggestionSuperseded      = "suggestion_superseded"       // INFO; lists changed under the active suggestion
+
+	// Pattern-recognition lifecycle (#203). EventPatternMatchEval
+	// fires at INFO when a built-in URL pattern (azure_arm,
+	// azure_keyvault, …) recognized an inbound request — this is
+	// the equivalent of fastpath_eval/engine_eval for pattern
+	// recognition, deliberately at INFO so an operator running
+	// without --verbose sees the activity (per the ask-case
+	// telemetry completeness rule). EventPatternRegistered fires
+	// once per startup, listing the registered patterns.
+	// EventPatternMatchPanic fires at WARN if a Pattern.Match
+	// implementation panics — built-in patterns are panic-free by
+	// audit, so the event firing always indicates a bug.
+	EventPatternRegistered   = "patterns_registered"  // INFO; daemon startup
+	EventPatternMatchEval    = "pattern_match_eval"   // INFO; per request when matched
+	EventPatternMatchPanic   = "pattern_match_panic"  // WARN; defense in depth
 )
 
 // Phase-name constants for the operational log's `phase=` field on

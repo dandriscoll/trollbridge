@@ -29,6 +29,7 @@ import (
 	"github.com/dandriscoll/trollbridge/internal/identity"
 	"github.com/dandriscoll/trollbridge/internal/oplog"
 	"github.com/dandriscoll/trollbridge/internal/opstream"
+	"github.com/dandriscoll/trollbridge/internal/pattern"
 	"github.com/dandriscoll/trollbridge/internal/policy"
 	"github.com/dandriscoll/trollbridge/internal/redact"
 	"github.com/dandriscoll/trollbridge/internal/reloadstatus"
@@ -62,6 +63,14 @@ type Server struct {
 
 	allowList *hostlist.HostList
 	denyList  *hostlist.HostList
+
+	// patternRegistry holds the built-in URL patterns (azure_arm,
+	// azure_keyvault, …). Recognize runs on every inbound request
+	// before fast-path / engine evaluation; the result is
+	// decorated onto RequestEvent.MatchedPattern. nil disables
+	// pattern recognition. See internal/pattern for the
+	// abstraction.
+	patternRegistry *pattern.Registry
 
 	// inboundHook is invoked on every inbound request (both HTTP
 	// and CONNECT). Used by the quiet-moment suggestion lifecycle
@@ -161,6 +170,30 @@ func NewWithLoggers(cfg *config.Config, engine *policy.Engine, auditLogger *audi
 		}(),
 		MaxBodySampleBytes: 1 << 20, // 1 MiB
 	}
+	// Register the built-in URL patterns (azure_arm,
+	// azure_keyvault, …) and wire the registry into the policy
+	// engine so rules referencing pattern: <name> validate at
+	// load. A panic in any pattern's Match is routed to the
+	// operational log via OnPatternPanic.
+	reg := pattern.NewRegistry()
+	for _, p := range pattern.BuiltIns() {
+		if err := reg.Register(p); err != nil {
+			return nil, fmt.Errorf("pattern register: %w", err)
+		}
+	}
+	s.patternRegistry = reg
+	pattern.OnPatternPanic = func(name string, recovered any) {
+		s.opLog.Warn("pattern match panic",
+			"event", oplog.EventPatternMatchPanic,
+			"pattern", name, "error", fmt.Sprintf("%v", recovered))
+	}
+	if err := engine.SetPatternValidator(reg); err != nil {
+		return nil, fmt.Errorf("pattern validator: %w", err)
+	}
+	opLog.Info("patterns registered",
+		"event", oplog.EventPatternRegistered,
+		"count", len(reg.All()),
+		"patterns", reg.Names())
 	// Build the redactor config from cfg.Redaction.
 	redactorJSONPaths := []string{}
 	redactorBodyRegexes := []string{}
@@ -516,6 +549,11 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Pattern recognition before fast-path / engine evaluation.
+	// Decorates req.MatchedPattern so pattern-aware rules (and the
+	// audit log) can reference the recognized pattern. #203.
+	s.recognizePattern(req, rlog)
+
 	// Fast path: evaluate flat allow/deny lists BEFORE the rule
 	// engine and BEFORE the advisor. A match here short-circuits.
 	decision, fastHit := s.fastPathDecide(req.Method, "http", host, port, req.Path)
@@ -818,6 +856,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// path for fast-path matching; only patterns with no path or
 	// path "/" or path-prefix can fire here. Scheme is unknown at
 	// CONNECT time; only patterns with no scheme constraint match.
+	s.recognizePattern(req, rlog)
 	decision, fastHit := s.fastPathDecide("CONNECT", "", host, port, "/")
 	if fastHit {
 		rlog.Debug("fastpath_eval", "phase", oplog.PhaseFastpathEval,
@@ -996,12 +1035,33 @@ func (s *Server) writeAuditWithBody(req *types.RequestEvent, d types.Decision, b
 		Error:                errStr,
 		TLSErrorCategory:     tlsCategory,
 	}
+	applyPatternFields(&entry, req)
 	if err := s.audit.Write(entry); err != nil {
 		s.opLog.Warn("audit write failure",
 			"event", oplog.EventAuditWriteFailure,
 			"request_id", req.ID, "error", err.Error())
 	}
 	s.ops.Resolve(req.ID, opStatusFromAudit(entry), latency.Milliseconds(), size)
+}
+
+// applyPatternFields populates the audit entry's pattern_name /
+// pattern_components from the request's MatchedPattern decoration,
+// if any. Single helper so all four audit emission sites stay in
+// lockstep — adding a future field is one edit, not four.
+func applyPatternFields(entry *audit.Entry, req *types.RequestEvent) {
+	if req == nil || req.MatchedPattern == nil {
+		return
+	}
+	entry.PatternName = req.MatchedPattern.Name
+	// Fresh copy so audit serialization does not race with any
+	// downstream reader of the request's map.
+	if len(req.MatchedPattern.Components) > 0 {
+		comps := make(map[string]string, len(req.MatchedPattern.Components))
+		for k, v := range req.MatchedPattern.Components {
+			comps[k] = v
+		}
+		entry.PatternComponents = comps
+	}
 }
 
 func inspectionStatus(hasBody, truncated bool) string {
@@ -1046,6 +1106,7 @@ func (s *Server) writeAudit(req *types.RequestEvent, d types.Decision, queryReda
 		LatencyMS:            latency.Milliseconds(),
 		Error:                errStr,
 	}
+	applyPatternFields(&entry, req)
 	if err := s.audit.Write(entry); err != nil {
 		s.opLog.Warn("audit write failure",
 			"event", oplog.EventAuditWriteFailure,
@@ -1090,6 +1151,7 @@ func (s *Server) writePostSignalAudit(req *types.RequestEvent, d types.Decision,
 		PostSignalResolution: true,
 		SignalAfterSeconds:   signalAfterSec,
 	}
+	applyPatternFields(&entry, req)
 	if err := s.audit.Write(entry); err != nil {
 		s.opLog.Warn("audit write failure",
 			"event", oplog.EventAuditWriteFailure,
@@ -1142,6 +1204,7 @@ func (s *Server) writeAuditTLSHandshakeFail(
 		TLSVersionsOffered:     hello.OfferedVersions,
 		TLSCipherSuitesOffered: hello.OfferedCipherSuites,
 	}
+	applyPatternFields(&entry, req)
 	if err := s.audit.Write(entry); err != nil {
 		s.opLog.Warn("audit write failure",
 			"event", oplog.EventAuditWriteFailure,
@@ -1591,6 +1654,37 @@ func (s *Server) ReloadListsFromConfig(cfg *config.Config) error {
 		"allow_patterns", len(s.AllowList().Patterns),
 		"deny_patterns", len(s.DenyList().Patterns))
 	return nil
+}
+
+// recognizePattern runs the pattern registry against the request
+// (before fast-path / engine evaluation) and decorates
+// req.MatchedPattern when a built-in URL pattern recognized the
+// shape. Emits EventPatternMatchEval at INFO so the activity is
+// visible to an operator running without --verbose (per the
+// ask-case telemetry completeness rule). No-ops if the registry
+// is unset.
+func (s *Server) recognizePattern(req *types.RequestEvent, rlog *slog.Logger) {
+	if s.patternRegistry == nil {
+		return
+	}
+	// Pattern recognition uses the unredacted path the request
+	// carries. CONNECT requests have an empty path; the
+	// recognizer returns nil for those — KeyVault patterns only
+	// need the host, but we run recognition uniformly and let
+	// each pattern decide.
+	mp := s.patternRegistry.Recognize(req.Host, req.Port, req.Scheme, req.Path)
+	if mp == nil {
+		return
+	}
+	req.MatchedPattern = &types.MatchedPattern{
+		Name:       mp.Name,
+		Components: mp.Components,
+	}
+	rlog.Info("pattern matched",
+		"event", oplog.EventPatternMatchEval,
+		"pattern", mp.Name,
+		"components", mp.Components,
+	)
 }
 
 // fastPathDecide returns a Decision (and true) when the request

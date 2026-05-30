@@ -73,6 +73,18 @@ type Entry struct {
 	// request_id, so an operator can correlate by grep.
 	PostSignalResolution bool `json:"post_signal_resolution,omitempty"`
 	SignalAfterSeconds   int  `json:"signal_after_seconds,omitempty"`
+
+	// Pattern-recognition fields (closes #203). Populated when a
+	// built-in URL pattern (azure_arm, azure_keyvault, …) matched
+	// the request before rule evaluation, regardless of whether
+	// any rule referenced the pattern. PatternName is the matched
+	// pattern's identifier; PatternComponents is the extracted
+	// component map (component-name → value, or empty string when
+	// the URL did not carry that component). Both fields are
+	// omitted on requests that did not match any pattern, keeping
+	// the JSONL log compact.
+	PatternName       string            `json:"pattern_name,omitempty"`
+	PatternComponents map[string]string `json:"pattern_components,omitempty"`
 }
 
 // OverflowMode controls how the logger reacts when its buffer is

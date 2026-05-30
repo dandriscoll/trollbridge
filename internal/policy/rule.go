@@ -38,6 +38,21 @@ type Match struct {
 	BodyPattern  string       `yaml:"body_pattern"`
 	Time         *TimeWindow  `yaml:"time"`
 	PriorDecision *PriorDecisionMatch `yaml:"prior_decision"`
+
+	// Pattern names a built-in URL pattern (see internal/pattern,
+	// e.g. "azure_arm", "azure_keyvault"). When non-empty, the
+	// rule only fires on requests where the named pattern
+	// recognized the URL. Unknown names are rejected at rule
+	// load.
+	Pattern string `yaml:"pattern"`
+
+	// Components constrains values extracted by the named pattern.
+	// Each key is a component name declared by the pattern; each
+	// value is one of: a literal string (exact match,
+	// case-insensitive), "*" (any), or empty (any — equivalent to
+	// omitting the key). Unknown component names for the named
+	// pattern are rejected at rule load.
+	Components map[string]string `yaml:"components"`
 }
 
 // TimeWindow is an hour-of-day + weekday window.
@@ -159,6 +174,26 @@ func (r *Rule) matches(req *types.RequestEvent, ctx evalContext) bool {
 		}
 		if !re.Match(req.BodySample) {
 			return false
+		}
+	}
+	if m.Pattern != "" {
+		mp := req.MatchedPattern
+		if mp == nil || mp.Name != m.Pattern {
+			return false
+		}
+		for k, want := range m.Components {
+			if want == "" || want == "*" {
+				continue
+			}
+			got, ok := mp.Components[k]
+			if !ok {
+				// Component declared by the pattern is absent
+				// from the recognized request — fail closed.
+				return false
+			}
+			if !strings.EqualFold(got, want) {
+				return false
+			}
 		}
 	}
 	return true

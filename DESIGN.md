@@ -1325,6 +1325,110 @@ trusts or blocks. The lists remain read-only — see §10.8.1.
 
 ---
 
+## 10.5. URL pattern model
+
+### 10.5.1 Motivation
+
+Some URL families have predictable structure that flat host/path
+matching cannot exploit. Azure Resource Manager URLs always carry
+`/subscriptions/{sub}/resourceGroups/{rg}/providers/{ns}/{type}/{name}`;
+Azure Key Vault data-plane URLs always live on `*.vault.azure.net`.
+For these families, operators want to write semantic policy
+("allow GETs in this subscription", "deny DELETEs of any virtual
+machine") rather than per-resource allow lines or path regexes.
+
+The **pattern model** addresses this. A `Pattern` recognizes one
+URL family and extracts named **components** from the request.
+Recognition happens once, before rule evaluation; the result is
+decorated onto the `RequestEvent` and is referenceable from rule
+Match clauses and visible in the audit log. Closes #203.
+
+### 10.5.2 Built-in patterns (v1)
+
+- **`azure_arm`** matches `management.azure.com`. Components:
+  `subscription`, `resource_group`, `provider`, `resource_type`,
+  `resource_name`. Sub-actions (`/start`, `/listKeys`) and child
+  resources past the parent's name are not extracted in v1; the
+  parent resource name is what `resource_name` carries.
+- **`azure_keyvault`** matches `*.vault.azure.net`. Components:
+  `vault` (the subdomain prefix). Per-object extraction
+  (`/secrets/...`, `/keys/...`) is deferred — KeyVault is host-
+  level only in v1.
+
+### 10.5.3 Pattern-aware rule shape
+
+```yaml
+- id: allow-arm-vm-reads-prod
+  description: GET on virtual machines in the prod subscription
+  match:
+    pattern: azure_arm
+    components:
+      subscription: "12345678-1234-1234-1234-123456789abc"
+      resource_type: virtualMachines
+    method: GET
+  effect: allow
+```
+
+`components` values match case-insensitively. `"*"` (or omitting
+the key) matches any value. Unknown pattern names and component
+keys are rejected at rule load with an error citing the rule ID,
+the pattern, and the suggested fix. A rule with `components:`
+set but `pattern:` empty is also rejected — components without a
+pattern is meaningless.
+
+A rule with `match.pattern` set fires only when the recognizer
+matched the named pattern; non-pattern requests (e.g.
+`api.github.com`) never trigger pattern rules.
+
+### 10.5.4 Recognition order
+
+Recognition runs on every inbound request, at all three entry
+points (HTTP plain, HTTPS CONNECT, HTTPS intercepted-inner),
+before the fast-path (allow/deny lists) and the rule engine. The
+registered patterns are checked in registration order; the first
+match wins. Built-in patterns are non-overlapping (their host
+predicates do not intersect), so order is not currently load-
+bearing — but the rule is explicit for forward-compatibility.
+
+A pattern that panics in `Match` is logged-and-skipped (defense
+in depth for future pluggable patterns); the panic does not
+crash the daemon. Built-in patterns are panic-free by audit.
+
+### 10.5.5 Audit and telemetry
+
+The audit log adds two optional fields:
+
+- `pattern_name` — the matched pattern's name, e.g. `"azure_arm"`.
+- `pattern_components` — the extracted component map.
+
+Both fields are **populated whenever a pattern recognized the
+request**, regardless of whether any rule referenced the pattern.
+An operator can grep all ARM traffic with
+`jq 'select(.pattern_name=="azure_arm")'` even on a config that
+has no `pattern:`-using rules.
+
+The operational log emits `event=pattern_match_eval` at INFO when
+a pattern recognizes a request (per the ask-case telemetry
+completeness rule). At startup, `event=patterns_registered` is
+emitted with the count and names. A panic in `Match` emits
+`event=pattern_match_panic` at WARN.
+
+### 10.5.6 Forward compatibility
+
+The pattern engine has an `internal/pattern.Pattern` interface
+with a `Registry`. Future built-in patterns (AWS, GCP, GitHub)
+plug in by implementing the interface and being added to
+`BuiltIns()`. A future YAML-defined-patterns feature would
+register patterns parsed from config at startup against the same
+registry.
+
+The suggester does NOT yet propose pattern-shaped generalizations
+in v1; that lands in a follow-up. Existing flat-axis suggestions
+(`hostname_below_tld`, `url_segment`, `method`) continue to work
+unchanged on non-pattern hosts.
+
+---
+
 ## 11. Request/response inspection pipeline
 
 ### 11.1 Pipeline stages
