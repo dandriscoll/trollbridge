@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.8.7 — 2026-05-30
+
 ### TUI no longer flickers on every refresh tick
 
 - **The operator UI now uses line-level delta rendering.** Each tick
