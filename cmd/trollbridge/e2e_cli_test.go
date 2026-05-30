@@ -47,7 +47,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "tempdir: %v\n", err)
 		os.Exit(1)
 	}
-	e2eBinary = filepath.Join(tmp, "trollbridge")
+	e2eBinary = filepath.Join(tmp, "trollbridge"+e2eBinSuffix)
 	cmd := exec.Command("go", "build", "-o", e2eBinary, "./")
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
