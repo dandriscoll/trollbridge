@@ -115,21 +115,24 @@ policy:
 }
 
 // TestE2E_RunStartup_AuditInitFailureIsLogged closes one branch of
-// #146: when audit.New() cannot construct (e.g. unwriteable audit
-// path), the operational log emits `event=startup_failure
-// stage=audit` before the process exits.
+// #146: when audit.New() cannot construct, the operational log
+// emits `event=startup_failure stage=audit` before the process
+// exits.
+//
+// Cross-OS portable mechanism: pre-create the audit_path itself
+// as a DIRECTORY. audit.New's OpenFile(path, O_CREATE|O_APPEND
+// |O_WRONLY) then fails with "is a directory" on Unix
+// (syscall.EISDIR) or ERROR_ACCESS_DENIED on Windows — both
+// surface as a stage=audit failure. The earlier mode-based
+// approach (`os.Mkdir(auditDir, 0o500)`) hung on Windows because
+// the OS ignores Unix mode bits and the binary started normally
+// (#163 Phase 2 round 2).
 func TestE2E_RunStartup_AuditInitFailureIsLogged(t *testing.T) {
 	dir := t.TempDir()
-	// Make a subdirectory we'll point audit_path at, then remove
-	// write permission so audit.New's mkdir + open both fail. The
-	// parent has to exist so the path-validator (which probably
-	// only checks the parent's existence) passes — the failure
-	// surfaces at audit.New().
-	auditDir := filepath.Join(dir, "no-write")
-	if err := os.Mkdir(auditDir, 0o500); err != nil {
+	auditPath := filepath.Join(dir, "audit.jsonl")
+	if err := os.Mkdir(auditPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	auditPath := filepath.Join(auditDir, "audit.jsonl")
 	yamlPath := filepath.Join(dir, "trollbridge.yaml")
 	body := "proxy: lo:8080\nlogging:\n  audit_path: " + auditPath + "\n  operational_path: stderr\n"
 	if err := os.WriteFile(yamlPath, []byte(body), 0o600); err != nil {
@@ -139,7 +142,7 @@ func TestE2E_RunStartup_AuditInitFailureIsLogged(t *testing.T) {
 	cmd := exec.Command(e2eBinary, "run", "-c", yamlPath)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("trollbridge run with an unwriteable audit_path should exit non-zero\n%s", out)
+		t.Fatalf("trollbridge run with audit_path resolving to a directory should exit non-zero\n%s", out)
 	}
 	combined := string(out)
 	if !strings.Contains(combined, "event=startup_failure") {
