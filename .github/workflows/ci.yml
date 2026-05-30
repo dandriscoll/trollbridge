@@ -44,18 +44,15 @@ jobs:
         run: go test ./...
 
       # e2e tests build and exercise the trollbridge binary as a
-      # subprocess. Linux is the canonical lane (the suite is
-      # verified there). Windows/macOS run an `continue-on-error`
-      # scratch lane below to surface what fixing the suite there
-      # would require — promotion to the canonical matrix is gated
-      # on observed-green at least once (#163).
+      # subprocess. All three OS lanes are required: Windows and
+      # macOS were promoted from scratch (continue-on-error) to
+      # required after observed-green in CI runs 26622939588
+      # (macOS) and 26690830932 (Windows post the binname + audit-
+      # init test portability fixes — closes #163). Linux-only
+      # tests use `//go:build linux` build tags on their files
+      # (e.g. internal/tui/*_pty_subprocess_test.go); files without
+      # an OS-narrowing tag must run on every OS.
       - name: go test (e2e)
-        if: matrix.os == 'ubuntu-latest'
-        run: go test -tags=e2e ./...
-
-      - name: go test (e2e, scratch — Windows/macOS, #163)
-        if: matrix.os != 'ubuntu-latest'
-        continue-on-error: true
         run: go test -tags=e2e ./...
 
       # Hardcoded-model-string lint (#155). Linux only — the check
