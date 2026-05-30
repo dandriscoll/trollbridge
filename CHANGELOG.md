@@ -9,6 +9,62 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### TUI no longer flickers on every refresh tick
+
+- **The operator UI now uses line-level delta rendering.** Each tick
+  emits only the lines that changed since the previous frame, not a
+  full screen repaint. Steady-state ticks (no model change) emit zero
+  bytes. The visible improvement is the elimination of the per-tick
+  flicker reported in #202; long sessions are markedly easier on the
+  eyes. A drift guard test asserts delta-render and full-render
+  produce identical final screen state across structural model
+  changes (closes #202).
+
+### Quickstart now consolidates allow/deny on every operator action
+
+- **`trollbridge quickstart`'s manual approve/deny flow now wraps
+  list mutations in the same consolidate-then-add primitive that
+  `trollbridge run` uses.** Pre-fix: approving a previously-denied
+  host left the pattern on both lists; deny won on reload; the
+  operator's approve silently no-op'd. Same #194 class as the run
+  callback, missed by the original sweep because the
+  multi-launcher audit (insight #28) was not yet wired. Surfaced
+  by the new internal/lint structural test (closes #200's invariant
+  2, in-job sibling fix).
+
+### Cross-platform e2e matrix is now required on every PR
+
+- **Windows and macOS e2e lanes are now required matrix lanes.**
+  Previously the suite ran on Windows/macOS as a
+  `continue-on-error` scratch lane; surfaced failures had to be
+  read out of the logs manually. After Phase 2 fixes (`.exe`
+  suffix on the test harness binary path; cross-OS portable
+  audit-init test mechanism), both OSes pass the e2e suite
+  consistently and now block PRs on any e2e regression
+  (closes #163).
+
+### Internal hardening (no operator-facing behavior change)
+
+- **Alignment-principle enforcer tests + structural lint guards.**
+  Each of the five principles in `docs/alignment-principles.md`
+  now carries a code-citation line naming the enforcer test that
+  fails on violation. New `internal/lint/` package adds AST-level
+  build-time guards: `internal/advisor` cannot import
+  `internal/configwrite` (§1) or `internal/hostlist` (§3); direct
+  `configwrite.AddAllow` / `configwrite.AddDeny` calls outside
+  the configwrite package fail the build; wire-bound prompt
+  constants in `internal/advisor/prompts.go` and `translator.go`
+  cannot contain "trollbridge"/"proxy"/"gateway"/"egress
+  controller" (§4); `advisor.Classify` can only be invoked from
+  `consultAdvisorForHold` in `internal/server/server.go` (§2)
+  (closes #200, #201).
+
+- **TUI LLM-panel scroll has subprocess pty coverage.** New
+  `TROLLBRIDGE_TEST_INJECT_DIGESTS=N` env hook pre-fills the
+  advisor digest ring with N synthetic entries; subprocess pty
+  test exercises the LLM panel scroll dispatch + render math
+  end-to-end against a 30-digest ring (closes #160).
+
 ## v0.8.6 — 2026-05-29
 
 ### Attach mode can now edit allow/deny lists
