@@ -400,25 +400,25 @@ func (b *Backend) movePattern(out io.Writer, arg string) {
 	}
 	var (
 		otherRemoved bool
-		err          error
+		added        bool
+		removeErr    error
+		addErr       error
 	)
+	// Route through the consolidate-then-add primitive so movePattern
+	// shares one implementation with addPattern and the run/quickstart
+	// persist callbacks (#194 / #200 invariant 2). Behavior is
+	// identical to the previous inline RemoveOpposite + AddSide pair.
 	if side == "allow" {
-		otherRemoved, err = configwrite.RemoveDeny(b.ConfigPath, pattern)
+		otherRemoved, added, removeErr, addErr = configwrite.OperatorApprove(b.ConfigPath, pattern)
 	} else {
-		otherRemoved, err = configwrite.RemoveAllow(b.ConfigPath, pattern)
+		otherRemoved, added, removeErr, addErr = configwrite.OperatorDeny(b.ConfigPath, pattern)
 	}
-	if err != nil {
-		fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, err)
+	if removeErr != nil {
+		fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, removeErr)
 		return
 	}
-	var added bool
-	if side == "allow" {
-		added, err = configwrite.AddAllow(b.ConfigPath, pattern)
-	} else {
-		added, err = configwrite.AddDeny(b.ConfigPath, pattern)
-	}
-	if err != nil {
-		fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, err)
+	if addErr != nil {
+		fmt.Fprintf(out, "write %s: %s\n", b.ConfigPath, addErr)
 		return
 	}
 	switch {
