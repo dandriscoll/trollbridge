@@ -552,17 +552,17 @@ func TestRender_BothPanesHaveBorders(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatalf("runLoop did not exit")
 	}
-	out := stdout.String()
-	// Take only the LAST render frame: \x1b[H\x1b[2J clears the screen
-	// each frame. Counting across all frames would conflate redraws.
-	parts := strings.Split(out, "\x1b[H\x1b[2J")
-	if len(parts) < 2 {
-		t.Fatalf("no render frame found in output; first 400: %q", first(out, 400))
-	}
-	last := parts[len(parts)-1]
+	// Replay the byte stream against a virtual screen. After #202's
+	// delta renderer landed, frames after the first are line-deltas
+	// (not full repaints) — counting corner runes in raw bytes
+	// double-counted corners that appeared in the first frame and
+	// got REPLACED (not removed) by subsequent delta lines. The
+	// virtual screen gives the FINAL visible state, which is what
+	// "want 2" was always trying to count.
+	screen := strings.Join(virtualScreen(stdout.String(), 30, 100), "\n")
 	for _, corner := range []string{"╭", "╮", "╰", "╯"} {
-		if got := strings.Count(last, corner); got != 2 {
-			t.Errorf("corner %q appears %d time(s) in last frame; want 2 (one per pane)",
+		if got := strings.Count(screen, corner); got != 2 {
+			t.Errorf("corner %q appears %d time(s) on the final screen; want 2 (one per pane)",
 				corner, got)
 		}
 	}

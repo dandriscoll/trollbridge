@@ -504,8 +504,22 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 		go watchResize(loopCtx, resize, events)
 	}
 
+	// prevFrame caches the last frame body so the delta renderer
+	// can emit only the lines that changed (#202). The first paint
+	// uses an empty prev so writeDeltaFrame falls back to a full
+	// repaint; subsequent ticks emit just the dirty lines. An
+	// explicit clear-screen (CmdRepaint, suspend resume) resets
+	// prevFrame so the next render is full — the terminal canvas
+	// the delta path assumes is no longer accurate after a hard
+	// clear.
+	var prevFrame string
+
 	// First paint with empty list before the first tick lands.
-	_ = render(out, model)
+	{
+		frame := buildFrame(model)
+		_ = writeDeltaFrame(out, frame, prevFrame)
+		prevFrame = frame
+	}
 
 	for {
 		select {
@@ -531,8 +545,11 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 			// the cleared canvas is what the next frame paints onto;
 			// doing it after would clobber the just-rendered frame.
 			_, _ = out.Write([]byte("\x1b[2J\x1b[3J\x1b[H\x1b[?25l"))
+			prevFrame = "" // canvas is now blank; next frame must repaint in full
 		}
-		_ = render(out, model)
+		frame := buildFrame(model)
+		_ = writeDeltaFrame(out, frame, prevFrame)
+		prevFrame = frame
 
 		if model.Quit {
 			if requestShutdown != nil {
@@ -555,7 +572,10 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 			if opts.suspend != nil {
 				opts.suspend()
 				_, _ = out.Write([]byte("\x1b[2J\x1b[3J\x1b[H\x1b[?25l"))
-				_ = render(out, model)
+				prevFrame = "" // alt-screen restored blank; next frame paints in full
+				frame := buildFrame(model)
+				_ = writeDeltaFrame(out, frame, prevFrame)
+				prevFrame = frame
 			}
 		case CmdRefresh:
 			go func() {
@@ -1021,16 +1041,19 @@ func emitResize(ctx context.Context, out *os.File, events chan<- Event) {
 	}
 }
 
-// render draws the current model to out using ANSI escapes. The
-// terminal is split horizontally: the upper half hosts the approvals
-// pane, the lower half hosts the console pane. Each pane carries its
-// own top + bottom border with embedded help; there is no separate
-// global hint row. On terminals narrower than borderMinThreshold the
-// renderer falls back to the no-border layout (header rows + content).
-func render(out io.Writer, m Model) error {
+// buildFrame returns the frame body for the current model — the
+// rendered character grid without the leading clear-screen escape.
+// Caller chooses how to emit it (full or delta) via writeFullFrame
+// or writeDeltaFrame.
+//
+// The terminal is split horizontally: the upper half hosts the
+// approvals pane, the lower half hosts the console pane. Each pane
+// carries its own top + bottom border with embedded help; there is
+// no separate global hint row. On terminals narrower than
+// borderMinThreshold the renderer falls back to the no-border
+// layout (header rows + content).
+func buildFrame(m Model) string {
 	var b strings.Builder
-	b.WriteString("\x1b[H\x1b[2J") // home + clear
-
 	if m.Cols < 1 {
 		m.Cols = 80
 	}
@@ -1081,9 +1104,71 @@ func render(out io.Writer, m Model) error {
 	case strings.HasSuffix(frame, "\n"):
 		frame = frame[:len(frame)-1]
 	}
+	return frame
+}
 
-	_, err := io.WriteString(out, frame)
+// writeFullFrame emits a complete repaint: home + clear-screen,
+// then the entire frame body. Used for the first paint, after an
+// explicit CmdRepaint / suspend resume, and as the fallback path
+// for writeDeltaFrame when the prior frame cannot be diffed
+// safely (line count changed; prev is empty).
+func writeFullFrame(out io.Writer, frame string) error {
+	_, err := io.WriteString(out, "\x1b[H\x1b[2J"+frame)
 	return err
+}
+
+// writeDeltaFrame emits only the lines that differ from prev,
+// each prefixed with a cursor-positioning escape and suffixed
+// with a clear-to-EOL escape. The delta path avoids the full-
+// screen repaint that produced the per-tick TUI flicker reported
+// in #202.
+//
+// Fallback to writeFullFrame when:
+//   - prev is empty (first paint after a hard reset).
+//   - prev and frame have different line counts (terminal resized
+//     or structural layout change).
+//
+// Equal frames produce zero bytes written — the natural shape of
+// "no model state has changed" against the prior render. Existing
+// tests that drive `render` (the full-paint wrapper below) are
+// untouched; the delta path is opt-in for the production loop.
+func writeDeltaFrame(out io.Writer, frame, prev string) error {
+	if prev == "" {
+		return writeFullFrame(out, frame)
+	}
+	prevLines := strings.Split(prev, "\n")
+	currLines := strings.Split(frame, "\n")
+	if len(prevLines) != len(currLines) {
+		return writeFullFrame(out, frame)
+	}
+	var b strings.Builder
+	for i, line := range currLines {
+		if line == prevLines[i] {
+			continue
+		}
+		// Each rendered line ends with \r\n (bodyLine appends both);
+		// strings.Split on \n leaves the \r at the end of `line`. If
+		// we emitted the line as-is followed by \x1b[K, the trailing
+		// \r would return the cursor to col 0 BEFORE \x1b[K fires —
+		// wiping the line we just wrote. Strip it before emit.
+		emitted := strings.TrimSuffix(line, "\r")
+		// \x1b[<r>;1H = move cursor to row r (1-indexed), col 1.
+		// \x1b[K    = clear from cursor to end of line (handles the
+		// shorter-than-prev case if padding ever drops below width).
+		fmt.Fprintf(&b, "\x1b[%d;1H%s\x1b[K", i+1, emitted)
+	}
+	if b.Len() == 0 {
+		return nil
+	}
+	_, err := io.WriteString(out, b.String())
+	return err
+}
+
+// render is the historical full-paint entry point used by every
+// unit test under internal/tui/. Production code uses
+// buildFrame + writeDeltaFrame to avoid the per-tick full repaint.
+func render(out io.Writer, m Model) error {
+	return writeFullFrame(out, buildFrame(m))
 }
 
 func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
