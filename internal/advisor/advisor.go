@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -168,12 +170,67 @@ func New(cfg Config, prov Provider) *Service {
 	if cfg.KnownModifiers == nil {
 		cfg.KnownModifiers = map[string]bool{}
 	}
-	return &Service{
+	svc := &Service{
 		cfg:     cfg,
 		prov:    prov,
 		cache:   newCache(cfg.CacheTTL),
 		digests: NewDigestRing(DigestDefaultCap),
 		stats:   &Stats{},
+	}
+	if n, ok := parseInjectDigestsEnv(); ok && n > 0 {
+		injectSyntheticDigests(svc.digests, n)
+	}
+	return svc
+}
+
+// parseInjectDigestsEnv reads TROLLBRIDGE_TEST_INJECT_DIGESTS and
+// returns (N, true) when the value is a positive integer. Returns
+// (0, false) for absence, empty, non-integer, or non-positive.
+// Test-only hook for #160's subprocess pty test — mirrors the
+// TROLLBRIDGE_TEST_FAIL_STAGE pattern used in cmd/trollbridge/run.go.
+// Silent on parse failure to match that pattern's cautious shape.
+func parseInjectDigestsEnv() (int, bool) {
+	v := strings.TrimSpace(os.Getenv("TROLLBRIDGE_TEST_INJECT_DIGESTS"))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// injectSyntheticDigests pre-fills the ring with n deterministic
+// digests, oldest-first insertion order so r.items[len-1] is the
+// newest (matches the production add path). Hosts are
+// `synth-host-001.example` … `synth-host-NNN.example`; RequestIDs
+// are `synth-req-001` …; Timestamps step by 1 second so newest-
+// first ordering survives sorts. Effect=allow, Confidence=high,
+// Outcome=classified — picked to render unambiguously in the TUI's
+// row format (`HH:MM:SS  <effect>  <confidence>  <host>  — <reason>`).
+// Reason names the synthetic origin so a TUI screenshot during
+// development is obvious.
+//
+// Pure test fixture support; never invoked outside parseInjectDigestsEnv's
+// positive-N branch.
+func injectSyntheticDigests(r *DigestRing, n int) {
+	base := time.Now().Add(-time.Duration(n) * time.Second)
+	for i := 1; i <= n; i++ {
+		r.Add(Digest{
+			Timestamp:  base.Add(time.Duration(i) * time.Second),
+			RequestID:  fmt.Sprintf("synth-req-%03d", i),
+			Method:     "GET",
+			Scheme:     "https",
+			Host:       fmt.Sprintf("synth-host-%03d.example", i),
+			Port:       443,
+			Path:       "/",
+			Effect:     "allow",
+			Confidence: "high",
+			AdvisorID:  "synthetic-injection",
+			Reason:     "synthetic digest injected via TROLLBRIDGE_TEST_INJECT_DIGESTS",
+			Outcome:    DigestOutcomeClassified,
+		})
 	}
 }
 
