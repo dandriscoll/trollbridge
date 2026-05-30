@@ -2,6 +2,8 @@
 
 trollbridge's job is to give an AI agent network access under terms the operator has stated. Five principles govern how the LLM advisor participates in that decision. They are load-bearing: a regression in any one of them weakens the trust model the rest of the system is built on.
 
+**Documentation convention (closes #201).** Each principle ends with an **Enforced at** line naming the load-bearing file(s) and the enforcer test(s) that fail on violation. Pairing the principle text with the test is the discipline that prevents post-hoc-codification drift (#193 root cause): a principle documented after the violating code shipped is aspirational, not enforced, until the test exists. New principles must ship the enforcer test in the same commit; the principle text names the test, the test comment names the principle.
+
 ## 1. The allow/deny list is human-only
 
 The flat allow/deny patterns in `trollbridge.yaml` (`lists.allow`, `lists.deny`) are edited only by humans — directly in the file, or indirectly via the TUI's `allow` / `deny` / `remove` commands and the operator's approval-persist flow.
@@ -16,6 +18,8 @@ The flat allow/deny patterns in `trollbridge.yaml` (`lists.allow`, `lists.deny`)
 
 **Interaction with the quiet-moment suggestion lifecycle (#168).** The suggestion flow asks the LLM to *rank and narrate* generalization candidates the deterministic detector has already produced. This does not violate §1 because (a) the LLM cannot invent a pattern outside the candidate set — `advisor.Service.Suggest` rejects any response whose ranking names an axis not present in `SuggestionInput`, and (b) the mutation gate remains the operator's explicit Accept keystroke: `internal/advisor` has no import path to `internal/configwrite`, and the suggestion row's accept-action handler in `internal/suggestion` is the sole code path that translates an accepted candidate into a list write.
 
+**Enforced at** `internal/configwrite/configwrite.go` (`OperatorApprove`, `OperatorDeny` — the consolidate-then-add primitive every operator-action persist path uses) and `internal/advisor/` (no import path to `internal/configwrite`, direct or transitive). Tests: `internal/approvals/queue_llm_no_persist_test.go` (`TestResolveByAdvisor_DoesNotFirePersistCb_Allow` / `_Deny` / `_StillResolvesHold`) pins the runtime invariant that the advisor's verdict does not fire the persist callback; `internal/server/persist_consolidation_test.go` pins the consolidate-then-add invariant against a mirror of the production callback; `internal/lint/advisor_imports_test.go` (`TestAlignmentPrinciple1_AdvisorDoesNotImportConfigwrite`) pins the import-graph invariant at build time; `internal/lint/list_mutation_routing_test.go` (`TestAlignmentPrinciple1_AddAllowDenyOnlyInConfigwriteOrTests`) pins the structural invariant that no caller outside `internal/configwrite/` invokes bare `AddAllow` / `AddDeny`.
+
 ## 2. The LLM considers items not yet on the lists
 
 The LLM is consulted only when the deterministic engine has already established that the request does not match any list pattern. By the time the advisor sees the request, the engine has confirmed: *the operator's existing policy does not decide this one.*
@@ -28,6 +32,8 @@ The LLM's job is then to infer what the operator would want, using the lists and
 
 **What would violate it.** Calling the advisor before the fast-path / rule engine; configuring the confidence floor so loosely that low-confidence allows ship; LLM prompt wording that encourages the LLM to be decisive when uncertain.
 
+**Enforced at** `internal/server/server.go` (`consultAdvisorForHold` is the sole entry to `advisor.Classify`; the dispatch gate at the call site checks `base.Effect == EffectAskUser || base.Effect == EffectAskLLM`, which only the engine can return) and `internal/advisor/advisor.go` (`Service.validate` downgrades sub-floor confidence to `ask_user`). Test: `internal/lint/advisor_order_test.go` (`TestAlignmentPrinciple2_AdvisorCalledOnlyFromHoldDispatch`) pins the structural invariant that `<receiver>.advisor.Classify` is invoked only from inside `consultAdvisorForHold`'s body.
+
 ## 3. List interpretation is pixel-perfect — the engine matches, not the LLM
 
 The hostlist pattern semantics (`internal/hostlist/hostlist.go`) are the single source of truth for whether a URL matches an allow/deny entry. `*` is a label wildcard, `*.example.com` requires at least one subdomain label, paths use prefix-or-exact match, and so on — exactly as documented in DESIGN.md §10.8.
@@ -39,6 +45,8 @@ The hostlist pattern semantics (`internal/hostlist/hostlist.go`) are the single 
 **Enforcement.** The advisor's system prompt frames the lists as context-not-authority and explicitly states that the engine has confirmed no list pattern matched. The advisor package contains no call to `hostlist.Match` and no reimplementation of pattern matching.
 
 **What would violate it.** Telling the LLM to "treat the lists as authoritative when the request matches their patterns" (invites the LLM to reason about matching); having the advisor compute its own match decisions instead of receiving the engine's match-status.
+
+**Enforced at** `internal/advisor/` (no import of `internal/hostlist`; the advisor cannot call `hostlist.Match` and has no symbol path to reimplement matching against the same types). Test: `internal/lint/advisor_imports_test.go` (`TestAlignmentPrinciple3_AdvisorDoesNotImportHostlist`) pins the import-graph invariant at build time.
 
 ## 4. The LLM does not learn what application it is advising
 
@@ -55,6 +63,8 @@ Narrowing the LLM's view to "I'm classifying an HTTP request against an operator
 
 **What would violate it.** Naming "trollbridge" in any system-prompt template or tool definition; describing the application's role ("proxy," "gateway," "egress controller") in any string sent on the wire; populating advisor input fields with internal identifiers (operator usernames, internal hostnames, rule-engine rule IDs).
 
+**Enforced at** `internal/advisor/prompts.go` (`baselineReview`, `baselineResearch` — the wire-bound system-prompt constants) and `internal/advisor/translator.go` (`toolName`, `toolDescription` — the wire-bound tool-definition constants). Test: `internal/lint/wire_strings_test.go` (`TestAlignmentPrinciple4_NoApplicationIdentifiersInWireStrings`) walks each named constant's literal value and fails the build if any of "trollbridge", "proxy", "gateway", or "egress controller" appears as a substring. Internal Go identifiers and code comments are exempt — only strings emitted on the wire are constrained.
+
 ## 5. The LLM does not see prior LLM verdicts
 
 The advisor's input carries the request shape, the operator's allow/deny lists, and the operator's directives. It carries no record of how this request — or any other request — was previously classified by an LLM.
@@ -66,6 +76,8 @@ The advisor's input carries the request shape, the operator's allow/deny lists, 
 **Enforcement.** The advisor input shape (`internal/advisor/advisor.go::Input`) has no prior-verdict field. `Service.Classify` takes no history parameter. The `DigestRing` (`internal/advisor/digest.go`) records advisor outcomes for the operator UI but is write-only from the advisor's side — nothing reads it back into `Classify`. `internal/policy/history.go` feeds the deterministic `prior_decision` rule clause in the engine, never the advisor. `TestInput_NoPriorVerdictChannel` (`internal/advisor/advisor_test.go`) pins the `Input` field set so a re-introduced channel fails the build.
 
 **What would violate it.** Adding any `Input` field that carries a prior verdict (`recent_history`, `prior_decisions`, a "seen this host before" hint that includes an effect); passing past advisor outcomes into `Service.Classify`; having the advisor read the audit log, the digest ring, or the approval queue's resolved entries as classification context.
+
+**Enforced at** `internal/advisor/advisor.go` (`Input` field set; `Service.Classify` signature). Test: `internal/advisor/advisor_test.go` (`TestInput_NoPriorVerdictChannel`) pins the `Input` struct via reflection so a re-introduced prior-verdict field fails the build.
 
 ## How these principles compose
 
