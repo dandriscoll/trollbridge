@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.9.0 — 2026-05-31
+
 ### URL pattern model — Azure ARM and Azure Key Vault
 
 Closes #203. Trollbridge now recognizes structured URL families before
