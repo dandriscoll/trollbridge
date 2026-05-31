@@ -121,6 +121,13 @@ type SuggestionRow struct {
 	Reason           string   `json:"reason"`
 	AxesRemaining    int      `json:"axes_remaining"`
 	OfferedAt        string   `json:"offered_at"`
+
+	// Pattern-shaped suggestion fields (#203 follow-up). Populated
+	// on pattern:* axes; omitted otherwise so attach-mode clients
+	// that don't know about patterns still parse the row.
+	PatternName       string            `json:"pattern_name,omitempty"`
+	PatternComponents map[string]string `json:"pattern_components,omitempty"`
+	PatternMethod     string            `json:"pattern_method,omitempty"`
 }
 
 // Server is the control-plane HTTPS listener.

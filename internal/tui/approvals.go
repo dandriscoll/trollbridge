@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -1357,11 +1358,45 @@ func formatSuggestionCard(s Suggestion, inner int) []string {
 	if s.AxesRemaining > 0 {
 		axis = fmt.Sprintf("  axis 1/%d", s.AxesRemaining+1)
 	}
-	raw := []string{
-		fmt.Sprintf("suggestion (%s)%s", s.Axis, axis),
-		"  pattern: " + s.SuggestedPattern,
-		"  why: " + s.Reason,
-		"  → " + s.List + "    [shift+a]ccept  [shift+d]ecline",
+	var raw []string
+	if s.PatternName != "" {
+		// Pattern-shaped suggestion (#203 follow-up). Render the
+		// structured fields so the operator sees what they're
+		// agreeing to without parsing the synthetic summary string.
+		raw = append(raw, fmt.Sprintf("suggestion (pattern:%s)%s", s.PatternName, axis))
+		header := "  rule: pattern=" + s.PatternName
+		if s.PatternMethod != "" {
+			header += "  method=" + s.PatternMethod
+		}
+		header += "  effect=" + s.List
+		raw = append(raw, header)
+		if len(s.PatternComponents) > 0 {
+			keys := make([]string, 0, len(s.PatternComponents))
+			for k := range s.PatternComponents {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			var fixed strings.Builder
+			fixed.WriteString("  fixed:")
+			for _, k := range keys {
+				v := s.PatternComponents[k]
+				if v == "" {
+					v = "\"\""
+				}
+				fmt.Fprintf(&fixed, " %s=%s", k, v)
+			}
+			raw = append(raw, fixed.String())
+		}
+		raw = append(raw, fmt.Sprintf("  sources: %d entries", len(s.SourceEntries)))
+		raw = append(raw, "  why: "+s.Reason)
+		raw = append(raw, "  → "+s.List+"    [shift+a]ccept  [shift+d]ecline")
+	} else {
+		raw = []string{
+			fmt.Sprintf("suggestion (%s)%s", s.Axis, axis),
+			"  pattern: " + s.SuggestedPattern,
+			"  why: " + s.Reason,
+			"  → " + s.List + "    [shift+a]ccept  [shift+d]ecline",
+		}
 	}
 	out := make([]string, len(raw))
 	for i, l := range raw {

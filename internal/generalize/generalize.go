@@ -48,11 +48,36 @@ var Axes = []Axis{
 // sorted, canonical set of original list entries that motivated the
 // suggestion. CanonicalKey() is the dedup key used by the decline
 // filter and by per-session axis-cycle state.
+//
+// PatternMatch is non-nil for pattern-shaped candidates emitted by
+// DetectPattern (closes #203 follow-up). When set, the candidate
+// represents a YAML rule shape (match.pattern + match.components +
+// effect) rather than a flat hostlist line; the suggestion Manager's
+// accept path dispatches on this field. SuggestedPattern still
+// carries a human-readable summary string for the suggestion card.
 type Candidate struct {
 	Axis             Axis
 	List             string // "allow" or "deny"
 	SourceEntries    []string
 	SuggestedPattern string
+
+	PatternMatch *PatternCandidateInfo
+}
+
+// PatternCandidateInfo is the structured payload for a pattern-shaped
+// generalization candidate. It carries the fields the accept path
+// needs to write a YAML rule (match.pattern, match.components, method,
+// effect derived from List).
+//
+// Components keys are component names declared by the named pattern;
+// values are the constant value across all SourceEntries (empty
+// string is a legitimate value meaning "the URL did not carry that
+// component"). Components NOT present in this map were varying across
+// the source set and are left wildcarded in the resulting rule.
+type PatternCandidateInfo struct {
+	Pattern    string            // pattern name, e.g. "azure_arm"
+	Components map[string]string // constant components only
+	Method     string            // uppercase HTTP verb, or "" for any
 }
 
 // CanonicalKey returns the sorted-canonical form of SourceEntries

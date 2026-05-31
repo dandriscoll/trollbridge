@@ -106,6 +106,12 @@ const (
 	EventPatternRegistered   = "patterns_registered"  // INFO; daemon startup
 	EventPatternMatchEval    = "pattern_match_eval"   // INFO; per request when matched
 	EventPatternMatchPanic   = "pattern_match_panic"  // WARN; defense in depth
+
+	// EventRuleAdded fires when a pattern-shaped suggestion accept
+	// appends a rule to the configured rule file (#203 follow-up).
+	// Sibling of EventAllowlistAdded / EventDenylistAdded for the
+	// rule-mutation channel.
+	EventRuleAdded = "rule_added" // INFO; pattern suggestion accept
 )
 
 // Phase-name constants for the operational log's `phase=` field on

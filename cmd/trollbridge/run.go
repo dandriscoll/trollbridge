@@ -406,6 +406,15 @@ func newRunCmd() *cobra.Command {
 				opLog,
 			)
 			srv.SetInboundHook(sugMgr.NoteInbound)
+			// Pattern-suggestion wiring (#203 follow-up). The
+			// recognizer comes from the server's pattern registry;
+			// rulesPath is the first configured include file (or
+			// empty, in which case Manager surfaces a clear error
+			// on accept).
+			sugMgr.SetPatternRecognizer(patternRecognizerAdapter{srv: srv})
+			if includes := srv.Cfg().ResolveIncludePaths(configPath); len(includes) > 0 {
+				sugMgr.SetRulesPath(includes[0])
+			}
 			srv.Control().SetSuggestion(suggestion.ControlAdapter{M: sugMgr})
 			// #189: wire the list-edit writer so attach-mode operators
 			// can mutate allow/deny via /v1/lists/allow + /deny. Each
@@ -777,6 +786,17 @@ func (a listsAdapter) CurrentLists() ([]string, []string, []config.DeclinedSugge
 	return c.Lists.Allow, c.Lists.Deny, c.Lists.DeclinedSuggestions
 }
 
+// patternRecognizerAdapter wires the server's built-in pattern
+// registry to the suggestion package (#203 follow-up). Keeps the
+// suggestion package free of an internal/server import.
+type patternRecognizerAdapter struct {
+	srv *server.Server
+}
+
+func (a patternRecognizerAdapter) Recognize(host string, port int, scheme, path string) (string, map[string]string, bool) {
+	return a.srv.RecognizePattern(host, port, scheme, path)
+}
+
 // writerAdapter wraps internal/configwrite for the suggestion
 // package — keeps the package free of a direct configwrite import.
 type writerAdapter struct{}
@@ -790,6 +810,16 @@ func (writerAdapter) AddDeclinedSuggestion(path string, src, axes []string, at s
 		AxesDeclined:  axes,
 		DeclinedAt:    at,
 	})
+}
+func (writerAdapter) AcceptPatternSuggestion(rulesPath, listsPath, list, ruleID, pattern string, components map[string]string, method, effect string, sources []string) (bool, bool, error) {
+	return configwrite.AcceptPatternSuggestion(rulesPath, listsPath, list, configwrite.PatternRule{
+		ID:          ruleID,
+		Description: "auto-suggested from " + pattern + " pattern detector",
+		Pattern:     pattern,
+		Components:  components,
+		Method:      method,
+		Effect:      effect,
+	}, sources)
 }
 
 // tuiSuggestionAdapter adapts the suggestion.Manager to the TUI's
@@ -806,13 +836,16 @@ func (a tuiSuggestionAdapter) ActiveSuggestion() *tui.Suggestion {
 		return nil
 	}
 	return &tui.Suggestion{
-		ID:               row.SuggestionID,
-		Axis:             row.Axis,
-		List:             row.List,
-		SourceEntries:    row.SourceEntries,
-		SuggestedPattern: row.SuggestedPattern,
-		Reason:           row.Reason,
-		AxesRemaining:    row.AxesRemaining,
+		ID:                row.SuggestionID,
+		Axis:              row.Axis,
+		List:              row.List,
+		SourceEntries:     row.SourceEntries,
+		SuggestedPattern:  row.SuggestedPattern,
+		Reason:            row.Reason,
+		AxesRemaining:     row.AxesRemaining,
+		PatternName:       row.PatternName,
+		PatternComponents: row.PatternComponents,
+		PatternMethod:     row.PatternMethod,
 	}
 }
 

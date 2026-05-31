@@ -38,6 +38,8 @@ package suggestion
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -85,6 +87,32 @@ type ConfigWriter interface {
 	// `list`, atomically (#173).
 	Generalize(path, list, pattern string, sources []string) (bool, error)
 	AddDeclinedSuggestion(path string, sourceEntries, axesDeclined []string, declinedAt string) (bool, error)
+	// AcceptPatternSuggestion appends a YAML rule (built from the
+	// PatternMatch payload on a pattern-shaped Candidate) to
+	// rulesPath and removes the source entries from listsPath.
+	// Closes #203 follow-up: pattern suggestions write a rule, not
+	// a hostlist line. Args:
+	//   rulesPath: target rule file (typically c.Policy.Include[0])
+	//   listsPath: the trollbridge.yaml (m.cfgPath)
+	//   list:      "allow" / "deny" — which lists.* the sources live in
+	//   ruleID:    deterministic id for the appended rule
+	//   pattern:   pattern name, e.g. "azure_arm"
+	//   components: constant components map
+	//   method:    uppercase HTTP verb, or "" for any
+	//   effect:    rule effect; matches list ("allow"/"deny") in v1
+	//   sources:   list entries to remove (the rule subsumes them)
+	// Returns (ruleChanged, sourcesChanged, error). Caller logs
+	// each independently.
+	AcceptPatternSuggestion(rulesPath, listsPath, list, ruleID, pattern string, components map[string]string, method, effect string, sources []string) (ruleChanged, sourcesChanged bool, err error)
+}
+
+// PatternRecognizer is what suggestion.Manager calls to recognize
+// a list-entry URL against the live pattern registry. Satisfied by
+// server.Server (which holds the registry). Returns nil when no
+// pattern matched; otherwise the pattern name and extracted
+// components from the URL.
+type PatternRecognizer interface {
+	Recognize(host string, port int, scheme, path string) (name string, components map[string]string, ok bool)
 }
 
 // AdvisorProvider wraps advisor.Service.Suggest so tests can mock
@@ -100,19 +128,21 @@ type Reloader func()
 
 // Manager is the server-side suggestion lifecycle. One per daemon.
 type Manager struct {
-	cfgPath  string
-	cfg      func() *config.Config // re-read on every Tick so reloads take effect
-	queue    QueueProvider
-	lists    ListsProvider
-	advisor  AdvisorProvider
-	writer   ConfigWriter
-	reload   Reloader
-	opLog    *slog.Logger
-	now      func() time.Time
-	makeID   func() string
-	inbound  atomicTime // updated from any goroutine via NoteInbound
-	mu       sync.Mutex
-	active   *Suggestion
+	cfgPath    string
+	rulesPath  string // first include path; "" disables pattern-suggestion accept
+	cfg        func() *config.Config // re-read on every Tick so reloads take effect
+	queue      QueueProvider
+	lists      ListsProvider
+	advisor    AdvisorProvider
+	writer     ConfigWriter
+	reload     Reloader
+	recognizer PatternRecognizer // nil disables pattern detection
+	opLog      *slog.Logger
+	now        func() time.Time
+	makeID     func() string
+	inbound    atomicTime // updated from any goroutine via NoteInbound
+	mu         sync.Mutex
+	active     *Suggestion
 	// sessionDeclined tracks per-process declines that have not yet
 	// produced a YAML decline row. Each entry maps a CanonicalKey
 	// to the axes already shown for it this session. When all
@@ -161,6 +191,31 @@ func New(
 		makeID:          newSuggestionID,
 		sessionDeclined: map[string]*sessionEntry{},
 	}
+}
+
+// SetPatternRecognizer wires the live pattern registry so the
+// detector can emit pattern-shaped candidates (#203 follow-up).
+// nil disables pattern detection without affecting flat detectors.
+func (m *Manager) SetPatternRecognizer(r PatternRecognizer) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.recognizer = r
+	m.mu.Unlock()
+}
+
+// SetRulesPath wires the destination rule file pattern-suggestion
+// accepts append to. Typically c.Policy.Include[0]. Empty path
+// disables pattern-suggestion accept (decline still works); the
+// accept path returns a clear error so the operator notices.
+func (m *Manager) SetRulesPath(p string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.rulesPath = p
+	m.mu.Unlock()
 }
 
 // NoteInbound is called from the proxy's main request handler each
@@ -264,7 +319,14 @@ func (m *Manager) SuggestNow(ctx context.Context) {
 // idleSeconds is recorded in the detector log lines (0 for on-demand).
 func (m *Manager) produce(ctx context.Context, cfg *config.Config, maxCandidates, idleSeconds int) {
 	allow, deny, declined := m.lists.CurrentLists()
-	candidates := generalize.DetectAll(allow, deny)
+	var rec generalize.Recognizer
+	if m.recognizer != nil {
+		recCB := m.recognizer
+		rec = func(host string, port int, scheme, path string) (string, map[string]string, bool) {
+			return recCB.Recognize(host, port, scheme, path)
+		}
+	}
+	candidates := generalize.DetectAllWithRecognizer(allow, deny, rec)
 
 	// Decline-filter (YAML) — emit decline_filter_suppressed once
 	// per filtered candidate.
@@ -676,6 +738,12 @@ func (m *Manager) Accept(ctx context.Context, id string) error {
 	if active.Candidate.List != "allow" && active.Candidate.List != "deny" {
 		return fmt.Errorf("accept: unknown list %q", active.Candidate.List)
 	}
+	// Pattern-shaped candidate: writes a YAML rule (not a hostlist
+	// entry). #203 follow-up — dispatched here so the flat code
+	// path below stays unchanged.
+	if active.Candidate.PatternMatch != nil {
+		return m.acceptPattern(active, pat)
+	}
 	// Adding the generalized pattern AND removing the more-specific
 	// source entries it replaces is the point of generalizing — the
 	// list shrinks (#173). One atomic write.
@@ -727,6 +795,86 @@ func (m *Manager) Accept(ctx context.Context, id string) error {
 		m.reload()
 	}
 	return nil
+}
+
+// acceptPattern is the pattern-shaped-candidate accept path
+// (#203 follow-up). It writes a YAML rule (built from active's
+// PatternMatch) to m.rulesPath and removes the source entries from
+// m.cfgPath's lists.<list>. Emits the standard suggestion_accepted
+// event plus a follow-up rule_added event so operators grep'ing
+// for list mutations also see rule mutations.
+func (m *Manager) acceptPattern(active *Suggestion, summary string) error {
+	pm := active.Candidate.PatternMatch
+	m.mu.Lock()
+	rulesPath := m.rulesPath
+	m.mu.Unlock()
+	if rulesPath == "" {
+		err := fmt.Errorf("pattern suggestion accept: no rule file configured under policy.include in trollbridge.yaml; cannot persist a pattern rule")
+		m.opLog.Warn("pattern accept failed",
+			"event", oplog.EventListPersistFailure,
+			"reason", "no_policy_include",
+			"suggestion_id", active.ID,
+			"pattern", pm.Pattern,
+			"error", err.Error())
+		return err
+	}
+	ruleID := patternRuleID(active.Candidate)
+	ruleChanged, srcChanged, err := m.writer.AcceptPatternSuggestion(
+		rulesPath, m.cfgPath, active.Candidate.List,
+		ruleID, pm.Pattern, pm.Components, pm.Method, active.Candidate.List,
+		active.Candidate.SourceEntries,
+	)
+	if err != nil {
+		m.opLog.Warn("pattern persist failure",
+			"event", oplog.EventListPersistFailure,
+			"pattern", pm.Pattern,
+			"rule_id", ruleID,
+			"source", "suggestion",
+			"error", err.Error())
+		return err
+	}
+	m.opLog.Info("accepted",
+		"event", oplog.EventSuggestionAccepted,
+		"suggestion_id", active.ID,
+		"target_list", active.Candidate.List,
+		"pattern_added", summary,
+		"pattern_name", pm.Pattern,
+		"pattern_components", pm.Components,
+		"rule_id", ruleID,
+		"rule_changed", ruleChanged,
+		"sources_changed", srcChanged,
+		"source_count", len(active.Candidate.SourceEntries),
+		"source", "suggestion",
+	)
+	if ruleChanged {
+		m.opLog.Info("rule added",
+			"event", oplog.EventRuleAdded,
+			"rule_id", ruleID,
+			"pattern", pm.Pattern,
+			"effect", active.Candidate.List,
+			"source_count", len(active.Candidate.SourceEntries),
+			"source", "suggestion",
+		)
+	}
+	if m.reload != nil {
+		m.reload()
+	}
+	return nil
+}
+
+// patternRuleID computes a deterministic rule id for a pattern
+// candidate. Shape: `suggested-<pattern>-<8hex>` where the hex is
+// a sha256 prefix of the CanonicalKey() (sorted source entries).
+// Stability: same source set → same id, so a re-accept after the
+// first crashes/restarts is idempotent (configwrite skips the
+// duplicate id).
+func patternRuleID(c generalize.Candidate) string {
+	sum := sha256.Sum256([]byte(c.CanonicalKey()))
+	pattern := ""
+	if c.PatternMatch != nil {
+		pattern = c.PatternMatch.Pattern
+	}
+	return fmt.Sprintf("suggested-%s-%s", pattern, hex.EncodeToString(sum[:4]))
 }
 
 // Decline rotates to the next axis if more remain for the same

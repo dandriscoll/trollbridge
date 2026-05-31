@@ -1422,10 +1422,28 @@ plug in by implementing the interface and being added to
 register patterns parsed from config at startup against the same
 registry.
 
-The suggester does NOT yet propose pattern-shaped generalizations
-in v1; that lands in a follow-up. Existing flat-axis suggestions
-(`hostname_below_tld`, `url_segment`, `method`) continue to work
-unchanged on non-pattern hosts.
+The suggester also proposes pattern-shaped generalizations when
+the allow or deny list has ≥2 entries that fit a registered pattern.
+The detector groups by `(list, pattern, method)`, captures the
+components that are constant across the group, and emits a candidate
+with the constants fixed and the varying components wildcarded.
+Pattern axes (`pattern:<name>`) rank ahead of flat axes
+(`hostname_below_tld`, `url_segment`, `method`) so the semantic
+suggestion surfaces first.
+
+**Accept-path semantics for pattern suggestions.** Accepting a
+pattern-shaped suggestion (a) appends a rule to the first
+`policy.include` rule file with a deterministic
+`id: suggested-<pattern>-<short-hash>`, and (b) removes the source
+entries from the list (the rule subsumes them). The two writes are
+independent and atomic per file; a crash between them leaves the
+rule in place with the (now-redundant) sources still in the list,
+which is correct but loose — operators may re-accept to prune. The
+rule append is idempotent on the id, so re-accept is safe.
+
+If no rule file is configured under `policy.include`, accept
+returns a clear error and the suggestion remains offered; the
+operator updates the config and retries.
 
 ---
 

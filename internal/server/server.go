@@ -373,6 +373,22 @@ func (s *Server) Advisor() *advisor.Service { return s.advisor }
 // mutate). Re-read after a hot-reload reflects the new values.
 func (s *Server) Cfg() *config.Config { return s.cfg }
 
+// RecognizePattern runs the built-in pattern registry against an
+// arbitrary request shape. Used by the suggestion lifecycle's
+// pattern detector (#203 follow-up) so it does not have to import
+// internal/pattern directly. Returns ("", nil, false) if no
+// pattern matched.
+func (s *Server) RecognizePattern(host string, port int, scheme, path string) (string, map[string]string, bool) {
+	if s == nil || s.patternRegistry == nil {
+		return "", nil, false
+	}
+	mp := s.patternRegistry.Recognize(host, port, scheme, path)
+	if mp == nil {
+		return "", nil, false
+	}
+	return mp.Name, mp.Components, true
+}
+
 // Control returns the control-plane server so external wiring can
 // register additional providers (e.g. the suggestion lifecycle for
 // #168).

@@ -22,7 +22,7 @@ func (a ControlAdapter) Active() *control.SuggestionRow {
 	if s == nil {
 		return nil
 	}
-	return &control.SuggestionRow{
+	row := &control.SuggestionRow{
 		SuggestionID:     s.ID,
 		Axis:             string(s.Candidate.Axis),
 		List:             s.Candidate.List,
@@ -32,6 +32,12 @@ func (a ControlAdapter) Active() *control.SuggestionRow {
 		AxesRemaining:    remainingAxesCount(s.AllAxes, s.OfferedAxes),
 		OfferedAt:        s.OfferedAt.UTC().Format(time.RFC3339),
 	}
+	if pm := s.Candidate.PatternMatch; pm != nil {
+		row.PatternName = pm.Pattern
+		row.PatternComponents = pm.Components
+		row.PatternMethod = pm.Method
+	}
+	return row
 }
 
 // Accept forwards to the manager.

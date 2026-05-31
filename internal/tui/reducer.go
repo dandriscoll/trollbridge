@@ -252,6 +252,15 @@ type Suggestion struct {
 	SuggestedPattern string
 	Reason           string
 	AxesRemaining    int
+
+	// Pattern-shaped suggestion payload (#203 follow-up). Non-nil
+	// when the Candidate this Suggestion was built from carried a
+	// PatternMatch. The card renderer uses these structured fields
+	// to surface pattern + fixed components + method instead of
+	// (or in addition to) the synthetic SuggestedPattern string.
+	PatternName       string
+	PatternComponents map[string]string
+	PatternMethod     string
 }
 
 // GeneralizeCard is the unified generalization candidate surface shown

@@ -28,13 +28,22 @@ func (s *stubLists) CurrentLists() ([]string, []string, []config.DeclinedSuggest
 }
 
 type fakeWriter struct {
-	mu          sync.Mutex
-	addedAllow  []string
-	addedDeny   []string
-	removed     []string
-	declined    []writerDecline
-	failAccept  bool
-	failDecline bool
+	mu              sync.Mutex
+	addedAllow      []string
+	addedDeny       []string
+	removed         []string
+	declined        []writerDecline
+	patternAccepts  []patternAcceptRecord
+	failAccept      bool
+	failDecline     bool
+}
+
+type patternAcceptRecord struct {
+	rulesPath, listsPath, list string
+	ruleID, pattern            string
+	components                 map[string]string
+	method, effect             string
+	sources                    []string
 }
 
 type writerDecline struct {
@@ -66,6 +75,20 @@ func (f *fakeWriter) AddDeclinedSuggestion(path string, src, axes []string, at s
 	}
 	f.declined = append(f.declined, writerDecline{sources: src, axes: axes, at: at})
 	return true, nil
+}
+func (f *fakeWriter) AcceptPatternSuggestion(rulesPath, listsPath, list, ruleID, pattern string, components map[string]string, method, effect string, sources []string) (bool, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failAccept {
+		return false, false, errors.New("simulated pattern accept failure")
+	}
+	f.patternAccepts = append(f.patternAccepts, patternAcceptRecord{
+		rulesPath: rulesPath, listsPath: listsPath, list: list,
+		ruleID: ruleID, pattern: pattern, components: components,
+		method: method, effect: effect, sources: sources,
+	})
+	f.removed = append(f.removed, sources...)
+	return true, true, nil
 }
 
 // stubAdvisor returns a deterministic ranking — no LLM involved.

@@ -158,15 +158,32 @@ func validateSuggestion(out SuggestionOutput, allowedAxes map[string]bool) error
 	return nil
 }
 
-// axisPriority orders the three axes for deterministic ranking. The
-// chosen priority reflects "narrower wildcard first": method (1
-// position widens) → url_segment (one path level) → hostname
-// (whole subdomain). Operators prefer smaller patterns; ranking the
-// narrower ones first surfaces the least-disruptive suggestion.
+// axisPriority orders axes for deterministic ranking. The chosen
+// priority reflects "semantic first, then narrower-wildcard first":
+// pattern:* axes (azure_arm, azure_keyvault — #203 follow-up) rank
+// ahead of flat axes because the operator wants the semantic
+// suggestion offered first. Among flat axes: method (1 position
+// widens) → url_segment (one path level) → hostname (whole
+// subdomain). The pattern-axis priority is applied via
+// axisPriorityFor (handles the dynamic `pattern:<name>` suffix).
 var axisPriority = map[string]int{
-	"method":             1,
-	"url_segment":        2,
-	"hostname_below_tld": 3,
+	"method":             10,
+	"url_segment":        20,
+	"hostname_below_tld": 30,
+}
+
+// axisPriorityFor returns the rank for an axis name, including
+// dynamic `pattern:*` axes. Lower ranks sort first. Pattern axes
+// rank 1 (highest priority — surfaced first); unknown axes fall
+// back to a large value so they sort last deterministically.
+func axisPriorityFor(axis string) int {
+	if strings.HasPrefix(axis, "pattern:") {
+		return 1
+	}
+	if p, ok := axisPriority[axis]; ok {
+		return p
+	}
+	return 9999
 }
 
 func deterministicSuggest(in SuggestionInput) SuggestionOutput {
@@ -179,7 +196,7 @@ func deterministicSuggest(in SuggestionInput) SuggestionOutput {
 		}
 	}
 	sort.SliceStable(ranking, func(i, j int) bool {
-		return axisPriority[ranking[i]] < axisPriority[ranking[j]]
+		return axisPriorityFor(ranking[i]) < axisPriorityFor(ranking[j])
 	})
 
 	// Templated reason — pick the top-ranked candidate and describe
@@ -202,13 +219,15 @@ func deterministicSuggest(in SuggestionInput) SuggestionOutput {
 
 func buildTemplateReason(c SuggestionCandidate) string {
 	n := len(c.SourceEntries)
-	switch c.Axis {
-	case "method":
+	switch {
+	case c.Axis == "method":
 		return fmt.Sprintf("%d entries differ only in HTTP method; %q would match all.", n, c.SuggestedPattern)
-	case "url_segment":
+	case c.Axis == "url_segment":
 		return fmt.Sprintf("%d entries differ only in their final path segment; %q would match all.", n, c.SuggestedPattern)
-	case "hostname_below_tld":
+	case c.Axis == "hostname_below_tld":
 		return fmt.Sprintf("%d entries are subdomains of a common parent; %q would match all.", n, c.SuggestedPattern)
+	case strings.HasPrefix(c.Axis, "pattern:"):
+		return fmt.Sprintf("%d entries fit %s; rule %q would match the group.", n, strings.TrimPrefix(c.Axis, "pattern:"), c.SuggestedPattern)
 	default:
 		return fmt.Sprintf("%d entries can be generalized to %q.", n, c.SuggestedPattern)
 	}

@@ -53,11 +53,29 @@ patterns.
 `match.components` cannot be loaded by pre-v0.8.8 binaries (the strict
 YAML decoder rejects unknown keys).
 
-**Deferred (out of scope this release):** the *suggester* does not yet
-propose pattern-shaped generalizations. Pattern rules must be hand-
-authored in v0.8.8; suggester-side detection lands in a follow-up.
-Existing flat-axis suggestions (hostname_below_tld, url_segment,
-method) continue to work unchanged.
+**Suggester also proposes pattern-shaped generalizations.** When the
+allow or deny list accumulates ≥2 entries that fit a registered
+pattern (azure_arm, azure_keyvault), the suggester groups them by
+`(list, pattern, method)`, identifies the components that are
+constant across the group, and offers a pattern-shaped suggestion
+with the constants fixed and the varying components wildcarded.
+Accepting writes a YAML rule to the first `policy.include` rule
+file (with a deterministic `id: suggested-<pattern>-<short-hash>`)
+and removes the source entries from the lists. Declining writes
+the standard decline row so the same source set is not re-offered.
+
+Pattern axes (`pattern:azure_arm`, `pattern:azure_keyvault`) rank
+ahead of flat axes in the suggestion order, so the operator sees the
+semantic suggestion first. The TUI suggestion card renders the
+pattern name, fixed components, method, and source count.
+
+If no rule file is configured under `policy.include`, accept returns
+a clear error ("no rule file configured under policy.include"); the
+flat-axis suggestion flow is unaffected.
+
+New oplog event: `rule_added` (INFO) fires when a pattern accept
+appends a rule, mirroring `allowlist_added`/`denylist_added` for
+list mutations.
 
 ## v0.8.7 — 2026-05-30
 
