@@ -249,7 +249,7 @@ func (b *Backend) runUpdate(out io.Writer) {
 		fmt.Fprintln(out, "Download the latest release from https://github.com/dandriscoll/trollbridge/releases/latest")
 		return
 	}
-	fmt.Fprintln(out, "running: "+updater.Pipeline())
+	fmt.Fprintln(out, "running: "+updater.Describe())
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(out, "update: panic: %v\n", r)

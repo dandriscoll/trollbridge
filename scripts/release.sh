@@ -139,6 +139,8 @@ DIST="$REPO_ROOT/dist"
 README="$REPO_ROOT/README.md"
 SERVER_GO="$REPO_ROOT/internal/server/server.go"
 CHANGELOG="$REPO_ROOT/CHANGELOG.md"
+UPDATER_GO="$REPO_ROOT/internal/updater/updater.go"
+INSTALL_SH_URL="https://trollbridge.dev/install.sh"
 
 # ---------- discover current version ----------
 
@@ -284,6 +286,36 @@ preflight_changelog_has_content() {
         echo "release failed: CHANGELOG.md '## Unreleased' section is missing or empty; fix: add operator-facing entries under '## Unreleased' (group by Wire / TUI / Operator / Forensics / Docs as appropriate) describing what changed since v${CURRENT} — the GH release body is sourced from this section" >&2
         exit 1
     fi
+}
+
+# Fail-closed: the updater pins the SHA-256 of install.sh so
+# `trollbridge update` refuses to run an unverified script. That
+# pin must match the install.sh currently served by trollbridge.dev (the
+# trollbridge-deploy repo deploys install.sh independently of trollbridge
+# releases). If install.sh changed, the binary about to be built would
+# ship a stale pin and break `trollbridge update` for everyone — so catch
+# the drift here, before build, and make the operator update + commit the
+# pin deliberately. Network-soft: if install.sh can't be fetched (offline
+# release), warn and continue rather than block on a transient failure.
+preflight_install_sh_pin() {
+    local committed live
+    committed="$(grep -oE 'PinnedSHA256 = "[0-9a-fA-F]{64}"' "$UPDATER_GO" | grep -oiE '[0-9a-f]{64}' | head -1 | tr '[:upper:]' '[:lower:]')"
+    if [[ -z "$committed" ]]; then
+        echo "release failed: could not read PinnedSHA256 from $UPDATER_GO; fix: confirm the 'var PinnedSHA256 = \"<64 hex>\"' line is present" >&2
+        exit 1
+    fi
+    if ! live="$(curl -fsSL --max-time 15 "$INSTALL_SH_URL" 2>/dev/null | $SHA256_CMD | awk '{print $1}' | tr '[:upper:]' '[:lower:]')" || [[ -z "$live" ]]; then
+        echo "release WARN: could not fetch $INSTALL_SH_URL to verify the install.sh pin; skipping the check (offline?). Confirm PinnedSHA256 is current before publishing." >&2
+        return 0
+    fi
+    if [[ "$committed" != "$live" ]]; then
+        echo "release failed: PinnedSHA256 in $UPDATER_GO ($committed) does not match the live install.sh ($live)." >&2
+        echo "fix: install.sh changed in trollbridge-deploy — update the pin and commit it before releasing:" >&2
+        echo "       sed -i 's/$committed/$live/' internal/updater/updater.go && git add -p internal/updater/updater.go" >&2
+        echo "     (this keeps 'trollbridge update' working against the deployed install.sh)" >&2
+        exit 1
+    fi
+    echo "preflight: install.sh pin matches live ($live)" >&2
 }
 
 # ---------- bump version-bearing files ----------
@@ -515,6 +547,7 @@ preflight_branch_uptodate
 preflight_no_tag_yet "v${NEW}"
 preflight_gh_release "v${NEW}"
 preflight_changelog_has_content
+preflight_install_sh_pin
 
 apply_bumps "$CURRENT" "$NEW"
 echo "apply: README updated" >&2

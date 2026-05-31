@@ -2,14 +2,25 @@ package updater
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+// sha256hex returns the lowercase-hex SHA-256 of b — the form
+// PinnedSHA256 uses. Tests set the pin to a served stub's hash so the
+// verify step passes; or to a different value to exercise rejection.
+func sha256hex(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
 
 // TestRun_AcceptsInstallShBashBootstrap exercises the real shell pipeline
 // against a local server serving install.sh's load-bearing bootstrap
@@ -48,6 +59,12 @@ echo ok
 	prev := URL
 	URL = srv.URL
 	defer func() { URL = prev }()
+	// The verify step refuses to run a script whose hash does not match
+	// the pin; point the pin at the stub's hash so
+	// the happy-path bash-bootstrap behavior is exercised.
+	prevPin := PinnedSHA256
+	PinnedSHA256 = sha256hex(stub)
+	defer func() { PinnedSHA256 = prevPin }()
 
 	var out bytes.Buffer
 	if err := Run(&out, &out); err != nil {
@@ -57,20 +74,54 @@ echo ok
 		t.Errorf("install stub did not run to completion; got: %q", out.String())
 	}
 	if strings.Contains(out.String(), "bash_required") {
-		t.Errorf("bash bootstrap fell through to the bash_required branch; pipeline is not piping to bash; got: %q", out.String())
+		t.Errorf("bash bootstrap fell through to the bash_required branch; installer is not run under bash; got: %q", out.String())
 	}
 }
 
-// TestPipeline_PipesToBash pins the load-bearing fix for #94 at the
-// string level — even on hosts where the subprocess test is skipped,
-// any reversion to `| sh` fails this test.
-func TestPipeline_PipesToBash(t *testing.T) {
-	got := Pipeline()
-	if !strings.HasSuffix(got, "| bash") {
-		t.Errorf("Pipeline() must end in `| bash` (closes #94); got: %q", got)
+// TestRun_RejectsTamperedScript is the load-bearing verify guard:
+// when the downloaded install.sh does NOT match the pinned
+// SHA-256, Run must return FailureSignatureMismatch and execute NOTHING.
+// The served stub writes a marker file if it runs; the test asserts the
+// marker never appears. Reverting the verify branch makes the marker
+// appear (the script runs) — the negative check that proves this test
+// guards the mechanism, not a coincidence.
+func TestRun_RejectsTamperedScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("update path is not used on Windows; pipeline is unix-only")
 	}
-	if strings.HasSuffix(got, "| sh") {
-		t.Errorf("Pipeline() must not pipe to `sh`: install.sh's bash bootstrap aborts under dash with exit 126; got: %q", got)
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not on PATH")
+	}
+
+	marker := t.TempDir() + "/ran"
+	stub := []byte("#!/usr/bin/env bash\ntouch " + marker + "\necho ran\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(stub)
+	}))
+	defer srv.Close()
+
+	prev := URL
+	URL = srv.URL
+	defer func() { URL = prev }()
+	prevPin := PinnedSHA256
+	// A pin that deliberately does NOT match the served stub.
+	PinnedSHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+	defer func() { PinnedSHA256 = prevPin }()
+
+	var out bytes.Buffer
+	err := Run(&out, &out)
+	if err == nil {
+		t.Fatalf("expected a signature-mismatch failure; got nil (output=%q)", out.String())
+	}
+	var ue *Error
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected *updater.Error; got %T: %v", err, err)
+	}
+	if ue.Class != FailureSignatureMismatch {
+		t.Errorf("class = %q, want %q", ue.Class, FailureSignatureMismatch)
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Errorf("install.sh ran despite the checksum mismatch — the verify gate did not stop execution")
 	}
 }
 
@@ -211,6 +262,9 @@ func TestRun_ClassifiesExitCode126(t *testing.T) {
 	prev := URL
 	URL = srv.URL
 	defer func() { URL = prev }()
+	prevPin := PinnedSHA256
+	PinnedSHA256 = sha256hex(stub)
+	defer func() { PinnedSHA256 = prevPin }()
 
 	var out bytes.Buffer
 	err := Run(&out, &out)

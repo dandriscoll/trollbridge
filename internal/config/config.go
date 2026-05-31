@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -466,6 +468,14 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validate(path); err != nil {
 		return nil, err
 	}
+	// Non-fatal advisory when the (validated) llm.endpoint targets a
+	// private address — see checkLLMEndpoint. Emitted here because
+	// validate() has no warning channel.
+	if cfg.LLM.Enabled && cfg.LLM.Endpoint != "" {
+		if w, _ := checkLLMEndpoint(cfg.LLM.Endpoint); w != "" {
+			slog.Warn("config: "+w, "field", "llm.endpoint", "config", path)
+		}
+	}
 	return &cfg, nil
 }
 
@@ -612,7 +622,61 @@ func (c *Config) validate(path string) error {
 			return fmt.Errorf("config error in %s: identity at index %d missing `id`.", path, i)
 		}
 	}
+	// Reject the dangerous llm.endpoint shapes at load. The non-fatal
+	// private-address advisory is surfaced separately by Load via slog
+	// (validate has no warning channel).
+	if c.LLM.Enabled && c.LLM.Endpoint != "" {
+		if _, err := checkLLMEndpoint(c.LLM.Endpoint); err != nil {
+			return fmt.Errorf("config error in %s: %w", path, err)
+		}
+	}
 	return nil
+}
+
+// checkLLMEndpoint inspects llm.endpoint for the cleartext / private-
+// redirect shapes. An agent with filesystem write access (the documented
+// design trade-off) could otherwise repoint the advisor at an internal
+// or unintended host and leak the request metadata the proxy sends to
+// the LLM.
+//
+// It is pure: it does NO DNS resolution or other I/O, so it is fast,
+// deterministic, and safe to call at config-load. Host classification is
+// therefore limited to literal IPs (net.ParseIP); a hostname that
+// resolves to a private address is not caught here — an accepted,
+// documented limitation, since resolving attacker-influenced DNS at load
+// is itself undesirable.
+//
+// Returns a fatal err for the dangerous shapes (unparseable; non-private
+// host over cleartext http) and a non-fatal warn string for the
+// legitimate-but-noteworthy local-advisor shape (a loopback/RFC-1918
+// target), so a privacy-conscious operator running a local LLM advisor
+// keeps working while still being told that a writable config pointing
+// the advisor at a private target can redirect request metadata.
+func checkLLMEndpoint(endpoint string) (warn string, err error) {
+	u, perr := url.Parse(endpoint)
+	if perr != nil {
+		return "", fmt.Errorf("`llm.endpoint` is not a valid URL (%q): %v", endpoint, perr)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", fmt.Errorf("`llm.endpoint` has no host (%q); expected e.g. https://api.example.com/...", endpoint)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("`llm.endpoint` must use http or https (got scheme %q in %q)", u.Scheme, endpoint)
+	}
+	ip := net.ParseIP(host)
+	private := ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified())
+	if u.Scheme == "http" {
+		if !private {
+			return "", fmt.Errorf("`llm.endpoint` must use https for a non-private host (got %q); cleartext http would send advisor request metadata in the clear", endpoint)
+		}
+		return fmt.Sprintf("`llm.endpoint` uses http to a private address (%q); ok for a local advisor, but if this config is agent-writable it can redirect advisor request metadata to an unintended host", host), nil
+	}
+	// https
+	if private {
+		return fmt.Sprintf("`llm.endpoint` targets a private address (%q); if this config is agent-writable it can redirect advisor request metadata to an unintended host", host), nil
+	}
+	return "", nil
 }
 
 // ResolveIncludePaths returns rule-file paths from c.Policy.Include

@@ -9,6 +9,20 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Operator
+
+- **`llm.endpoint` is validated at startup.** A public host must use
+  `https` (a cleartext `http` endpoint to a non-private host is now
+  rejected with a clear config error). An `http`/`https` endpoint that
+  points at a loopback or RFC-1918 address still loads — for a local LLM
+  advisor — but logs a startup warning. Unparseable or non-http(s)
+  endpoints are rejected.
+- **`trollbridge update` now verifies install.sh before running it.**
+  The installer script is downloaded and checked against a SHA-256
+  pinned in the binary; on mismatch nothing is executed and the error
+  names the recovery step (reinstall manually, which self-verifies the
+  binary). The pin is kept current by `scripts/release.sh`.
+
 ## v0.9.0 — 2026-05-31
 
 ### URL pattern model — Azure ARM and Azure Key Vault

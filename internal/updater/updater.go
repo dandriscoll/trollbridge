@@ -5,6 +5,8 @@ package updater
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -21,13 +23,44 @@ func osEnvironDefault() []string { return os.Environ() }
 // at a local httptest server; production callers leave it as-is.
 var URL = "https://trollbridge.dev/install.sh"
 
-// Pipeline returns the shell pipeline fed to `sh -c`. install.sh
-// auto-bootstraps under bash with `exec bash "$0" "$@"`; when piped
-// from dash (/bin/sh on Debian/Ubuntu), $0 is the dash binary path and
-// bash refuses to execute a binary, aborting with exit 126. Pipe to
-// bash directly so the bootstrap is a no-op (closes #94).
-func Pipeline() string {
-	return "curl -fsSL " + URL + " | bash"
+// PinnedSHA256 is the expected SHA-256 (lowercase hex) of install.sh.
+// The updater refuses to execute a downloaded install.sh whose hash does
+// not match the pin, so a compromise of the install.sh delivery path
+// cannot cause `trollbridge update` to run an unverified script.
+//
+// It is a var (not a const) to match this file's test-seam convention
+// (URL, Run, LatestReleaseURL are all overridable vars).
+//
+// install.sh lives in the trollbridge-deploy repo and is deployed to
+// trollbridge.dev independently of trollbridge releases, so this value
+// is RECOMPUTED BY scripts/release.sh at each release. If install.sh
+// changes without a matching trollbridge release, existing binaries will
+// see a mismatch on `trollbridge update`; the FailureSignatureMismatch
+// hint tells the operator to reinstall manually (which self-verifies the
+// binary against the release SHA256SUMS).
+var PinnedSHA256 = "6d83e9dd36ab72341a6ccfbfaa1c124b60fccb8f73c5b6fe9ac4bbd3aac040b0"
+
+// Describe returns a human-facing one-liner of what an update does, for
+// display in the CLI/console before Run executes. It replaces the old
+// Pipeline() string now that the flow downloads-and-verifies rather than
+// piping curl straight to bash.
+func Describe() string {
+	return "fetch + verify " + URL + " (sha256), then run it under bash"
+}
+
+// fetchInstallScript downloads install.sh from URL. Split out so the
+// download path is exercised by tests via an httptest server.
+func fetchInstallScript(url string) ([]byte, error) {
+	c := &http.Client{Timeout: 30 * time.Second}
+	resp, err := c.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("unexpected status %d fetching %s", resp.StatusCode, url)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // Run executes the installer pipeline, streaming stdout/stderr to the
@@ -49,7 +82,48 @@ var Run = func(stdout, stderr io.Writer) error {
 //
 // Tests can override this var directly the same way they override Run.
 var RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
-	c := exec.Command("sh", "-c", Pipeline())
+	// 1. Download install.sh. A network failure here is classified as
+	//    such and nothing is executed.
+	body, err := fetchInstallScript(URL)
+	if err != nil {
+		class, hint := ClassifyError(err, err.Error())
+		return &Error{Underlying: err, Class: class, Hint: hint}
+	}
+	// 2. Verify the SHA-256 against the pin BEFORE writing or executing
+	//    anything. On mismatch, execute nothing.
+	got := hex.EncodeToString(sha256Sum(body))
+	if !strings.EqualFold(got, PinnedSHA256) {
+		_, hint := ClassifyError(nil, "signature mismatch")
+		return &Error{
+			Underlying: fmt.Errorf("install.sh sha256 %s does not match pinned %s", got, PinnedSHA256),
+			Class:      FailureSignatureMismatch,
+			Hint:       hint,
+		}
+	}
+	// 3. Write the verified bytes to a temp file and run it under bash.
+	//    Running bash against a file (rather than `curl … | bash`)
+	//    guarantees install.sh's `exec bash "$0"` bootstrap is a no-op
+	//    (closes #94) and survives a noexec /tmp (bash reads the file;
+	//    no exec bit needed).
+	f, err := os.CreateTemp("", "trollbridge-install-*.sh")
+	if err != nil {
+		return &Error{Underlying: err, Class: FailureUnknown, Hint: "could not create a temp file for the verified installer; check TMPDIR is writable"}
+	}
+	tmpPath := f.Name()
+	defer os.Remove(tmpPath)
+	if _, err := f.Write(body); err != nil {
+		f.Close()
+		return &Error{Underlying: err, Class: FailureUnknown, Hint: "could not write the verified installer to a temp file; check disk/TMPDIR"}
+	}
+	if err := f.Chmod(0o700); err != nil {
+		f.Close()
+		return &Error{Underlying: err, Class: FailureUnknown, Hint: "could not chmod the verified installer temp file"}
+	}
+	if err := f.Close(); err != nil {
+		return &Error{Underlying: err, Class: FailureUnknown, Hint: "could not finalize the verified installer temp file"}
+	}
+
+	c := exec.Command("bash", tmpPath)
 	c.Stdout = stdout
 	var stderrBuf bytes.Buffer
 	c.Stderr = io.MultiWriter(stderr, &stderrBuf)
@@ -60,12 +134,18 @@ var RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
 		env = append(env, "TROLLBRIDGE_INSTALL_DIR="+prefix)
 		c.Env = env
 	}
-	err := c.Run()
-	if err == nil {
-		return nil
+	if err := c.Run(); err != nil {
+		class, hint := ClassifyError(err, stderrBuf.String())
+		return &Error{Underlying: err, Class: class, Hint: hint}
 	}
-	class, hint := ClassifyError(err, stderrBuf.String())
-	return &Error{Underlying: err, Class: class, Hint: hint}
+	return nil
+}
+
+// sha256Sum returns the SHA-256 of b as a byte slice. Split out for
+// readability at the call site.
+func sha256Sum(b []byte) []byte {
+	sum := sha256.Sum256(b)
+	return sum[:]
 }
 
 // osEnviron is split out so tests can swap the environment if
@@ -122,7 +202,10 @@ func ClassifyError(err error, capturedStderr string) (FailureClass, string) {
 		return FailureBashMissing, "install `bash` (apt/brew/dnf) and re-run `trollbridge update`"
 	}
 	if strings.Contains(se, "sha256_mismatch") || strings.Contains(se, "signature mismatch") {
-		return FailureSignatureMismatch, "report at https://github.com/dandriscoll/trollbridge/issues with the SHA256 mismatch line"
+		return FailureSignatureMismatch, "install.sh did not match the pinned checksum, so nothing was run. " +
+			"If install.sh was changed recently this may be a stale pin: reinstall manually with " +
+			"`curl -fsSL https://trollbridge.dev/install.sh | bash` (the script self-verifies the binary). " +
+			"Otherwise this may be tampering — report at https://github.com/dandriscoll/trollbridge/issues"
 	}
 	if strings.Contains(se, "permission denied") || strings.Contains(se, "eacces") {
 		return FailurePermissionDenied, "set `TROLLBRIDGE_INSTALL_DIR` to a writable directory (e.g. `~/.local/bin`) and re-run"
