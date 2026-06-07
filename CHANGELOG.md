@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.9.1 — 2026-06-07
+
 ### Operator
 
 - **`llm.endpoint` is validated at startup.** A public host must use
