@@ -138,7 +138,7 @@ lists:
 		Host:       "blocked.example.com",
 		Port:       443,
 	}
-	id, ch, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -191,7 +191,7 @@ lists:
 		Host:       "approved.example.com",
 		Port:       443,
 	}
-	id, ch, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}

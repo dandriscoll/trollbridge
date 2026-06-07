@@ -660,7 +660,7 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 	// the hold immediately. Then consult the advisor in parallel.
 	// Whichever resolver fires first (advisor confident, operator
 	// approve/deny, queue timeout) wins via the queue's resolveCh.
-	id, ch, err := s.queue.Enqueue(req, base)
+	id, ch, coalesced, err := s.queue.Enqueue(req, base)
 	if err != nil {
 		s.opLog.Warn("approval queue full; refusing request",
 			"event", oplog.EventHoldQueueFull,
@@ -679,23 +679,47 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 		}
 	}
 	s.ops.HoldPending(req.ID, id)
-	s.opLog.Info("request held pending approval",
-		"event", oplog.EventRequestHeld,
-		"request_id", req.ID,
-		"identity", req.IdentityID,
-		"method", req.Method,
-		"scheme", req.Scheme,
-		"host", req.Host,
-		"port", req.Port,
-		"hold_id", id,
-		"source", string(base.Source),
-		"rule_id", base.RuleID,
-		"reason", base.Reason)
+	if coalesced {
+		// #206: an identical request is already pending. We attached as
+		// an extra waiter on the existing hold rather than adding a
+		// second row; the operator's one decision releases us too. Emit
+		// a distinct event (so the missing request_held line is
+		// explained) and skip the advisor — the hold-owner's consult
+		// already covers this request set.
+		s.opLog.Info("request coalesced onto pending hold",
+			"event", oplog.EventRequestCoalesced,
+			"request_id", req.ID,
+			"identity", req.IdentityID,
+			"method", req.Method,
+			"scheme", req.Scheme,
+			"host", req.Host,
+			"port", req.Port,
+			"hold_id", id,
+			"source", string(base.Source),
+			"rule_id", base.RuleID,
+			"reason", base.Reason)
+	} else {
+		s.opLog.Info("request held pending approval",
+			"event", oplog.EventRequestHeld,
+			"request_id", req.ID,
+			"identity", req.IdentityID,
+			"method", req.Method,
+			"scheme", req.Scheme,
+			"host", req.Host,
+			"port", req.Port,
+			"hold_id", id,
+			"source", string(base.Source),
+			"rule_id", base.RuleID,
+			"reason", base.Reason)
+	}
 
 	// Kick off the advisor for both ask_user and ask_llm holds when
 	// an advisor is configured. The hash header is set synchronously
 	// here so writeAudit's later read does not race the goroutine.
-	if s.advisor != nil && (base.Effect == types.EffectAskUser || base.Effect == types.EffectAskLLM) {
+	// Coalesced requests skip this: the hold-owner's in-flight consult
+	// already decides the shared hold, so a second call would be a
+	// redundant LLM round-trip racing the same hold.
+	if !coalesced && s.advisor != nil && (base.Effect == types.EffectAskUser || base.Effect == types.EffectAskLLM) {
 		hdrs, lists, input := s.buildAdvisorInputs(req)
 		req.Headers.Set("X-Trollbridge-LLM-Input-Hash", advisor.CanonicalizeInput(input))
 		go s.consultAdvisorForHold(req, id, hdrs, lists)

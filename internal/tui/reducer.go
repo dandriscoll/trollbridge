@@ -2044,16 +2044,35 @@ func DisplayedOps(m Model) []DisplayedOp {
 
 	type key struct{ method, host, dir, status string }
 	indexOf := map[key]int{}
+	pendingByHold := map[string]int{}
 	out := make([]DisplayedOp, 0, len(flat))
 	for _, o := range flat {
 		if !opIsResolved(o.Status) {
-			// Held / signaled / pre-decision ops never fold — each
-			// stays an individually actionable row (#119).
-			anchor := "o\x00" + o.RequestID
-			if o.RequestID == "" {
-				anchor = "h\x00" + o.HoldID
+			// Pre-#206 each pending request was its own hold needing its
+			// own decision, so pending rows never folded (#119). With
+			// request coalescing (#206) retries of the same URL share ONE
+			// hold id, and the operator's single approve/deny resolves
+			// them all — so pending ops that share a hold id now fold into
+			// one actionable row carrying the count. Distinct hold ids
+			// (e.g. different identities, genuinely distinct requests)
+			// stay separate rows, exactly as before. Ops with no hold id
+			// (pre-decision "checking") remain individual, anchored by
+			// request id.
+			if o.HoldID != "" {
+				if i, ok := pendingByHold[o.HoldID]; ok {
+					out[i].Count++
+					// Newest representative wins (mirrors resolved
+					// folding); Count and GroupKey are siblings and stay.
+					if o.UpdatedAt.After(out[i].UpdatedAt) {
+						out[i].Op = o
+					}
+					continue
+				}
+				pendingByHold[o.HoldID] = len(out)
+				out = append(out, DisplayedOp{Op: o, Count: 1, GroupKey: "h\x00" + o.HoldID})
+				continue
 			}
-			out = append(out, DisplayedOp{Op: o, Count: 1, GroupKey: anchor})
+			out = append(out, DisplayedOp{Op: o, Count: 1, GroupKey: "o\x00" + o.RequestID})
 			continue
 		}
 		host, dir := opGroupHostDir(o.URL)

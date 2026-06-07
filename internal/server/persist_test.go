@@ -73,7 +73,7 @@ lists:
 		Host:       "newly.example.com",
 		Port:       443,
 	}
-	id, ch, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -153,7 +153,7 @@ approvals:
 	})
 
 	req := &types.RequestEvent{Method: "CONNECT", Scheme: "https-tunneled", Host: "blocked.example.com", Port: 443}
-	id, ch, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}

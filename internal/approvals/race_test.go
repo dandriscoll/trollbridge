@@ -16,7 +16,7 @@ import (
 func TestQueue_DoubleApproveIsSafe(t *testing.T) {
 	q := New(8, time.Second, "deny")
 	defer q.Shutdown()
-	_, _, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	_, _, _, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestQueue_DoubleApproveIsSafe(t *testing.T) {
 func TestQueue_ConcurrentResolversFirstWins(t *testing.T) {
 	q := New(8, time.Second, "deny")
 	defer q.Shutdown()
-	_, ch, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	_, ch, _, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestQueue_ConcurrentResolversFirstWins(t *testing.T) {
 func TestQueue_ResolveByAdvisorWinsRace(t *testing.T) {
 	q := New(8, time.Second, "deny")
 	defer q.Shutdown()
-	_, ch, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	_, ch, _, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatal(err)
 	}

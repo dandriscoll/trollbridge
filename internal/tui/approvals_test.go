@@ -640,7 +640,7 @@ func TestInProcessClient_RoundtripsAgainstRealQueue(t *testing.T) {
 		Host:       "api.example.com",
 		Port:       443,
 	}
-	id, ch, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser, Source: types.SourceDefault})
+	id, ch, _, err := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser, Source: types.SourceDefault})
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -679,7 +679,7 @@ func TestInProcessClient_RoundtripsAgainstRealQueue(t *testing.T) {
 	// Enqueue a second hold, deny it via the client, verify the
 	// decision channel sees the deny + the operator's reason.
 	req2 := &types.RequestEvent{ID: "req-2", IdentityID: "agent-y", Method: "GET", Host: "api.example.com", Port: 443}
-	id2, ch2, err := q.Enqueue(req2, types.Decision{Effect: types.EffectAskUser, Source: types.SourceDefault})
+	id2, ch2, _, err := q.Enqueue(req2, types.Decision{Effect: types.EffectAskUser, Source: types.SourceDefault})
 	if err != nil {
 		t.Fatalf("Enqueue(2): %v", err)
 	}

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,17 +47,55 @@ type Hold struct {
 	Request   *types.RequestEvent
 	Decision  types.Decision    // the engine's ask_user decision; carries reason
 	CreatedAt time.Time
-	resolveCh chan types.Decision
+	// waiters are the resolution channels for every request coalesced
+	// onto this hold (closes #206). The first request to enqueue a
+	// given (identity, method, scheme, host, port, path) creates the
+	// hold with one waiter; identical requests that arrive while it is
+	// still pending attach an additional waiter rather than minting a
+	// second hold. Resolution (Approve / Deny / advisor / timeout /
+	// shutdown) broadcasts the single decision to every waiter, so the
+	// operator decides once and every live retry is released together.
+	// Each channel is cap-1 and written with a non-blocking send, so a
+	// slow or dead waiter can never wedge resolution.
+	waiters []chan types.Decision
+	// dedupKey is the coalescing identity of the request (see
+	// dedupKey()). Held so claim() can evict the byKey index entry.
+	dedupKey string
 	// resolved is set under Queue.mu by the first resolver that wins
 	// the at-most-once claim (Approve / Deny / ResolveByAdvisor).
 	// Subsequent resolvers see resolved=true and return false without
-	// pushing to resolveCh or firing persistCb / lifecycle oplog.
+	// broadcasting or firing persistCb / lifecycle oplog.
 	// Closes #55: prior code relied on the cap-1 channel for race
 	// protection, but Wait can drain the channel between two
 	// resolvers' lookups, letting the second push succeed and the
 	// second persistCb fire — writing to both lists.allow and
 	// lists.deny for a single operator action.
 	resolved bool
+}
+
+// dedupKey is the coalescing identity of a held request: two requests
+// share a hold iff they share this key. Identity is included so two
+// different principals asking for the same URL stay separate rows; a
+// principal retrying the same URL coalesces. NUL-joined because NUL
+// cannot appear in any component, so the join is collision-free.
+func dedupKey(req *types.RequestEvent) string {
+	return strings.Join([]string{
+		req.IdentityID, req.Method, req.Scheme,
+		req.Host, strconv.Itoa(req.Port), req.Path,
+	}, "\x00")
+}
+
+// broadcast delivers the resolved decision to every waiter coalesced
+// onto the hold. Each send is non-blocking against a cap-1 channel, so
+// a waiter that has already gone away (client disconnected, its Wait
+// returned) cannot block the others.
+func broadcast(h *Hold, d types.Decision) {
+	for _, w := range h.waiters {
+		select {
+		case w <- d:
+		default:
+		}
+	}
 }
 
 // Snapshot returns a JSON-friendly description of the hold (used by
@@ -81,6 +121,11 @@ type Queue struct {
 
 	mu    sync.Mutex
 	items map[string]*Hold
+	// byKey indexes live (unresolved) holds by dedupKey so Enqueue can
+	// coalesce an identical retry in O(1). Kept in lockstep with items
+	// under mu: claim() and Shutdown() evict from both. By construction
+	// at most one unresolved hold exists per key.
+	byKey map[string]*Hold
 
 	// opLog, when set, receives Info events on hold lifecycle
 	// transitions (approve, deny, timeout). nil-safe.
@@ -135,6 +180,7 @@ func New(maxPending int, timeout time.Duration, onTimeout string) *Queue {
 		timeout:    timeout,
 		onTimeout:  onTimeout,
 		items:      map[string]*Hold{},
+		byKey:      map[string]*Hold{},
 	}
 }
 
@@ -142,10 +188,13 @@ func New(maxPending int, timeout time.Duration, onTimeout string) *Queue {
 var ErrFull = errors.New("approval queue full")
 
 // claim returns the hold iff it exists and has not yet been resolved,
-// atomically marking it resolved under Queue.mu. Returns nil
-// otherwise. This is the at-most-once gate every resolver
-// (Approve / Deny / ResolveByAdvisor) passes through; only the
-// winning caller proceeds to push on resolveCh and fire persistCb.
+// atomically marking it resolved and evicting it from both indexes
+// under Queue.mu. Returns nil otherwise. This is the at-most-once gate
+// every resolver (Approve / Deny / ResolveByAdvisor / timeout /
+// shutdown) passes through; only the winning caller proceeds to
+// broadcast the decision and fire persistCb. Centralizing removal here
+// (rather than in Wait) keeps items and byKey consistent and ensures a
+// coalescing retry never attaches to a hold that is already resolving.
 func (q *Queue) claim(id string) *Hold {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -154,28 +203,48 @@ func (q *Queue) claim(id string) *Hold {
 		return nil
 	}
 	h.resolved = true
+	delete(q.items, id)
+	delete(q.byKey, h.dedupKey)
 	return h
 }
 
-// Enqueue creates a new Hold and stores it. Returns the hold ID and
+// Enqueue registers a request for operator action. Returns the hold ID,
 // a channel that resolves with the operator's decision (or a
-// timeout/shutdown deny).
-func (q *Queue) Enqueue(req *types.RequestEvent, baseDecision types.Decision) (string, <-chan types.Decision, error) {
+// timeout/shutdown deny), and whether the request coalesced onto an
+// existing pending hold.
+//
+// Coalescing (closes #206): if an identical request — same dedupKey — is
+// already pending, the new request attaches as an additional waiter on
+// that hold instead of minting a second one. The returned id is the
+// existing hold's, the channel is the new waiter's, and coalesced=true.
+// The operator's single decision on that hold then releases every
+// coalesced waiter. Coalescing is checked before the maxPending cap, so
+// a retry for an already-pending URL is never rejected with ErrFull.
+func (q *Queue) Enqueue(req *types.RequestEvent, baseDecision types.Decision) (id string, ch <-chan types.Decision, coalesced bool, err error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.items) >= q.maxPending {
-		return "", nil, ErrFull
+	key := dedupKey(req)
+	if existing := q.byKey[key]; existing != nil && !existing.resolved {
+		w := make(chan types.Decision, 1)
+		existing.waiters = append(existing.waiters, w)
+		return existing.ID, w, true, nil
 	}
-	id := "hold-" + uuid.NewString()
+	if len(q.items) >= q.maxPending {
+		return "", nil, false, ErrFull
+	}
+	id = "hold-" + uuid.NewString()
+	w := make(chan types.Decision, 1)
 	h := &Hold{
 		ID:        id,
 		Request:   req,
 		Decision:  baseDecision,
 		CreatedAt: time.Now().UTC(),
-		resolveCh: make(chan types.Decision, 1),
+		waiters:   []chan types.Decision{w},
+		dedupKey:  key,
 	}
 	q.items[id] = h
-	return id, h.resolveCh, nil
+	q.byKey[key] = h
+	return id, w, false, nil
 }
 
 // Wait blocks on the hold until resolution or the configured
@@ -186,18 +255,10 @@ func (q *Queue) Wait(ctx context.Context, id string, ch <-chan types.Decision) t
 	defer timer.Stop()
 	select {
 	case d := <-ch:
-		q.remove(id)
+		// A resolver (Approve/Deny/advisor/timeout/shutdown) already
+		// claimed the hold and removed it; we only collect our copy.
 		return d
 	case <-timer.C:
-		// Snapshot the hold's identifying fields before remove() —
-		// the post-emit log carries them but the map entry is gone.
-		var snap *Hold
-		q.mu.Lock()
-		if h, ok := q.items[id]; ok {
-			snap = h
-		}
-		q.mu.Unlock()
-		q.remove(id)
 		eff := types.EffectAskUserTimedOut
 		switch q.onTimeout {
 		case "allow":
@@ -207,31 +268,46 @@ func (q *Queue) Wait(ctx context.Context, id string, ch <-chan types.Decision) t
 			// distinguish from a normal deny.
 			eff = types.EffectAskUserTimedOut
 		}
-		if q.opLog != nil && snap != nil {
-			q.opLog.Info("hold timed out",
-				"event", oplog.EventHoldTimedOut,
-				"hold_id", snap.ID,
-				"request_id", snap.Request.ID,
-				"identity", snap.Request.IdentityID,
-				"method", snap.Request.Method,
-				"scheme", snap.Request.Scheme,
-				"host", snap.Request.Host,
-				"port", snap.Request.Port,
-				"on_timeout", q.onTimeout,
-				"timeout_seconds", int(q.timeout.Seconds()))
-		}
-		return types.Decision{
+		d := types.Decision{
 			Effect: eff,
 			Source: types.SourceApprovalTimeout,
 			Reason: fmt.Sprintf("approval timeout after %s", q.timeout),
 		}
+		// claim() evicts the hold and returns it iff this timer won the
+		// race. The winner broadcasts the timeout to every coalesced
+		// waiter so they all resolve together; losers (a concurrent
+		// operator/advisor resolution) read the real decision off ch.
+		h := q.claim(id)
+		if h == nil {
+			return <-ch
+		}
+		broadcast(h, d)
+		if q.opLog != nil {
+			q.opLog.Info("hold timed out",
+				"event", oplog.EventHoldTimedOut,
+				"hold_id", h.ID,
+				"request_id", h.Request.ID,
+				"identity", h.Request.IdentityID,
+				"method", h.Request.Method,
+				"scheme", h.Request.Scheme,
+				"host", h.Request.Host,
+				"port", h.Request.Port,
+				"on_timeout", q.onTimeout,
+				"timeout_seconds", int(q.timeout.Seconds()))
+		}
+		return d
 	case <-ctx.Done():
-		q.remove(id)
-		return types.Decision{
+		d := types.Decision{
 			Effect: types.EffectAskUserResolvedDeny,
 			Source: types.SourceApprovalTimeout,
 			Reason: "trollbridge shutdown; approvals denied",
 		}
+		h := q.claim(id)
+		if h == nil {
+			return <-ch
+		}
+		broadcast(h, d)
+		return d
 	}
 }
 
@@ -249,22 +325,17 @@ func (q *Queue) Approve(id, scope, source string) bool {
 	if scope == "" {
 		scope = "once"
 	}
-	// claim() set resolved=true under the lock, so no concurrent
-	// resolver can compete for this hold; the push is exclusive.
-	// Keep select+default as belt-and-suspenders — a future regression
-	// that leaves a stale value in resolveCh must not block here.
-	select {
-	case h.resolveCh <- types.Decision{
+	// claim() set resolved=true and evicted the hold under the lock, so
+	// no concurrent resolver can compete for it; broadcast delivers the
+	// one decision to every coalesced waiter (#206).
+	broadcast(h, types.Decision{
 		Effect:    types.EffectAskUserResolvedAllow,
 		Source:    types.SourceApprovalQueue,
 		RuleID:    h.Decision.RuleID,
 		Reason:    "operator approved",
 		Scope:     scope,
 		Modifiers: append([]string(nil), h.Decision.Modifiers...),
-	}:
-	default:
-		return false
-	}
+	})
 	if q.opLog != nil {
 		q.opLog.Info("hold approved by operator",
 			"event", oplog.EventHoldApproved,
@@ -294,16 +365,12 @@ func (q *Queue) Deny(id, reason, source string) bool {
 	if reason == "" {
 		reason = "operator denied"
 	}
-	select {
-	case h.resolveCh <- types.Decision{
+	broadcast(h, types.Decision{
 		Effect: types.EffectAskUserResolvedDeny,
 		Source: types.SourceApprovalQueue,
 		RuleID: h.Decision.RuleID,
 		Reason: reason,
-	}:
-	default:
-		return false
-	}
+	})
 	if q.opLog != nil {
 		q.opLog.Info("hold denied by operator",
 			"event", oplog.EventHoldDenied,
@@ -351,11 +418,7 @@ func (q *Queue) ResolveByAdvisor(id string, d types.Decision) bool {
 	if d.RuleID == "" {
 		d.RuleID = h.Decision.RuleID
 	}
-	select {
-	case h.resolveCh <- d:
-	default:
-		return false
-	}
+	broadcast(h, d)
 	if q.opLog != nil {
 		q.opLog.Info("hold resolved by advisor",
 			"event", oplog.EventHoldApproved, // reuse: same lifecycle slot
@@ -410,26 +473,22 @@ func (q *Queue) Pending() []Snapshot {
 	return out
 }
 
-// Shutdown drains the queue, resolving every hold as a
-// shutdown-deny.
+// Shutdown drains the queue, resolving every hold (and every waiter
+// coalesced onto it, #206) as a shutdown-deny.
 func (q *Queue) Shutdown() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for _, h := range q.items {
-		select {
-		case h.resolveCh <- types.Decision{
+		if h.resolved {
+			continue
+		}
+		h.resolved = true
+		broadcast(h, types.Decision{
 			Effect: types.EffectAskUserResolvedDeny,
 			Source: types.SourceApprovalTimeout,
 			Reason: "trollbridge shutdown; approvals denied",
-		}:
-		default:
-		}
+		})
 	}
 	q.items = map[string]*Hold{}
-}
-
-func (q *Queue) remove(id string) {
-	q.mu.Lock()
-	delete(q.items, id)
-	q.mu.Unlock()
+	q.byKey = map[string]*Hold{}
 }

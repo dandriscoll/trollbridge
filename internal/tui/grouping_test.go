@@ -200,6 +200,52 @@ func TestDisplayedOps_PendingNeverFolds(t *testing.T) {
 	}
 }
 
+// TestDisplayedOps_PendingFoldsBySharedHold pins the display half of
+// #206: when retries of the same URL coalesce onto ONE hold (queue-side
+// coalescing), their pending ops fold into a single actionable row
+// carrying the count — so the operator no longer sees the same URL
+// listed ~20 times. The representative is the newest by UpdatedAt and
+// the row's HoldID is the shared hold (so approve/deny resolves all).
+func TestDisplayedOps_PendingFoldsBySharedHold(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0).UTC()
+	ops := []opstream.Op{}
+	for i := 0; i < 20; i++ {
+		ops = append(ops, opstream.Op{
+			RequestID: "p" + itoaPort(i), Method: "GET",
+			URL:    "https://example.com/foo",
+			Status: opstream.StatusPending, HoldID: "hold-shared",
+			UpdatedAt: t0.Add(time.Duration(i) * time.Second),
+		})
+	}
+	got := DisplayedOps(Model{Ops: ops})
+	if len(got) != 1 {
+		t.Fatalf("groups len = %d, want 1 (20 retries on one hold fold)", len(got))
+	}
+	if got[0].Count != 20 {
+		t.Errorf("Count = %d, want 20", got[0].Count)
+	}
+	if got[0].HoldID != "hold-shared" {
+		t.Errorf("HoldID = %q, want hold-shared (approve must target the shared hold)", got[0].HoldID)
+	}
+	if got[0].RequestID != "p"+itoaPort(19) {
+		t.Errorf("representative RequestID = %q, want newest (p19)", got[0].RequestID)
+	}
+}
+
+// TestDisplayedOps_PendingDistinctHoldsStaySeparate guards the other
+// side: pending ops on DIFFERENT holds (e.g. different identities) must
+// stay separate rows — folding is by shared hold, not by URL.
+func TestDisplayedOps_PendingDistinctHoldsStaySeparate(t *testing.T) {
+	t0 := time.Unix(1_700_000_000, 0).UTC()
+	got := DisplayedOps(Model{Ops: []opstream.Op{
+		{RequestID: "p1", Method: "GET", URL: "https://example.com/foo", Status: opstream.StatusPending, HoldID: "hold-1", UpdatedAt: t0},
+		{RequestID: "p2", Method: "GET", URL: "https://example.com/foo", Status: opstream.StatusPending, HoldID: "hold-2", UpdatedAt: t0.Add(time.Second)},
+	}})
+	if len(got) != 2 {
+		t.Fatalf("groups len = %d, want 2 (distinct holds do not fold)", len(got))
+	}
+}
+
 // TestDisplayedOps_FilesAtRootFold — files directly under the host
 // root share directory "/" and fold.
 func TestDisplayedOps_FilesAtRootFold(t *testing.T) {

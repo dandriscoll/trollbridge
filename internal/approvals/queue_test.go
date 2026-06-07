@@ -2,6 +2,7 @@ package approvals
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,18 @@ func newReq() *types.RequestEvent {
 	}
 }
 
+// newReqN returns a request with a distinct dedupKey (unique path) so
+// that, after the #206 coalescing change, each Enqueue produces its own
+// hold. Tests whose intent is ordering or capacity — not dedup — use
+// this so identical requests don't silently collapse to one row.
+func newReqN(i int) *types.RequestEvent {
+	return &types.RequestEvent{
+		Host: "example.com", Port: 443, Method: "GET",
+		Path:       fmt.Sprintf("/p%d", i),
+		IdentityID: "id-1",
+	}
+}
+
 // TestPending_StableOrderAcrossCalls pins the contract behind the
 // fix for #39: `Pending()` must return holds in a stable
 // oldest-first order so the TUI's selection-by-index does not jump
@@ -26,7 +39,9 @@ func TestPending_StableOrderAcrossCalls(t *testing.T) {
 	// Enqueue with a forced 1ms gap so CreatedAt orders unambiguously.
 	want := []string{}
 	for i := 0; i < 5; i++ {
-		id, _, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+		// Distinct requests: this test pins ordering, not dedup; identical
+		// requests would coalesce to a single hold after #206.
+		id, _, _, err := q.Enqueue(newReqN(i), types.Decision{Effect: types.EffectAskUser})
 		if err != nil {
 			t.Fatalf("enqueue %d: %v", i, err)
 		}
@@ -56,7 +71,7 @@ func TestPending_StableOrderAcrossCalls(t *testing.T) {
 
 func TestEnqueue_ReturnsHoldID(t *testing.T) {
 	q := New(8, time.Minute, "deny")
-	id, ch, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,19 +85,21 @@ func TestEnqueue_ReturnsHoldID(t *testing.T) {
 
 func TestEnqueue_FullReturnsErrFull(t *testing.T) {
 	q := New(2, time.Minute, "deny")
+	// Distinct requests so each consumes a slot; identical ones would
+	// coalesce and never reach the cap (#206).
 	for i := 0; i < 2; i++ {
-		if _, _, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser}); err != nil {
+		if _, _, _, err := q.Enqueue(newReqN(i), types.Decision{Effect: types.EffectAskUser}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, _, err := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser}); err == nil {
+	if _, _, _, err := q.Enqueue(newReqN(99), types.Decision{Effect: types.EffectAskUser}); err == nil {
 		t.Fatal("expected ErrFull")
 	}
 }
 
 func TestApprove_ResolvesWait(t *testing.T) {
 	q := New(8, time.Minute, "deny")
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser, RuleID: "r1"})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser, RuleID: "r1"})
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
@@ -102,7 +119,7 @@ func TestApprove_ResolvesWait(t *testing.T) {
 
 func TestDeny_ResolvesWait(t *testing.T) {
 	q := New(8, time.Minute, "deny")
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	go q.Deny(id, "spam", "test")
 	d := q.Wait(context.Background(), id, ch)
 	if d.Effect != types.EffectAskUserResolvedDeny {
@@ -115,7 +132,7 @@ func TestDeny_ResolvesWait(t *testing.T) {
 
 func TestWait_TimesOutAsDeny(t *testing.T) {
 	q := New(8, 50*time.Millisecond, "deny")
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	d := q.Wait(context.Background(), id, ch)
 	if d.Effect != types.EffectAskUserTimedOut {
 		t.Errorf("effect: got %s, want timed_out", d.Effect)
@@ -124,7 +141,7 @@ func TestWait_TimesOutAsDeny(t *testing.T) {
 
 func TestWait_TimesOutAsAllow_WhenConfigured(t *testing.T) {
 	q := New(8, 50*time.Millisecond, "allow")
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	d := q.Wait(context.Background(), id, ch)
 	if d.Effect != types.EffectAskUserResolvedAllow {
 		t.Errorf("effect: got %s, want resolved_allow on allow timeout", d.Effect)
@@ -133,7 +150,7 @@ func TestWait_TimesOutAsAllow_WhenConfigured(t *testing.T) {
 
 func TestShutdown_ResolvesPendingAsDeny(t *testing.T) {
 	q := New(8, time.Hour, "deny")
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		q.Shutdown()
@@ -145,8 +162,11 @@ func TestShutdown_ResolvesPendingAsDeny(t *testing.T) {
 }
 
 // recordingLogger captures Info invocations for queue lifecycle
-// assertions. Matches the approvals.Logger interface.
+// assertions. Matches the approvals.Logger interface. Thread-safe: the
+// queue emits these from the resolving goroutine (Approve/Deny run via
+// `go`), so the append races the test's read without the mutex.
 type recordingLogger struct {
+	mu    sync.Mutex
 	calls []logCall
 }
 
@@ -156,7 +176,16 @@ type logCall struct {
 }
 
 func (r *recordingLogger) Info(msg string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls = append(r.calls, logCall{msg: msg, args: args})
+}
+
+// snap returns a copy of the recorded calls for race-free assertions.
+func (r *recordingLogger) snap() []logCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]logCall(nil), r.calls...)
 }
 
 func hasArg(args []any, key, valueContains string) bool {
@@ -192,28 +221,28 @@ func TestQueue_ApproveEmitsInfoEvent(t *testing.T) {
 	q := New(8, time.Minute, "deny")
 	log := &recordingLogger{}
 	q.SetLogger(log)
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	go q.Approve(id, "session", "test")
 	_ = q.Wait(context.Background(), id, ch)
-	// Approve pushes to the resolve channel BEFORE it emits the
-	// Info log; Wait can return before the log call lands. Poll
-	// briefly so this test is not racy on slow CI runners
-	// (Windows lane in particular).
+	// Approve broadcasts the decision BEFORE it emits the Info log;
+	// Wait can return before the log call lands. Poll briefly so this
+	// test is not racy on slow CI runners (Windows lane in particular).
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(log.calls) < 1 {
+	for time.Now().Before(deadline) && len(log.snap()) < 1 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(log.calls) != 1 {
-		t.Fatalf("want 1 Info call, got %d (%v)", len(log.calls), log.calls)
+	calls := log.snap()
+	if len(calls) != 1 {
+		t.Fatalf("want 1 Info call, got %d (%v)", len(calls), calls)
 	}
-	if !hasArg(log.calls[0].args, "event", "hold_approved") {
-		t.Errorf("event: %v", log.calls[0].args)
+	if !hasArg(calls[0].args, "event", "hold_approved") {
+		t.Errorf("event: %v", calls[0].args)
 	}
-	if !hasArg(log.calls[0].args, "hold_id", id) {
-		t.Errorf("hold_id: %v", log.calls[0].args)
+	if !hasArg(calls[0].args, "hold_id", id) {
+		t.Errorf("hold_id: %v", calls[0].args)
 	}
-	if !hasArg(log.calls[0].args, "scope", "session") {
-		t.Errorf("scope: %v", log.calls[0].args)
+	if !hasArg(calls[0].args, "scope", "session") {
+		t.Errorf("scope: %v", calls[0].args)
 	}
 }
 
@@ -222,20 +251,21 @@ func TestQueue_DenyEmitsInfoEvent(t *testing.T) {
 	q := New(8, time.Minute, "deny")
 	log := &recordingLogger{}
 	q.SetLogger(log)
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	go q.Deny(id, "manual block", "test")
 	_ = q.Wait(context.Background(), id, ch)
-	// Same race as TestQueue_ApproveEmitsInfoEvent — Deny pushes to
-	// the resolve channel before emitting Info; poll briefly.
+	// Same race as TestQueue_ApproveEmitsInfoEvent — Deny broadcasts the
+	// decision before emitting Info; poll briefly.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && len(log.calls) < 1 {
+	for time.Now().Before(deadline) && len(log.snap()) < 1 {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(log.calls) != 1 || !hasArg(log.calls[0].args, "event", "hold_denied") {
-		t.Errorf("expected one hold_denied Info; got %v", log.calls)
+	calls := log.snap()
+	if len(calls) != 1 || !hasArg(calls[0].args, "event", "hold_denied") {
+		t.Errorf("expected one hold_denied Info; got %v", calls)
 	}
-	if !hasArg(log.calls[0].args, "reason", "manual block") {
-		t.Errorf("reason missing: %v", log.calls[0].args)
+	if !hasArg(calls[0].args, "reason", "manual block") {
+		t.Errorf("reason missing: %v", calls[0].args)
 	}
 }
 
@@ -244,14 +274,15 @@ func TestQueue_TimeoutEmitsInfoEvent(t *testing.T) {
 	q := New(8, 50*time.Millisecond, "deny")
 	log := &recordingLogger{}
 	q.SetLogger(log)
-	_, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	_, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	id := q.Pending()[0].ID
 	_ = q.Wait(context.Background(), id, ch)
-	if len(log.calls) != 1 || !hasArg(log.calls[0].args, "event", "hold_timed_out") {
-		t.Errorf("expected one hold_timed_out Info; got %v", log.calls)
+	calls := log.snap()
+	if len(calls) != 1 || !hasArg(calls[0].args, "event", "hold_timed_out") {
+		t.Errorf("expected one hold_timed_out Info; got %v", calls)
 	}
-	if !hasArg(log.calls[0].args, "on_timeout", "deny") {
-		t.Errorf("on_timeout missing: %v", log.calls[0].args)
+	if !hasArg(calls[0].args, "on_timeout", "deny") {
+		t.Errorf("on_timeout missing: %v", calls[0].args)
 	}
 }
 
@@ -259,7 +290,7 @@ func TestQueue_TimeoutEmitsInfoEvent(t *testing.T) {
 // is never called.
 func TestQueue_NoLoggerDoesNotPanic(t *testing.T) {
 	q := New(8, 50*time.Millisecond, "deny")
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	go q.Approve(id, "", "test")
 	_ = q.Wait(context.Background(), id, ch)
 	// Reaching here is the assertion.
@@ -275,19 +306,28 @@ func TestQueue_PersistCallbackFiresOnApprove(t *testing.T) {
 		effect types.Effect
 		source string
 	}
+	// The callback fires on the Deny/Approve goroutine; guard the shared
+	// captures so this test is clean under -race (the assertions read
+	// the same fields the callback writes).
+	var mu sync.Mutex
 	var got []call
 	q.SetDecisionPersist(func(req *types.RequestEvent, effect types.Effect, source string) {
+		mu.Lock()
+		defer mu.Unlock()
 		got = append(got, call{req: req, effect: effect, source: source})
 	})
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	go q.Approve(id, "once", "tui")
 	_ = q.Wait(context.Background(), id, ch)
 	// The Approve goroutine fires the callback synchronously after
-	// the resolveCh send; give it a moment to land.
+	// the broadcast send; give it a moment to land.
+	gotLen := func() int { mu.Lock(); defer mu.Unlock(); return len(got) }
 	deadline := time.Now().Add(500 * time.Millisecond)
-	for len(got) == 0 && time.Now().Before(deadline) {
+	for gotLen() == 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if len(got) != 1 {
 		t.Fatalf("persist callback fired %d time(s); want 1", len(got))
 	}
@@ -305,19 +345,25 @@ func TestQueue_PersistCallbackFiresOnApprove(t *testing.T) {
 // TestQueue_PersistCallbackFiresOnDeny — symmetric to approve.
 func TestQueue_PersistCallbackFiresOnDeny(t *testing.T) {
 	q := New(8, time.Minute, "deny")
+	var mu sync.Mutex
 	var lastEffect types.Effect
 	var lastSource string
 	q.SetDecisionPersist(func(req *types.RequestEvent, effect types.Effect, source string) {
+		mu.Lock()
+		defer mu.Unlock()
 		lastEffect = effect
 		lastSource = source
 	})
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	go q.Deny(id, "blocked by policy", "attach")
 	_ = q.Wait(context.Background(), id, ch)
+	readSource := func() string { mu.Lock(); defer mu.Unlock(); return lastSource }
 	deadline := time.Now().Add(500 * time.Millisecond)
-	for lastSource == "" && time.Now().Before(deadline) {
+	for readSource() == "" && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	if lastEffect != types.EffectDeny {
 		t.Errorf("effect = %v, want %v", lastEffect, types.EffectDeny)
 	}
@@ -352,7 +398,7 @@ func TestQueue_ApproveAfterAdvisorResolved_DoesNotDoubleFire(t *testing.T) {
 		defer mu.Unlock()
 		calls = append(calls, e)
 	})
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 
 	if !q.ResolveByAdvisor(id, types.Decision{Effect: types.EffectDeny}) {
 		t.Fatal("ResolveByAdvisor returned false unexpectedly")
@@ -391,7 +437,7 @@ func TestQueue_AdvisorAfterApprove_DoesNotDoubleFire(t *testing.T) {
 		defer mu.Unlock()
 		calls = append(calls, e)
 	})
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 
 	if !q.Approve(id, "once", "tui") {
 		t.Fatal("Approve returned false unexpectedly")
@@ -424,7 +470,7 @@ func TestQueue_DenyAfterAdvisorResolved_DoesNotDoubleFire(t *testing.T) {
 		defer mu.Unlock()
 		calls = append(calls, e)
 	})
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 
 	if !q.ResolveByAdvisor(id, types.Decision{Effect: types.EffectAllow}) {
 		t.Fatal("ResolveByAdvisor returned false unexpectedly")
@@ -453,7 +499,7 @@ func TestQueue_PersistCallbackDoesNotFireOnTimeout(t *testing.T) {
 	q.SetDecisionPersist(func(req *types.RequestEvent, effect types.Effect, source string) {
 		fired = true
 	})
-	_, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	_, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	id := q.Pending()[0].ID
 	_ = q.Wait(context.Background(), id, ch)
 	// Give the callback a moment in case the deny path mistakenly invokes it.
@@ -473,7 +519,7 @@ func TestQueue_Reconfigure_NewTimeoutAffectsNewWaits(t *testing.T) {
 	q.Reconfigure(8, 100*time.Millisecond, "deny")
 
 	// New hold uses the new timeout.
-	id, ch, err := q.Enqueue(&types.RequestEvent{ID: "r1"}, types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, err := q.Enqueue(&types.RequestEvent{ID: "r1"}, types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +539,7 @@ func TestQueue_Reconfigure_OnTimeoutSwap(t *testing.T) {
 	q := New(8, 50*time.Millisecond, "deny")
 	q.Reconfigure(8, 50*time.Millisecond, "allow")
 
-	id, ch, err := q.Enqueue(&types.RequestEvent{ID: "r1"}, types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, err := q.Enqueue(&types.RequestEvent{ID: "r1"}, types.Decision{Effect: types.EffectAskUser})
 	if err != nil {
 		t.Fatal(err)
 	}

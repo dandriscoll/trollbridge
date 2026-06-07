@@ -36,7 +36,8 @@ const (
 	// Ask-case lifecycle events. INFO-level for state transitions an
 	// operator should see by default (no --verbose); WARN for refusal
 	// states. Closes #36.
-	EventRequestHeld    = "request_held"     // INFO; holdAndWait after Enqueue success
+	EventRequestHeld      = "request_held"      // INFO; holdAndWait after Enqueue success
+	EventRequestCoalesced = "request_coalesced" // INFO; #206 — identical request attached to an existing pending hold instead of a new row
 	EventHoldApproved   = "hold_approved"    // INFO; Queue.Approve
 	EventHoldDenied     = "hold_denied"      // INFO; Queue.Deny
 	EventHoldTimedOut   = "hold_timed_out"   // INFO; Queue.Wait timeout branch

@@ -31,7 +31,7 @@ func TestResolveByAdvisor_DoesNotFirePersistCb_Allow(t *testing.T) {
 		defer mu.Unlock()
 		calls = append(calls, e)
 	})
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	if !q.ResolveByAdvisor(id, types.Decision{Effect: types.EffectAllow, Source: types.SourceLLMAdvisor}) {
 		t.Fatal("ResolveByAdvisor returned false unexpectedly")
 	}
@@ -59,7 +59,7 @@ func TestResolveByAdvisor_DoesNotFirePersistCb_Deny(t *testing.T) {
 		defer mu.Unlock()
 		calls = append(calls, e)
 	})
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	if !q.ResolveByAdvisor(id, types.Decision{Effect: types.EffectDeny, Source: types.SourceLLMAdvisor}) {
 		t.Fatal("ResolveByAdvisor returned false unexpectedly")
 	}
@@ -78,7 +78,7 @@ func TestResolveByAdvisor_DoesNotFirePersistCb_Deny(t *testing.T) {
 func TestResolveByAdvisor_StillResolvesHold(t *testing.T) {
 	q := New(8, time.Minute, "deny")
 	q.SetDecisionPersist(func(_ *types.RequestEvent, _ types.Effect, _ string) {})
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	if !q.ResolveByAdvisor(id, types.Decision{Effect: types.EffectAllow, Source: types.SourceLLMAdvisor}) {
 		t.Fatal("ResolveByAdvisor returned false; the hold should resolve")
 	}
@@ -110,7 +110,7 @@ func TestResolveByAdvisor_OperatorApproveStillPersists(t *testing.T) {
 		defer mu.Unlock()
 		calls = append(calls, source)
 	})
-	id, ch, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
 	if !q.Approve(id, "rule-id", "tui") {
 		t.Fatal("operator Approve returned false unexpectedly")
 	}
