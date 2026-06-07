@@ -48,10 +48,15 @@ func Describe() string {
 	return "fetch + verify " + URL + " (sha256), then run it under bash"
 }
 
+// fetchTimeout bounds the install.sh download. A var (not a const) so a
+// timeout test can lower it without waiting the production 30 s, matching
+// this file's test-seam convention (URL, Run, PinnedSHA256 are vars).
+var fetchTimeout = 30 * time.Second
+
 // fetchInstallScript downloads install.sh from URL. Split out so the
 // download path is exercised by tests via an httptest server.
 func fetchInstallScript(url string) ([]byte, error) {
-	c := &http.Client{Timeout: 30 * time.Second}
+	c := &http.Client{Timeout: fetchTimeout}
 	resp, err := c.Get(url)
 	if err != nil {
 		return nil, err
@@ -82,12 +87,23 @@ var Run = func(stdout, stderr io.Writer) error {
 //
 // Tests can override this var directly the same way they override Run.
 var RunWithPrefix = func(stdout, stderr io.Writer, prefix string) error {
-	// 1. Download install.sh. A network failure here is classified as
-	//    such and nothing is executed.
+	// 1. Download install.sh. A failed download — DNS, refused
+	//    connection, client timeout, or a non-2xx status such as 404 —
+	//    is an operational network/availability failure, not an
+	//    "unexpected" one: classify it directly as FailureNetwork (the
+	//    call site knows this is the download step) rather than routing
+	//    Go's http error text through ClassifyError's curl-shaped
+	//    substring branches, which it would not match (→ FailureUnknown).
+	//    Nothing is executed.
 	body, err := fetchInstallScript(URL)
 	if err != nil {
-		class, hint := ClassifyError(err, err.Error())
-		return &Error{Underlying: err, Class: class, Hint: hint}
+		return &Error{
+			Underlying: err,
+			Class:      FailureNetwork,
+			Hint: "could not download " + URL + " (" + err.Error() + "). " +
+				"Check network reachability with `curl -v " + URL + "` and re-run " +
+				"`trollbridge update`; if it persists the install host may be down.",
+		}
 	}
 	// 2. Verify the SHA-256 against the pin BEFORE writing or executing
 	//    anything. On mismatch, execute nothing.
@@ -198,7 +214,15 @@ func (e *Error) Unwrap() error { return e.Underlying }
 // of them when no stderr substring matches.
 func ClassifyError(err error, capturedStderr string) (FailureClass, string) {
 	se := strings.ToLower(capturedStderr)
-	if strings.Contains(se, "bash_required") || strings.Contains(se, "bash: not found") {
+	// `bash` genuinely absent from PATH: exec.Command("bash", …) fails to
+	// resolve before the script runs, yielding an *exec.Error
+	// (errors.Is(err, exec.ErrNotFound)) with empty stderr — none of the
+	// stderr-substring branches below would fire, so without this the
+	// failure misclassifies as FailureUnknown. The only program the
+	// updater execs is bash, so ErrNotFound unambiguously means bash is
+	// missing. errors.Is is robust to the exact message wording.
+	if errors.Is(err, exec.ErrNotFound) ||
+		strings.Contains(se, "bash_required") || strings.Contains(se, "bash: not found") {
 		return FailureBashMissing, "install `bash` (apt/brew/dnf) and re-run `trollbridge update`"
 	}
 	if strings.Contains(se, "sha256_mismatch") || strings.Contains(se, "signature mismatch") {
