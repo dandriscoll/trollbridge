@@ -151,8 +151,8 @@ func TestAllowList_BypassesEngineAndAdvisor(t *testing.T) {
 		t.Fatalf("status=%d body=%q want 200 ok", resp.StatusCode, string(body))
 	}
 
-	if prov.Calls != 0 {
-		t.Errorf("advisor was called %d times; expected 0 (allowlist short-circuits)", prov.Calls)
+	if prov.Calls.Load() != 0 {
+		t.Errorf("advisor was called %d times; expected 0 (allowlist short-circuits)", prov.Calls.Load())
 	}
 
 	cancel()
@@ -204,8 +204,8 @@ func TestDenyList_BeatsEverything(t *testing.T) {
 	if resp.StatusCode != StatusTrollbridgeDeclined {
 		t.Errorf("status: got %d, want %d", resp.StatusCode, StatusTrollbridgeDeclined)
 	}
-	if prov.Calls != 0 {
-		t.Errorf("advisor was called %d times; expected 0 (denylist short-circuits)", prov.Calls)
+	if prov.Calls.Load() != 0 {
+		t.Errorf("advisor was called %d times; expected 0 (denylist short-circuits)", prov.Calls.Load())
 	}
 
 	cancel()
@@ -299,7 +299,7 @@ func TestAllowList_WildcardSubdomainBypassesAdvisor(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("status: got %d, want 200", resp.StatusCode)
 	}
-	if prov.Calls != 0 {
+	if prov.Calls.Load() != 0 {
 		t.Error("advisor was called; expected fast-path bypass")
 	}
 }

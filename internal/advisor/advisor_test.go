@@ -172,8 +172,8 @@ func TestService_CachesByRequestShape(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		s.Classify(context.Background(), newReq(), "v1", nil, nil)
 	}
-	if mock.Calls != 1 {
-		t.Errorf("provider called %d times, want 1 (cached)", mock.Calls)
+	if mock.Calls.Load() != 1 {
+		t.Errorf("provider called %d times, want 1 (cached)", mock.Calls.Load())
 	}
 }
 
@@ -182,8 +182,8 @@ func TestService_CacheKeyIncludesRuleSetVersion(t *testing.T) {
 	s := New(Config{Enabled: true, ConfidenceFloor: "medium", CacheTTL: time.Minute}, mock)
 	s.Classify(context.Background(), newReq(), "v1", nil, nil)
 	s.Classify(context.Background(), newReq(), "v2", nil, nil)
-	if mock.Calls != 2 {
-		t.Errorf("provider called %d times across distinct rule_set_versions, want 2", mock.Calls)
+	if mock.Calls.Load() != 2 {
+		t.Errorf("provider called %d times across distinct rule_set_versions, want 2", mock.Calls.Load())
 	}
 }
 

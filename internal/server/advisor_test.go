@@ -107,7 +107,7 @@ func TestAdvisor_AllowsViaAskLLMRule(t *testing.T) {
 	if resp.StatusCode != 200 || !strings.Contains(string(body), "advisor-ok") {
 		t.Errorf("status=%d body=%q want 200 'advisor-ok'", resp.StatusCode, string(body))
 	}
-	if prov.Calls < 1 {
+	if prov.Calls.Load() < 1 {
 		t.Error("advisor was never called")
 	}
 
@@ -193,8 +193,8 @@ func TestAdvisor_AskUserNowConsultsAdvisor(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("status: got %d, want 200 (advisor confidently allowed)", resp.StatusCode)
 	}
-	if prov.Calls != 1 {
-		t.Errorf("advisor was called %d times; expected 1 (#53: ask_user now consults advisor)", prov.Calls)
+	if prov.Calls.Load() != 1 {
+		t.Errorf("advisor was called %d times; expected 1 (#53: ask_user now consults advisor)", prov.Calls.Load())
 	}
 }
 
@@ -231,7 +231,7 @@ func TestAdvisor_AskUserUnconfidentFallsToOperator(t *testing.T) {
 		t.Errorf("status: got %d, want %d (operator timeout after advisor unconfident)",
 			resp.StatusCode, StatusTrollbridgeDeclined)
 	}
-	if prov.Calls != 1 {
-		t.Errorf("advisor was called %d times; expected 1 (consulted but unconfident)", prov.Calls)
+	if prov.Calls.Load() != 1 {
+		t.Errorf("advisor was called %d times; expected 1 (consulted but unconfident)", prov.Calls.Load())
 	}
 }

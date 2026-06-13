@@ -360,7 +360,7 @@ func TestAdvisor_CannotMutateLists(t *testing.T) {
 		t.Errorf("deny.txt contents changed:\n%s", string(body))
 	}
 
-	if prov.Calls == 0 {
+	if prov.Calls.Load() == 0 {
 		t.Error("advisor was not consulted; the test could not exercise the mutation pin")
 	}
 }

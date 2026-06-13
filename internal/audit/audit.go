@@ -245,13 +245,23 @@ func (l *Logger) Write(e Entry) error {
 	if e.AuditSchemaVersion == 0 {
 		e.AuditSchemaVersion = 1
 	}
+	// Every channel send selects on l.stopCh so a send that races
+	// Close() abandons instead of panicking. l.ch is NEVER closed
+	// (Close closes l.stopCh) — closing a channel that writers send to
+	// is the send-on-closed-channel race this guards against (#208).
 	switch l.overflow {
 	case OverflowBlock:
-		l.ch <- e
-		return nil
+		select {
+		case l.ch <- e:
+			return nil
+		case <-l.stopCh:
+			return fmt.Errorf("audit: logger closed")
+		}
 	case OverflowDrop:
 		select {
 		case l.ch <- e:
+		case <-l.stopCh:
+			l.droppedCounter.Add(1)
 		default:
 			l.droppedCounter.Add(1)
 		}
@@ -260,6 +270,8 @@ func (l *Logger) Write(e Entry) error {
 		select {
 		case l.ch <- e:
 			return nil
+		case <-l.stopCh:
+			return fmt.Errorf("audit: logger closed")
 		default:
 			return fmt.Errorf("audit: buffer full")
 		}
@@ -286,7 +298,10 @@ func (l *Logger) Close() error {
 	if l.closed.Swap(true) {
 		return nil
 	}
-	close(l.ch)
+	// Signal shutdown via stopCh — NOT by closing l.ch. Writers send on
+	// l.ch and select on l.stopCh, so closing stopCh unblocks them
+	// without ever closing the channel they send to (#208).
+	close(l.stopCh)
 	l.wg.Wait()
 	if lg := l.opLog.Load(); lg != nil {
 		dropped := l.droppedCounter.Load()
@@ -309,7 +324,7 @@ func (l *Logger) writeLoop(f *os.File) {
 	// land as literal angle brackets in the audit log; this is a
 	// JSONL log, not HTML embedding.
 	enc.SetEscapeHTML(false)
-	for e := range l.ch {
+	encode := func(e Entry) {
 		if err := enc.Encode(e); err != nil {
 			if lg := l.opLog.Load(); lg != nil {
 				lg.Error("audit encode failure",
@@ -318,6 +333,24 @@ func (l *Logger) writeLoop(f *os.File) {
 					"error", err.Error())
 			} else {
 				fmt.Fprintf(os.Stderr, "audit: encode failed: %v\n", err)
+			}
+		}
+	}
+	for {
+		select {
+		case e := <-l.ch:
+			encode(e)
+		case <-l.stopCh:
+			// Close() signaled shutdown. Drain whatever is still
+			// buffered (best-effort), then exit. l.ch is never closed,
+			// so this is the only termination path.
+			for {
+				select {
+				case e := <-l.ch:
+					encode(e)
+				default:
+					return
+				}
 			}
 		}
 	}

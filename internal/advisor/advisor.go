@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/oplog"
@@ -685,12 +686,16 @@ func (h *HTTPClassifier) Classify(ctx context.Context, in Input) (Output, error)
 type MockProvider struct {
 	Output Output
 	Err    error
-	Calls  int
+	// Calls counts Classify invocations. Atomic because Classify runs
+	// on the server's advisor goroutine (spawned by holdAndWait) while
+	// tests read the count from the test goroutine — a non-atomic int
+	// here is a genuine data race under -race (#208).
+	Calls atomic.Int64
 }
 
 // Classify implements Provider.
 func (m *MockProvider) Classify(ctx context.Context, in Input) (Output, error) {
-	m.Calls++
+	m.Calls.Add(1)
 	if m.Err != nil {
 		return Output{}, m.Err
 	}
