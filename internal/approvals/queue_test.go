@@ -568,3 +568,100 @@ func TestQueue_Reconfigure_IgnoresInvalidValues(t *testing.T) {
 		t.Errorf("onTimeout = %q, want preserved 'deny'", q.onTimeout)
 	}
 }
+
+// --- #208: per-waiter release on client (request-context) cancel ---
+
+// TestQueue_WaitReleasesAndEvictsOnRequestCancel pins #208: when the
+// sole waiter's request context cancels (client disconnected), Wait
+// returns promptly with a deny (NOT after timeout), the hold is evicted
+// (slot freed), and the decision-persist callback does NOT fire (an
+// abandonment is not an operator decision).
+func TestQueue_WaitReleasesAndEvictsOnRequestCancel(t *testing.T) {
+	q := New(8, time.Minute, "deny") // long timeout: only the cancel can release
+	var persisted int
+	var pmu sync.Mutex
+	q.SetDecisionPersist(func(_ *types.RequestEvent, _ types.Effect, _ string) {
+		pmu.Lock()
+		persisted++
+		pmu.Unlock()
+	})
+	id, ch, _, _ := q.Enqueue(newReq(), types.Decision{Effect: types.EffectAskUser})
+	if len(q.Pending()) != 1 {
+		t.Fatalf("hold not pending after enqueue")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan types.Decision, 1)
+	start := time.Now()
+	go func() { done <- q.Wait(ctx, id, ch) }()
+	cancel()
+	select {
+	case d := <-done:
+		if time.Since(start) > 2*time.Second {
+			t.Errorf("Wait took %v; should return promptly on request cancel, not at timeout", time.Since(start))
+		}
+		if d.Effect != types.EffectAskUserResolvedDeny {
+			t.Errorf("effect = %s, want resolved_deny (client disconnected)", d.Effect)
+		}
+		if d.Reason != "client disconnected before approval" {
+			t.Errorf("reason = %q", d.Reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Wait did not return on request-context cancel (waiter pinned)")
+	}
+	if len(q.Pending()) != 0 {
+		t.Errorf("hold not evicted after last waiter canceled; Pending=%d", len(q.Pending()))
+	}
+	pmu.Lock()
+	defer pmu.Unlock()
+	if persisted != 0 {
+		t.Errorf("persistCb fired %d time(s) on abandonment; want 0", persisted)
+	}
+}
+
+// TestQueue_CancelWaiterKeepsHoldForSiblings pins #208 + #206: when one
+// coalesced waiter's client disconnects, only that waiter is released;
+// the hold stays pending for the remaining sibling and the operator can
+// still approve it (the sibling resolves allow).
+func TestQueue_CancelWaiterKeepsHoldForSiblings(t *testing.T) {
+	q := New(8, time.Minute, "deny")
+	req := newReq()
+	id1, ch1, c1, _ := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
+	id2, ch2, c2, _ := q.Enqueue(req, types.Decision{Effect: types.EffectAskUser})
+	if c1 || !c2 || id1 != id2 {
+		t.Fatalf("expected second identical request to coalesce: c1=%v c2=%v id1=%s id2=%s", c1, c2, id1, id2)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	gone := make(chan types.Decision, 1)
+	go func() { gone <- q.Wait(ctx, id1, ch1) }() // first waiter: cancelable
+	stay := make(chan types.Decision, 1)
+	go func() { stay <- q.Wait(context.Background(), id2, ch2) }() // sibling: stays
+
+	cancel() // first client disconnects
+	select {
+	case d := <-gone:
+		if d.Reason != "client disconnected before approval" {
+			t.Errorf("first waiter: reason = %q", d.Reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("first waiter not released on cancel")
+	}
+
+	// The hold must remain — a sibling is still waiting.
+	if len(q.Pending()) != 1 {
+		t.Fatalf("hold evicted despite a remaining sibling; Pending=%d", len(q.Pending()))
+	}
+
+	// Operator approves; the surviving sibling resolves allow.
+	if !q.Approve(id2, "once", "tui") {
+		t.Fatalf("approve failed; hold went missing")
+	}
+	select {
+	case d := <-stay:
+		if d.Effect != types.EffectAskUserResolvedAllow {
+			t.Errorf("sibling effect = %s, want resolved_allow", d.Effect)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("surviving sibling not resolved by operator approve")
+	}
+}

@@ -255,7 +255,13 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
 		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))
-		decision = s.holdAndWait(req, decision)
+		// NOTE(#208): r.Context() on the intercepted path is the
+		// background context http.ReadRequest attaches — it is NOT tied
+		// to the TLS connection's close, so a disconnect here does not
+		// yet release the waiter early (status-quo). Conn-close-tied
+		// cancellation for the intercept path is a filed follow-up; the
+		// blocking HTTP and CONNECT paths get early release today.
+		decision = s.holdAndWait(r.Context(), req, decision)
 		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
 	s.transitionOpFromEvaluating(req.ID, decision.Effect)

@@ -306,3 +306,63 @@ func TestSessions_TrackedAcrossRequests(t *testing.T) {
 		t.Error("expected at least one session")
 	}
 }
+
+// TestApproval_ClientDisconnectFreesSlot pins #208 at the wire level:
+// a held proxied request whose client disconnects (request-context
+// canceled) must release its waiter and free the max_pending slot
+// PROMPTLY — not after timeout_seconds. Uses a long timeout so only the
+// disconnect can free the hold.
+func TestApproval_ClientDisconnectFreesSlot(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer origin.Close()
+	originHostOnly, _, _ := net.SplitHostPort(strings.TrimPrefix(origin.URL, "http://"))
+
+	rules := fmt.Sprintf(`
+- id: ask-the-operator
+  match: {host: %s}
+  effect: ask_user
+`, originHostOnly)
+	h := bootApprovalProxy(t, rules, 30, "deny") // 30s timeout: only disconnect frees it
+	defer h.close()
+
+	pURL, _ := url.Parse("http://" + h.addr)
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pURL)}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, origin.URL, nil)
+		resp, err := c.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		errCh <- err
+	}()
+
+	// Wait for the hold to occupy a slot.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && len(h.listPending()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(h.listPending()) != 1 {
+		t.Fatalf("hold never appeared; Pending=%d", len(h.listPending()))
+	}
+
+	// Client disconnects.
+	cancel()
+
+	// The slot must free promptly — well under the 30s timeout.
+	freed := false
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(h.listPending()) == 0 {
+			freed = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !freed {
+		t.Fatalf("max_pending slot not freed after client disconnect (waiter pinned to timeout); Pending=%d", len(h.listPending()))
+	}
+	<-errCh // the canceled request returns an error; drain it
+}

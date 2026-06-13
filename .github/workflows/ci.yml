@@ -43,6 +43,19 @@ jobs:
       - name: go test
         run: go test ./...
 
+      # Race detector (#208). Linux-only: the ubuntu runner has a
+      # reliable cgo toolchain for -race, and data races are logic bugs
+      # that surface identically across OSes, so one lane is the right
+      # scope. Covers the whole module — internal/approvals (whose whole
+      # purpose is concurrent hold resolution) and its neighbors. The
+      # race detector requires cgo, so this step overrides the
+      # job-level CGO_ENABLED=0.
+      - name: go test (-race)
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./...
+
       # e2e tests build and exercise the trollbridge binary as a
       # subprocess. All three OS lanes are required: Windows and
       # macOS were promoted from scratch (continue-on-error) to

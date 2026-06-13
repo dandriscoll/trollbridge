@@ -249,8 +249,18 @@ func (q *Queue) Enqueue(req *types.RequestEvent, baseDecision types.Decision) (i
 
 // Wait blocks on the hold until resolution or the configured
 // timeout elapses. The returned Decision will reflect the final
-// outcome including timeout-deny / timeout-allow / shutdown-deny.
-func (q *Queue) Wait(ctx context.Context, id string, ch <-chan types.Decision) types.Decision {
+// outcome including timeout-deny / timeout-allow.
+//
+// reqCtx is the PER-REQUEST context for this waiter (closes #208). When
+// it is canceled — the client disconnected — only THIS waiter is
+// released: cancelWaiter removes it from the hold and evicts the hold
+// only if it was the last waiter (freeing the max_pending slot). The
+// hold is never resolved or denied on this path, so coalesced siblings
+// keep waiting and the operator can still decide. Server shutdown is
+// handled separately by Queue.Shutdown(), which broadcasts to every
+// waiter (the `<-ch` case below), so callers that must NOT abandon on
+// disconnect (the signal_after background wait) pass context.Background().
+func (q *Queue) Wait(reqCtx context.Context, id string, ch <-chan types.Decision) types.Decision {
 	timer := time.NewTimer(q.timeout)
 	defer timer.Stop()
 	select {
@@ -296,19 +306,69 @@ func (q *Queue) Wait(ctx context.Context, id string, ch <-chan types.Decision) t
 				"timeout_seconds", int(q.timeout.Seconds()))
 		}
 		return d
-	case <-ctx.Done():
-		d := types.Decision{
-			Effect: types.EffectAskUserResolvedDeny,
-			Source: types.SourceApprovalTimeout,
-			Reason: "trollbridge shutdown; approvals denied",
-		}
-		h := q.claim(id)
+	case <-reqCtx.Done():
+		// This waiter's client disconnected (or canceled the request).
+		// Release only this waiter — do not resolve the hold or deny the
+		// coalesced siblings (#208). cancelWaiter removes this waiter
+		// under mu and evicts the hold only if it was the last one.
+		h, evicted, remaining := q.cancelWaiter(id, ch)
 		if h == nil {
+			// A resolver (operator / advisor / timeout / shutdown) won
+			// the race and already claimed the hold; our decision is on
+			// ch.
 			return <-ch
 		}
-		broadcast(h, d)
-		return d
+		if q.opLog != nil {
+			q.opLog.Info("hold waiter abandoned by client",
+				"event", oplog.EventHoldAbandoned,
+				"hold_id", h.ID,
+				"request_id", h.Request.ID,
+				"identity", h.Request.IdentityID,
+				"method", h.Request.Method,
+				"scheme", h.Request.Scheme,
+				"host", h.Request.Host,
+				"port", h.Request.Port,
+				"evicted", evicted,
+				"remaining_waiters", remaining)
+		}
+		return types.Decision{
+			Effect: types.EffectAskUserResolvedDeny,
+			Source: types.SourceApprovalQueue,
+			Reason: "client disconnected before approval",
+		}
 	}
+}
+
+// cancelWaiter releases a single waiter (its client disconnected) from
+// hold id, identified by its resolution channel ch. It removes only
+// that waiter; if the hold still has other waiters it stays pending and
+// resolvable (coalesced siblings, #206). If ch was the LAST waiter, the
+// hold is marked resolved and evicted from both indexes — freeing its
+// max_pending slot — WITHOUT broadcasting a decision or firing persistCb
+// (an abandonment is not an operator decision). Returns the (now possibly
+// detached) hold for logging, whether it was evicted, and how many
+// waiters remain. Returns (nil, false, 0) if a resolver already claimed
+// the hold (the caller then reads its decision off ch).
+func (q *Queue) cancelWaiter(id string, ch <-chan types.Decision) (h *Hold, evicted bool, remaining int) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	hold, ok := q.items[id]
+	if !ok || hold.resolved {
+		return nil, false, 0
+	}
+	for i, w := range hold.waiters {
+		if w == ch { // channel identity (bidirectional == recv-only)
+			hold.waiters = append(hold.waiters[:i], hold.waiters[i+1:]...)
+			break
+		}
+	}
+	if len(hold.waiters) == 0 {
+		hold.resolved = true
+		delete(q.items, id)
+		delete(q.byKey, hold.dedupKey)
+		return hold, true, 0
+	}
+	return hold, false, len(hold.waiters)
 }
 
 // Approve resolves the hold with an allow decision. Returns

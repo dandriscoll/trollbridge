@@ -43,6 +43,7 @@ const (
 	EventHoldTimedOut   = "hold_timed_out"   // INFO; Queue.Wait timeout branch
 	EventHoldQueueFull  = "hold_queue_full"  // WARN; holdAndWait on ErrFull
 	EventHoldSignaled   = "hold_signaled"    // INFO; #43 — hold elapsed signal_after_seconds; consumer got 471 + hold-id; queue continues to track resolution
+	EventHoldAbandoned  = "hold_abandoned"   // INFO; #208 — a waiter's client disconnected; that waiter released (hold evicted only if it was the last waiter)
 
 	// Decision persistence (#49). Fired by the daemon's queue-level
 	// DecisionPersist callback after a manual approve/deny. Both

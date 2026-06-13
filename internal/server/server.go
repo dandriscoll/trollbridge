@@ -589,7 +589,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	// no advisor configured in this phase), hold the request.
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
 		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))
-		decision = s.holdAndWait(req, decision)
+		decision = s.holdAndWait(r.Context(), req, decision)
 		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
 
@@ -655,7 +655,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 // entry the audit-write path strips back out and stores in
 // `llm_input_hash`. This couples advisor input to the audit
 // record without threading a side-channel.
-func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types.Decision {
+func (s *Server) holdAndWait(reqCtx context.Context, req *types.RequestEvent, base types.Decision) types.Decision {
 	// Per #53: enqueue first so the operator can see and intervene on
 	// the hold immediately. Then consult the advisor in parallel.
 	// Whichever resolver fires first (advisor confident, operator
@@ -724,9 +724,9 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 		req.Headers.Set("X-Trollbridge-LLM-Input-Hash", advisor.CanonicalizeInput(input))
 		go s.consultAdvisorForHold(req, id, hdrs, lists)
 	}
-	ctx := s.rootCtx
-	if ctx == nil {
-		ctx = context.Background()
+	rootCtx := s.rootCtx
+	if rootCtx == nil {
+		rootCtx = context.Background()
 	}
 
 	// signal_after_seconds: when set, race a timer against the
@@ -736,10 +736,20 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 	// resolution is still logged + cleaned up. (#43)
 	signalAfter := time.Duration(s.cfg.Approvals.SignalAfterSeconds) * time.Second
 	if signalAfter <= 0 {
-		return s.queue.Wait(ctx, id, ch)
+		// Blocking path: the client holds the connection open for the
+		// duration of the hold. Tie the wait to the REQUEST context
+		// (#208) so a disconnect releases this waiter immediately —
+		// freeing the goroutine and (if it was the last waiter) the
+		// max_pending slot — instead of pinning both for timeout_seconds.
+		return s.queue.Wait(reqCtx, id, ch)
 	}
+	// signal_after path: the consumer is EXPECTED to receive a 471 and
+	// disconnect, while the queue keeps tracking the hold to its eventual
+	// resolution (#43/#97). Abandoning on the consumer's disconnect would
+	// defeat that, so the background wait uses a non-cancelable context;
+	// Queue.Shutdown() (not the context) releases it on server shutdown.
 	resolved := make(chan types.Decision, 1)
-	go func() { resolved <- s.queue.Wait(ctx, id, ch) }()
+	go func() { resolved <- s.queue.Wait(context.Background(), id, ch) }()
 	select {
 	case d := <-resolved:
 		return d
@@ -762,7 +772,7 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 			select {
 			case d := <-resolved:
 				s.writePostSignalAudit(req, d, signalCfg, time.Since(start))
-			case <-ctx.Done():
+			case <-rootCtx.Done():
 				// Shutdown — abandon. The held request's eventual
 				// resolution is lost from the audit; the original
 				// 471-signaled entry already records the held state.
@@ -774,7 +784,7 @@ func (s *Server) holdAndWait(req *types.RequestEvent, base types.Decision) types
 			RuleID: base.RuleID,
 			HoldID: id,
 		}
-	case <-ctx.Done():
+	case <-rootCtx.Done():
 		return <-resolved
 	}
 }
@@ -911,7 +921,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
 		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))
-		decision = s.holdAndWait(req, decision)
+		decision = s.holdAndWait(r.Context(), req, decision)
 		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
 	// See HTTP path comment above — same lifecycle (closes #58).
