@@ -24,10 +24,26 @@ every help string is adjacent to the surface it changes.
 - `Tab` — switch focus between the approvals pane and the console
   pane.
 - approvals pane: `a` approve · `d` deny · `↑↓` (or `j`/`k`) select ·
-  `r` refresh now · `q` (or `Esc`) quit.
+  `r` refresh now · `o` open · `c` close (while open) · `q` (or `Esc`)
+  quit.
 - console pane: type a command, `Enter` to run, `Backspace` to edit,
   `Ctrl-U` to clear the line, `Esc` to return to the approvals pane.
 - anywhere: `Ctrl-C` quit.
+
+### Open mode
+
+Press `o` to open a time-boxed window that **allows all traffic**
+without modifying the allow/deny lists — useful for letting an agent
+run unattended for a short, deliberate burst. The first press opens the
+proxy for **1 minute**; each further `o` extends it (`+1`, `+3`, `+5`,
+`+20`, `+30` minutes, capped at `+30`). While open, the approvals-pane
+border turns **amber** and the bottom border shows `[c] close (Ns)` with
+the seconds remaining; press `c` to close immediately. The window
+reverts to normal policy automatically when it lapses. Every request
+allowed during the window is audited with `decision_source: open_mode`,
+and the operational log records `open_mode_extended` / `open_mode_closed`
+events, so the bypass is fully reviewable after the fact. Open mode is
+also drivable from `trollbridge attach` over the control plane.
 
 The approvals list refreshes automatically as the queue changes;
 one-shot `trollbridge approve <id>` / `trollbridge deny <id>` remain

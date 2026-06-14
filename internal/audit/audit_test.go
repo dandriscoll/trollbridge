@@ -165,7 +165,8 @@ func TestParseLevel(t *testing.T) {
 // the sources the level admits.
 //
 // LevelNone:      0 lines.
-// LevelDecisions: only llm_advisor, approval_queue, approval_timeout.
+// LevelDecisions: only llm_advisor, approval_queue, approval_timeout,
+// open_mode (all operator/LLM decisions, #209).
 // LevelAll:       every source.
 //
 // The DecisionSource set is taken from types.AllDecisionSources so
@@ -190,6 +191,9 @@ func TestLogger_LevelFilter_DropsByDecisionSource(t *testing.T) {
 				string(types.SourceLLMAdvisor):      true,
 				string(types.SourceApprovalQueue):   true,
 				string(types.SourceApprovalTimeout): true,
+				// #209: open mode is operator-initiated, so its allows
+				// survive the `decisions` level (IsHumanOrLLM=true).
+				string(types.SourceOpenMode): true,
 			},
 		},
 		{

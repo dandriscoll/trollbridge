@@ -253,6 +253,11 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 			"decision", string(decision.Effect),
 			"source", string(decision.Source), "rule_id", decision.RuleID)
 	}
+	// Open mode (#209): allow all traffic while the window is open.
+	if active, _ := s.OpenModeState(); active {
+		decision = openModeAllow()
+		rlog.Debug("open_mode_allow", "phase", oplog.PhaseResolved)
+	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
 		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))
 		// NOTE(#208): r.Context() on the intercepted path is the

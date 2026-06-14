@@ -100,6 +100,10 @@ func (s *stubClient) SuggestNow() (*Suggestion, error) {
 	return s.suggestion, nil
 }
 
+func (s *stubClient) OpenModeState() (bool, time.Time, error)  { return false, time.Time{}, nil }
+func (s *stubClient) ExtendOpenMode() (bool, time.Time, error) { return true, time.Time{}, nil }
+func (s *stubClient) CloseOpenMode() (bool, time.Time, error)  { return false, time.Time{}, nil }
+
 // TestRunLoop_ApproveFlowEndToEnd drives runLoop with scripted
 // keystrokes and a stub control client; asserts the approve call
 // landed and the loop exited cleanly on 'q'.

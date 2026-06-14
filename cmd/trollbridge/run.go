@@ -416,6 +416,10 @@ func newRunCmd() *cobra.Command {
 				sugMgr.SetRulesPath(includes[0])
 			}
 			srv.Control().SetSuggestion(suggestion.ControlAdapter{M: sugMgr})
+			// #209: expose open mode over the control plane so an
+			// attach-mode operator can open/extend/close it. The server
+			// itself satisfies control.OpenModeProvider.
+			srv.Control().SetOpenMode(srv)
 			// #189: wire the list-edit writer so attach-mode operators
 			// can mutate allow/deny via /v1/lists/allow + /deny. Each
 			// mutation reloads the in-memory matcher / suggestion view
@@ -488,7 +492,7 @@ func newRunCmd() *cobra.Command {
 								"error", fmt.Sprintf("%v", r))
 						}
 					}()
-					inproc := tui.NewInProcessClientWithSuggestion(srv.Queue(), srv.Ops(), srv.Advisor(), srv, tuiSuggestionAdapter{m: sugMgr})
+					inproc := tui.WithOpenMode(tui.NewInProcessClientWithSuggestion(srv.Queue(), srv.Ops(), srv.Advisor(), srv, tuiSuggestionAdapter{m: sugMgr}), srv)
 					histAdapter := tuiHistoryAdapter{h: srv.Engine().History()}
 					if err := tui.RunOperator(ctx, inproc, os.Stdin, os.Stdout, backend, welcome, cancel, tui.Options{
 						ChimeEnabled: cfg.TUI.Alerts.ChimeEnabled(),

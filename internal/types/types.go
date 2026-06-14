@@ -89,6 +89,11 @@ const (
 	SourceTLSHandshakeFail DecisionSource = "tls_handshake_fail"
 	SourceMalformedTunnel  DecisionSource = "malformed_tunnel"
 	SourceBodyReadFail     DecisionSource = "body_read_fail"
+	// SourceOpenMode (#209): the operator's time-boxed "open" window
+	// allowed this request, bypassing policy without modifying the
+	// allow/deny lists. Operator-initiated, so it is human-or-LLM for
+	// the `decisions` audit level — the operator chose to open the gate.
+	SourceOpenMode DecisionSource = "open_mode"
 )
 
 // AllDecisionSources is the authoritative list of DecisionSource
@@ -107,6 +112,7 @@ var AllDecisionSources = []DecisionSource{
 	SourceDenyList,
 	SourceTLSHandshakeFail,
 	SourceMalformedTunnel,
+	SourceOpenMode,
 	SourceBodyReadFail,
 }
 
@@ -123,7 +129,7 @@ var AllDecisionSources = []DecisionSource{
 // a static-policy auto-decision.
 func (s DecisionSource) IsHumanOrLLM() bool {
 	switch s {
-	case SourceLLMAdvisor, SourceApprovalQueue, SourceApprovalTimeout:
+	case SourceLLMAdvisor, SourceApprovalQueue, SourceApprovalTimeout, SourceOpenMode:
 		return true
 	}
 	return false

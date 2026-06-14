@@ -41,6 +41,11 @@ const (
 	colorFocused   = "\x1b[36m"
 	colorUnfocused = "\x1b[2m"
 	colorReset     = "\x1b[0m"
+	// colorOpenMode is the amber/yellow chrome color the approvals pane
+	// border uses while the time-boxed "allow all traffic" window is
+	// active (#209) — a persistent, distinct-from-focus signal that the
+	// proxy is currently letting everything through.
+	colorOpenMode = "\x1b[33m"
 
 	// Below borderEmbedThreshold, label/hint text is suppressed and
 	// only the dashes render. Below borderMinThreshold the caller
@@ -54,13 +59,32 @@ const (
 // or both may be empty. When the column budget cannot fit them, they
 // are suppressed in label-first / hint-first order.
 func topBorder(label, rightHint string, cols int, focused bool) string {
-	return borderRow(borderTopLeft, borderTopRight, label, rightHint, cols, focused)
+	return topBorderC(label, rightHint, cols, chromeColor(focused))
+}
+
+// topBorderC is topBorder with an explicit chrome color, used where the
+// color is not just focus-derived (the open-mode amber border, #209).
+func topBorderC(label, rightHint string, cols int, color string) string {
+	return borderRowC(borderTopLeft, borderTopRight, label, rightHint, cols, color)
 }
 
 // bottomBorder draws "╰─ <leftHint> ─…─ <rightHint> ─╯" padded to
 // cols. Mirrors topBorder.
 func bottomBorder(leftHint, rightHint string, cols int, focused bool) string {
-	return borderRow(borderBottomLeft, borderBottomRight, leftHint, rightHint, cols, focused)
+	return bottomBorderC(leftHint, rightHint, cols, chromeColor(focused))
+}
+
+// bottomBorderC is bottomBorder with an explicit chrome color (#209).
+func bottomBorderC(leftHint, rightHint string, cols int, color string) string {
+	return borderRowC(borderBottomLeft, borderBottomRight, leftHint, rightHint, cols, color)
+}
+
+// chromeColor maps the focus flag to the default chrome color.
+func chromeColor(focused bool) string {
+	if focused {
+		return colorFocused
+	}
+	return colorUnfocused
 }
 
 // bodyLine wraps content in │ … │ side borders, padded to cols.
@@ -70,14 +94,15 @@ func bottomBorder(leftHint, rightHint string, cols int, focused bool) string {
 // convenience, when content contains no escape sequences, bodyLine
 // pads/truncates it itself.
 func bodyLine(content string, cols int, focused bool) string {
+	return bodyLineC(content, cols, chromeColor(focused))
+}
+
+// bodyLineC is bodyLine with an explicit side-border color (#209).
+func bodyLineC(content string, cols int, color string) string {
 	if cols < borderMinThreshold {
 		// Below the no-border fallback threshold the caller should not
 		// be invoking bodyLine; defensively pad content as a plain row.
 		return padRight(runeTrunc(content, cols), cols) + "\r\n"
-	}
-	color := colorUnfocused
-	if focused {
-		color = colorFocused
 	}
 	inner := cols - 2
 	if inner < 1 {
@@ -100,10 +125,11 @@ func bodyLine(content string, cols int, focused bool) string {
 // are the corner runes; `leftText` / `rightText` are the embedded
 // strings (label or hint). The middle is dash-filled.
 func borderRow(left, right, leftText, rightText string, cols int, focused bool) string {
-	color := colorUnfocused
-	if focused {
-		color = colorFocused
-	}
+	return borderRowC(left, right, leftText, rightText, cols, chromeColor(focused))
+}
+
+// borderRowC is borderRow with an explicit color (#209).
+func borderRowC(left, right, leftText, rightText string, cols int, color string) string {
 	// At cols below the embed threshold, drop the embedded text and
 	// render plain corners + dashes.
 	if cols < borderEmbedThreshold {

@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/advisor"
 	"github.com/dandriscoll/trollbridge/internal/approvals"
@@ -72,6 +73,11 @@ type Model struct {
 	// ring under burst pressure are merged back into the displayed
 	// list so the operator never silently loses an actionable hold.
 	Holds    []approvals.Snapshot
+	// OpenUntil is the expiry of the time-boxed "allow all traffic"
+	// window (#209); the zero value means closed. Open mode is active
+	// whenever now < OpenUntil — see openActive(). Refreshed on the
+	// periodic tick and immediately after an o/c keypress.
+	OpenUntil time.Time
 	Selected int    // index into displayed-ops list, or -1 if empty.
 	LastInfo string // last successful-action message shown in the upper-pane footer.
 	LastErr  string // last error message shown in the upper-pane footer.
@@ -343,6 +349,15 @@ type OpsTickResult struct {
 	Err error
 }
 
+// OpenModeResult arrives after a poll or an o/c action against open mode
+// (#209). The reducer drops Until into Model.OpenUntil so the border and
+// footer reflect the window; the zero Until means closed.
+type OpenModeResult struct {
+	Active bool
+	Until  time.Time
+	Err    error
+}
+
 // DigestTickResult arrives after a poll for recent LLM digests
 // completes. Used to back the LLM bottom panel (closes #66).
 type DigestTickResult struct {
@@ -477,6 +492,7 @@ type ResizeEvent struct {
 
 func (TickResult) event()        {}
 func (OpsTickResult) event()     {}
+func (OpenModeResult) event()    {}
 func (DigestTickResult) event()  {}
 func (URLsTickResult) event()    {}
 func (ReloadTickResult) event()     {}
@@ -578,6 +594,14 @@ const statusInfoTimeoutTicks = 8
 // (closes #79).
 type CmdURLsRefresh struct{}
 
+// CmdOpenMode opens/extends (Close=false) or closes (Close=true) the
+// time-boxed allow-all window (#209). The runtime calls the ControlClient
+// off the event loop and emits an OpenModeResult that refreshes
+// Model.OpenUntil.
+type CmdOpenMode struct{ Close bool }
+
+func (CmdOpenMode) cmd()      {}
+
 func (CmdNone) cmd()          {}
 func (CmdRefresh) cmd()       {}
 func (CmdApprove) cmd()       {}
@@ -596,12 +620,23 @@ func (CmdSuspend) cmd()       {}
 
 // Apply is the pure reducer. It does no I/O. Callers replace their
 // Model with the returned one and run the returned Cmd.
+// openActive reports whether the time-boxed allow-all window is active
+// at now (#209): the window is open while now is before OpenUntil.
+func openActive(m Model, now time.Time) bool {
+	return !m.OpenUntil.IsZero() && now.Before(m.OpenUntil)
+}
+
 func Apply(m Model, ev Event) (Model, Cmd) {
 	switch e := ev.(type) {
 	case TickResult:
 		return applyTick(m, e)
 	case OpsTickResult:
 		return applyOpsTick(m, e)
+	case OpenModeResult:
+		if e.Err == nil {
+			m.OpenUntil = e.Until
+		}
+		return m, CmdNone{}
 	case DigestTickResult:
 		if e.Err == nil {
 			m.Digests = e.Digests
@@ -1662,6 +1697,16 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 	}
 	if e.Rune == 'r' {
 		return m, CmdRefresh{}
+	}
+	// Open mode (#209): 'o' opens/extends the time-boxed allow-all
+	// window; 'c' closes it. Close is idempotent (no-op when already
+	// closed), so 'c' is always safe to dispatch; the footer only
+	// advertises [c] while the window is open.
+	if e.Rune == 'o' {
+		return m, CmdOpenMode{Close: false}
+	}
+	if e.Rune == 'c' {
+		return m, CmdOpenMode{Close: true}
 	}
 	// Bottom-panel switcher (closes #66). Numbered keys 1/2/3/4 open
 	// or switch panels; 0 closes any open panel back to

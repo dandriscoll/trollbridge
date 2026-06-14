@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -368,4 +369,75 @@ func slicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// --- #209: /v1/open handler ---
+
+type fakeOpenMode struct {
+	until   time.Time
+	extends int
+	closes  int
+}
+
+func (f *fakeOpenMode) ExtendOpenMode() time.Time {
+	f.extends++
+	f.until = time.Now().Add(time.Minute)
+	return f.until
+}
+func (f *fakeOpenMode) CloseOpenMode() { f.closes++; f.until = time.Time{} }
+func (f *fakeOpenMode) OpenModeState() (bool, time.Time) {
+	return time.Now().Before(f.until), f.until
+}
+
+func TestControl_OpenModeHandler_GetPostDelete(t *testing.T) {
+	fake := &fakeOpenMode{}
+	s := &Server{}
+	s.SetOpenMode(fake)
+
+	decode := func(body []byte) OpenModeState {
+		var st OpenModeState
+		if err := json.Unmarshal(body, &st); err != nil {
+			t.Fatalf("decode %q: %v", string(body), err)
+		}
+		return st
+	}
+
+	// GET on a fresh controller: closed.
+	rec := httptest.NewRecorder()
+	s.openModeHandler(rec, httptest.NewRequest(http.MethodGet, "/v1/open", nil))
+	if rec.Code != 200 {
+		t.Fatalf("GET status=%d", rec.Code)
+	}
+	if st := decode(rec.Body.Bytes()); st.Active {
+		t.Errorf("fresh GET should be inactive")
+	}
+
+	// POST opens it.
+	rec = httptest.NewRecorder()
+	s.openModeHandler(rec, httptest.NewRequest(http.MethodPost, "/v1/open", nil))
+	if st := decode(rec.Body.Bytes()); !st.Active {
+		t.Errorf("POST should activate open mode")
+	}
+	if fake.extends != 1 {
+		t.Errorf("POST should call ExtendOpenMode once; got %d", fake.extends)
+	}
+
+	// DELETE closes it.
+	rec = httptest.NewRecorder()
+	s.openModeHandler(rec, httptest.NewRequest(http.MethodDelete, "/v1/open", nil))
+	if st := decode(rec.Body.Bytes()); st.Active {
+		t.Errorf("DELETE should deactivate open mode")
+	}
+	if fake.closes != 1 {
+		t.Errorf("DELETE should call CloseOpenMode once; got %d", fake.closes)
+	}
+}
+
+func TestControl_OpenModeHandler_NotConfigured404(t *testing.T) {
+	s := &Server{} // no SetOpenMode
+	rec := httptest.NewRecorder()
+	s.openModeHandler(rec, httptest.NewRequest(http.MethodGet, "/v1/open", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unconfigured open mode should 404; got %d", rec.Code)
+	}
 }

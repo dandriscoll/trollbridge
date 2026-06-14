@@ -366,3 +366,100 @@ func TestApproval_ClientDisconnectFreesSlot(t *testing.T) {
 	}
 	<-errCh // the canceled request returns an error; drain it
 }
+
+// TestOpenMode_AllowsAllTrafficAndBypassesQueue pins #209 at the wire
+// level: while the open window is active, a request that policy would
+// hold (ask_user) is instead ALLOWED — forwarded to the origin, audited
+// with decision_source=open_mode, and never enqueued as a hold (the
+// queue/lists are bypassed). Closing the window reverts to holding.
+func TestOpenMode_AllowsAllTrafficAndBypassesQueue(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "origin-ok")
+	}))
+	defer origin.Close()
+	originHostOnly, _, _ := net.SplitHostPort(strings.TrimPrefix(origin.URL, "http://"))
+
+	rules := fmt.Sprintf(`
+- id: ask-the-operator
+  match: {host: %s}
+  effect: ask_user
+`, originHostOnly)
+	h := bootApprovalProxy(t, rules, 30, "deny")
+	defer h.close()
+
+	pURL, _ := url.Parse("http://" + h.addr)
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pURL)}, Timeout: 10 * time.Second}
+
+	// Open the window: the ask_user request must now be allowed.
+	h.srv.ExtendOpenMode()
+	if active, _ := h.srv.OpenModeState(); !active {
+		t.Fatal("open mode not active after ExtendOpenMode")
+	}
+
+	resp, err := c.Get(origin.URL)
+	if err != nil {
+		t.Fatalf("request under open mode: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || string(body) != "origin-ok" {
+		t.Fatalf("open mode should allow+forward: status=%d body=%q", resp.StatusCode, string(body))
+	}
+	// Open mode bypasses the queue entirely — no hold created.
+	if n := len(h.listPending()); n != 0 {
+		t.Errorf("open mode created %d hold(s); it must bypass the queue", n)
+	}
+	// Audit records the bypass as open_mode.
+	if !auditHasDecisionSource(t, h.auditPath, "open_mode", 2*time.Second) {
+		t.Errorf("no audit entry with decision_source=open_mode")
+	}
+
+	// Close: the same request reverts to being held.
+	h.srv.CloseOpenMode()
+	if active, _ := h.srv.OpenModeState(); active {
+		t.Fatal("open mode still active after CloseOpenMode")
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, origin.URL, nil)
+		resp, err := c.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		errCh <- err
+	}()
+	heldAgain := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(h.listPending()) == 1 {
+			heldAgain = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !heldAgain {
+		t.Errorf("after close, the request should be held again (open mode did not revert)")
+	}
+	// Resolve the dangling hold so the test goroutine returns cleanly.
+	for _, hp := range h.listPending() {
+		h.deny(hp["id"].(string), "test cleanup")
+	}
+	<-errCh
+}
+
+// auditHasDecisionSource polls the audit log for an entry carrying the
+// given decision_source within the deadline.
+func auditHasDecisionSource(t *testing.T, auditPath, source string, within time.Duration) bool {
+	t.Helper()
+	want := `"decision_source":"` + source + `"`
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(auditPath); err == nil && strings.Contains(string(data), want) {
+			return true
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	return false
+}

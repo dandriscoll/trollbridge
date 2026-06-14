@@ -55,6 +55,7 @@ type Server struct {
 	sessions *sessions.Tracker
 	control  *control.Server
 	ops      *opstream.Ring
+	openMode openMode // #209: time-boxed "allow all traffic" window
 
 	ca           *ca.CA
 	originRoots  *x509.CertPool
@@ -360,6 +361,44 @@ func caRequiredReason(intercept, controller bool) string {
 // Queue returns the approvals queue (for tests / introspection).
 func (s *Server) Queue() *approvals.Queue { return s.queue }
 
+// ExtendOpenMode opens or extends the time-boxed "allow all traffic"
+// window (#209) and returns the new expiry. While open, the decision
+// path allows every request (source open_mode) without modifying the
+// allow/deny lists; the window reverts automatically at expiry.
+func (s *Server) ExtendOpenMode() time.Time {
+	until := s.openMode.extend(time.Now())
+	s.opLog.Info("open mode extended",
+		"event", oplog.EventOpenModeExtended,
+		"until", until.UTC().Format(time.RFC3339),
+		"seconds_remaining", int(time.Until(until).Seconds()))
+	return until
+}
+
+// CloseOpenMode ends the open window immediately.
+func (s *Server) CloseOpenMode() {
+	s.openMode.close()
+	s.opLog.Info("open mode closed",
+		"event", oplog.EventOpenModeClosed)
+}
+
+// OpenModeState reports whether the open window is currently active and
+// its expiry. Used by the decision path and the operator UI.
+func (s *Server) OpenModeState() (active bool, until time.Time) {
+	return s.openMode.state(time.Now())
+}
+
+// openModeAllow is the decision the proxy substitutes for every request
+// while the open window is active. It carries SourceOpenMode so audit
+// records the bypass, and it NEVER routes through the list writer or
+// persistCb — opening the gate allows traffic, it does not curate lists.
+func openModeAllow() types.Decision {
+	return types.Decision{
+		Effect: types.EffectAllow,
+		Source: types.SourceOpenMode,
+		Reason: "open mode: all traffic allowed",
+	}
+}
+
 // Ops returns the operations ring (for tests / introspection / the
 // embedded TUI).
 func (s *Server) Ops() *opstream.Ring { return s.ops }
@@ -583,6 +622,13 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		rlog.Debug("engine_eval", "phase", oplog.PhaseEngineEval,
 			"decision", string(decision.Effect),
 			"source", string(decision.Source), "rule_id", decision.RuleID)
+	}
+
+	// Open mode (#209): while the operator's time-boxed window is open,
+	// allow every request without consulting the queue or the lists.
+	if active, _ := s.OpenModeState(); active {
+		decision = openModeAllow()
+		rlog.Debug("open_mode_allow", "phase", oplog.PhaseResolved)
 	}
 
 	// Approval queue: if engine returned ask_user (or ask_llm with
@@ -918,6 +964,11 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		rlog.Debug("engine_eval", "phase", oplog.PhaseEngineEval,
 			"decision", string(decision.Effect),
 			"source", string(decision.Source), "rule_id", decision.RuleID)
+	}
+	// Open mode (#209): allow all traffic while the window is open.
+	if active, _ := s.OpenModeState(); active {
+		decision = openModeAllow()
+		rlog.Debug("open_mode_allow", "phase", oplog.PhaseResolved)
 	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
 		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))

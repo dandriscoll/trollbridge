@@ -44,6 +44,8 @@ const (
 	EventHoldQueueFull  = "hold_queue_full"  // WARN; holdAndWait on ErrFull
 	EventHoldSignaled   = "hold_signaled"    // INFO; #43 — hold elapsed signal_after_seconds; consumer got 471 + hold-id; queue continues to track resolution
 	EventHoldAbandoned  = "hold_abandoned"   // INFO; #208 — a waiter's client disconnected; that waiter released (hold evicted only if it was the last waiter)
+	EventOpenModeExtended = "open_mode_extended" // INFO; #209 — operator opened/extended the time-boxed allow-all window
+	EventOpenModeClosed   = "open_mode_closed"   // INFO; #209 — operator closed the allow-all window (or it was reset)
 
 	// Decision persistence (#49). Fired by the daemon's queue-level
 	// DecisionPersist callback after a manual approve/deny. Both

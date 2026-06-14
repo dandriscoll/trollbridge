@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"sort"
 	"strings"
@@ -65,6 +66,22 @@ type ControlClient interface {
 	// SuggestNow asks the daemon to run the detector on demand
 	// (#174) and returns the resulting suggestion (or nil).
 	SuggestNow() (*Suggestion, error)
+	// OpenModeState / ExtendOpenMode / CloseOpenMode drive the
+	// time-boxed "allow all traffic" window (#209). State is polled for
+	// the border/footer; Extend opens or extends; Close ends it. Each
+	// returns the resulting (active, until). In-process clients reach
+	// the server directly; HTTP clients call /v1/open.
+	OpenModeState() (active bool, until time.Time, err error)
+	ExtendOpenMode() (active bool, until time.Time, err error)
+	CloseOpenMode() (active bool, until time.Time, err error)
+}
+
+// OpenModeController is the server-side surface the in-process client
+// drives for open mode (#209). *server.Server satisfies it.
+type OpenModeController interface {
+	ExtendOpenMode() time.Time
+	CloseOpenMode()
+	OpenModeState() (active bool, until time.Time)
 }
 
 // SuggestionSource is the in-process surface of the daemon's
@@ -112,6 +129,18 @@ func (c *httpClient) Approve(id string) error {
 func (c *httpClient) Deny(id, reason string) error {
 	_, err := controlclient.HoldAction(c.cfg, id, "deny", "", reason)
 	return err
+}
+
+func (c *httpClient) OpenModeState() (bool, time.Time, error) {
+	return controlclient.OpenMode(c.cfg, http.MethodGet)
+}
+
+func (c *httpClient) ExtendOpenMode() (bool, time.Time, error) {
+	return controlclient.OpenMode(c.cfg, http.MethodPost)
+}
+
+func (c *httpClient) CloseOpenMode() (bool, time.Time, error) {
+	return controlclient.OpenMode(c.cfg, http.MethodDelete)
 }
 
 func (c *httpClient) RecentLLMDigests() ([]advisor.Digest, error) {
@@ -240,6 +269,19 @@ type inProcessClient struct {
 	// sugg is the daemon's suggestion lifecycle (#172). May be nil —
 	// the suggestion card then never appears in the embedded UI.
 	sugg SuggestionSource
+	// om is the open-mode controller (#209). May be nil — open mode is
+	// then reported as permanently closed and the keys no-op.
+	om OpenModeController
+}
+
+// WithOpenMode wires an open-mode controller onto an in-process client
+// (#209). No-op for other client types. Lets the run/quickstart call
+// sites attach the server without widening every constructor signature.
+func WithOpenMode(c ControlClient, om OpenModeController) ControlClient {
+	if ip, ok := c.(*inProcessClient); ok {
+		ip.om = om
+	}
+	return c
 }
 
 func (c *inProcessClient) ListHolds() ([]approvals.Snapshot, error) {
@@ -274,6 +316,32 @@ func (c *inProcessClient) Deny(id, reason string) error {
 		return fmt.Errorf("%w: %s", controlclient.ErrHoldNotFound, id)
 	}
 	return nil
+}
+
+func (c *inProcessClient) OpenModeState() (bool, time.Time, error) {
+	if c.om == nil {
+		return false, time.Time{}, nil
+	}
+	active, until := c.om.OpenModeState()
+	return active, until, nil
+}
+
+func (c *inProcessClient) ExtendOpenMode() (bool, time.Time, error) {
+	if c.om == nil {
+		return false, time.Time{}, nil
+	}
+	c.om.ExtendOpenMode()
+	active, until := c.om.OpenModeState()
+	return active, until, nil
+}
+
+func (c *inProcessClient) CloseOpenMode() (bool, time.Time, error) {
+	if c.om == nil {
+		return false, time.Time{}, nil
+	}
+	c.om.CloseOpenMode()
+	active, until := c.om.OpenModeState()
+	return active, until, nil
 }
 
 func (c *inProcessClient) RecentLLMDigests() ([]advisor.Digest, error) {
@@ -619,6 +687,22 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				select {
 				case <-loopCtx.Done():
 				case events <- ActionResult{ID: id, Action: "deny", Method: method, URL: url, Err: err}:
+				}
+			}()
+		case CmdOpenMode:
+			closeIt := c.Close
+			go func() {
+				var active bool
+				var until time.Time
+				var err error
+				if closeIt {
+					active, until, err = client.CloseOpenMode()
+				} else {
+					active, until, err = client.ExtendOpenMode()
+				}
+				select {
+				case <-loopCtx.Done():
+				case events <- OpenModeResult{Active: active, Until: until, Err: err}:
 				}
 			}()
 		case CmdSuggestionAccept:
@@ -1006,10 +1090,20 @@ func tickRefresh(ctx context.Context, client ControlClient, events chan<- Event)
 		case events <- SuggestionTickResult{Suggestion: sug, Err: err}:
 		}
 	}
+	emitOpenMode := func() {
+		// Poll open-mode state so the border/footer revert automatically
+		// when the window lapses, even with no keypress (#209).
+		active, until, err := client.OpenModeState()
+		select {
+		case <-ctx.Done():
+		case events <- OpenModeResult{Active: active, Until: until, Err: err}:
+		}
+	}
 	emitHolds()
 	emitOps()
 	emitReload()
 	emitSuggestion()
+	emitOpenMode()
 	t := time.NewTicker(1500 * time.Millisecond)
 	defer t.Stop()
 	for {
@@ -1021,6 +1115,7 @@ func tickRefresh(ctx context.Context, client ControlClient, events chan<- Event)
 			go emitOps()
 			go emitReload()
 			go emitSuggestion()
+			go emitOpenMode()
 		}
 	}
 }
@@ -1174,6 +1269,13 @@ func render(out io.Writer, m Model) error {
 
 func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	focused := m.Focused == PaneApprovals
+	// While the open-mode window is active (#209), the approvals-pane
+	// chrome renders in amber instead of the focus color — a persistent
+	// "all traffic is being allowed" signal.
+	chromeCol := chromeColor(focused)
+	if openActive(m, time.Now()) {
+		chromeCol = colorOpenMode
+	}
 	if m.Cols < borderMinThreshold {
 		renderApprovalsPaneNoBorder(b, m, rows)
 		return
@@ -1197,7 +1299,7 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			rightHint = "[0]hide  " + formatTabHint(m.Focused)
 		}
 	}
-	b.WriteString(topBorder(label, rightHint, m.Cols, focused))
+	b.WriteString(topBorderC(label, rightHint, m.Cols, chromeCol))
 
 	// Body: rows - 1 top border - 1 bottom border - 1 status row.
 	bodyLines := rows - 3
@@ -1259,12 +1361,12 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	}
 	used := 0
 	if len(displayed) == 0 {
-		b.WriteString(bodyLine(padRight(runeTrunc("  (no recent operations — waiting for traffic)", inner), inner), m.Cols, focused))
+		b.WriteString(bodyLineC(padRight(runeTrunc("  (no recent operations — waiting for traffic)", inner), inner), m.Cols, chromeCol))
 		used++
 	} else {
 		colHeader := fmt.Sprintf(" %-*s %-*s %s %-*s %s",
 			methodW, "METHOD", urlW, "URL", " ", statusW, "STATUS", "TIME")
-		b.WriteString(bodyLine(padRight(runeTrunc(colHeader, inner), inner), m.Cols, focused))
+		b.WriteString(bodyLineC(padRight(runeTrunc(colHeader, inner), inner), m.Cols, chromeCol))
 		used++
 		// Bottom-anchored scroll within the resolved head; the cursor
 		// follows up into resolved when it is there, and the window
@@ -1284,19 +1386,19 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 			if i == m.Selected {
 				row = "\x1b[7m" + row + "\x1b[0m"
 			}
-			b.WriteString(bodyLine(row, m.Cols, focused))
+			b.WriteString(bodyLineC(row, m.Cols, chromeCol))
 			used++
 		}
 	}
 	for used < listLines {
-		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
+		b.WriteString(bodyLineC(padRight("", inner), m.Cols, chromeCol))
 		used++
 	}
 	for _, cr := range topCard {
-		b.WriteString(bodyLine(cr, m.Cols, focused))
+		b.WriteString(bodyLineC(cr, m.Cols, chromeCol))
 	}
 	for _, cr := range pendCard {
-		b.WriteString(bodyLine(cr, m.Cols, focused))
+		b.WriteString(bodyLineC(cr, m.Cols, chromeCol))
 	}
 
 	// Status row (lives inside the border, above the bottom border).
@@ -1306,22 +1408,31 @@ func renderApprovalsPane(b *strings.Builder, m Model, rows int) {
 	switch {
 	case m.LastErr != "":
 		row := "\x1b[31m" + padRight(runeTrunc("error: "+m.LastErr, inner), inner) + "\x1b[0m"
-		b.WriteString(bodyLine(row, m.Cols, focused))
+		b.WriteString(bodyLineC(row, m.Cols, chromeCol))
 	case m.LastInfo != "":
 		row := "\x1b[32m" + padRight(runeTrunc(m.LastInfo, inner), inner) + "\x1b[0m"
-		b.WriteString(bodyLine(row, m.Cols, focused))
+		b.WriteString(bodyLineC(row, m.Cols, chromeCol))
 	default:
-		b.WriteString(bodyLine(padRight("", inner), m.Cols, focused))
+		b.WriteString(bodyLineC(padRight("", inner), m.Cols, chromeCol))
 	}
 
 	// Bottom border carries the keybindings on the right. While the
 	// generalization card is modal (#170), a/d mean accept/decline —
 	// reflect that so the border hint matches the live key effect.
-	keys := "[a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [z] suspend  [q] quit"
+	keys := "[o] open  [a] approve  [d] deny  [↑↓/jk] select  [r] refresh  [z] suspend  [q] quit"
+	if openActive(m, now) {
+		// While open, advertise close (with remaining seconds) and that
+		// `o` extends the window (#209).
+		remain := int(time.Until(m.OpenUntil).Seconds())
+		if remain < 0 {
+			remain = 0
+		}
+		keys = fmt.Sprintf("[c] close (%ds)  [o] +extend  [a] approve  [d] deny  [jk] select  [r] refresh  [q] quit", remain)
+	}
 	if m.GenCard != nil {
 		keys = "[a]ccept  [d]ecline  [tab] next axis  [esc] dismiss"
 	}
-	b.WriteString(bottomBorder("", keys, m.Cols, focused))
+	b.WriteString(bottomBorderC("", keys, m.Cols, chromeCol))
 }
 
 // formatGeneralizeCard renders the unified generalization candidate

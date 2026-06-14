@@ -103,6 +103,36 @@ func ListEdit(cfg *config.Config, method, list, pattern string) (bool, error) {
 	return out.Changed, nil
 }
 
+// OpenMode drives /v1/open (#209): method GET reports state, POST
+// opens/extends the window, DELETE closes it. All three return the
+// resulting (active, until). The daemon returns 404 when open mode is
+// not configured; that surfaces as a formatted error.
+func OpenMode(cfg *config.Config, method string) (active bool, until time.Time, err error) {
+	url := controllerURL(cfg, "/v1/open")
+	cli, cerr := httpsClient(cfg)
+	if cerr != nil {
+		return false, time.Time{}, cerr
+	}
+	req, _ := http.NewRequest(method, url, nil)
+	resp, derr := cli.Do(req)
+	if derr != nil {
+		return false, time.Time{}, fmt.Errorf("control API: %w", derr)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return false, time.Time{}, fmt.Errorf("control API: %s: %s", resp.Status, string(respBody))
+	}
+	var out struct {
+		Active bool      `json:"active"`
+		Until  time.Time `json:"until"`
+	}
+	if uerr := json.Unmarshal(respBody, &out); uerr != nil {
+		return false, time.Time{}, fmt.Errorf("control API: decode response: %w", uerr)
+	}
+	return out.Active, out.Until, nil
+}
+
 // HoldAction POSTs an approve or deny against /v1/holds/<id>/<action>.
 // `action` must be "approve" or "deny". On 404 it returns
 // ErrHoldNotFound; other non-2xx responses become formatted errors.

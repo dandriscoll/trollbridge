@@ -146,9 +146,24 @@ type Server struct {
 	tlsProv      TLSProvider
 	srv          *http.Server
 	suggestion   SuggestionProvider
+	openMode     OpenModeProvider
 
 	opLog *slog.Logger
 }
+
+// OpenModeProvider exposes the time-boxed "allow all traffic" window
+// (#209) on /v1/open so an attach-mode operator can open/extend/close it.
+// *server.Server satisfies this via an adapter.
+type OpenModeProvider interface {
+	ExtendOpenMode() time.Time
+	CloseOpenMode()
+	OpenModeState() (active bool, until time.Time)
+}
+
+// SetOpenMode wires the open-mode controller so /v1/open can read and
+// drive it. When unset, /v1/open returns 404 (the daemon does not expose
+// open mode).
+func (s *Server) SetOpenMode(p OpenModeProvider) { s.openMode = p }
 
 // SetOpLog wires the operational logger so that Serve errors land
 // on the same stream the operator is tailing.
@@ -273,6 +288,7 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	mux.HandleFunc("/v1/suggestion/accept", authd(s.suggestionAccept))        // closes #168
 	mux.HandleFunc("/v1/suggestion/decline", authd(s.suggestionDecline))      // closes #168
 	mux.HandleFunc("/v1/suggestion/scan", authd(s.suggestionScan))            // #174 on-demand
+	mux.HandleFunc("/v1/open", authd(s.openModeHandler))                      // #209: GET state / POST extend / DELETE close
 	// /v1/healthz is intentionally unauthenticated for monitoring.
 	mux.HandleFunc("/v1/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -528,6 +544,35 @@ func (s *Server) rulesReload(w http.ResponseWriter, r *http.Request) {
 
 // suggestionGet returns the daemon's active suggestion (200) or
 // 204 when none. Closes part of #168.
+// OpenModeState is the /v1/open response body (#209).
+type OpenModeState struct {
+	Active bool      `json:"active"`
+	Until  time.Time `json:"until"`
+}
+
+// openModeHandler serves the time-boxed open window: GET reports state,
+// POST opens/extends it, DELETE closes it. All three return the
+// resulting state so the caller updates its view in one round trip.
+func (s *Server) openModeHandler(w http.ResponseWriter, r *http.Request) {
+	if s.openMode == nil {
+		http.Error(w, "open mode not configured", http.StatusNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		// state below
+	case http.MethodPost:
+		s.openMode.ExtendOpenMode()
+	case http.MethodDelete:
+		s.openMode.CloseOpenMode()
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	active, until := s.openMode.OpenModeState()
+	writeJSON(w, OpenModeState{Active: active, Until: until})
+}
+
 func (s *Server) suggestionGet(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

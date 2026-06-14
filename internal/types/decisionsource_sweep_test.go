@@ -102,6 +102,8 @@ func decisionSourceSymbolName(src DecisionSource) string {
 		return "SourceMalformedTunnel"
 	case SourceBodyReadFail:
 		return "SourceBodyReadFail"
+	case SourceOpenMode:
+		return "SourceOpenMode"
 	}
 	return string(src)
 }

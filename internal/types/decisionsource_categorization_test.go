@@ -31,6 +31,9 @@ func TestDecisionSource_IsHumanOrLLMCategorization(t *testing.T) {
 		{SourceTLSHandshakeFail, false},
 		{SourceMalformedTunnel, false},
 		{SourceBodyReadFail, false},
+		// Open mode (#209): operator-initiated bypass — human decision
+		// to open the gate, so allowed requests survive `decisions`.
+		{SourceOpenMode, true},
 	}
 	if len(cases) != len(AllDecisionSources) {
 		t.Fatalf("categorization table has %d rows, AllDecisionSources has %d — keep them in lockstep; a new DecisionSource was added without categorization", len(cases), len(AllDecisionSources))
