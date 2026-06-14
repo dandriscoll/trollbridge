@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -161,7 +162,7 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 			req.URL.Host = net.JoinHostPort(host, strconv.Itoa(port))
 		}
 
-		if err := s.dispatchInterceptedRequest(tlsConn, req, host, port, sessionID, identityID, connectReqID, &connectRebound); err != nil {
+		if err := s.dispatchInterceptedRequest(tlsConn, br, req, host, port, sessionID, identityID, connectReqID, &connectRebound); err != nil {
 			s.opLog.Error("intercept dispatch error",
 				"event", oplog.EventInterceptError,
 				"host", host, "port", port,
@@ -175,7 +176,7 @@ func (s *Server) interceptCONNECT(clientConn net.Conn, host string, port int, se
 	}
 }
 
-func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, host string, port int, sessionID, identityID, connectReqID string, connectRebound *bool) error {
+func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, br *bufio.Reader, r *http.Request, host string, port int, sessionID, identityID, connectReqID string, connectRebound *bool) error {
 	start := time.Now()
 	requestID := uuid.NewString()
 
@@ -187,6 +188,13 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	// read is the prefix bytes; the rest streams from the
 	// original reader.
 	var bodyBuf []byte
+	// bodyFullyBuffered is true once THIS request's body (if any) has
+	// been drained off the tunnel into memory, so the tunnel's bufio
+	// reader now holds only the NEXT request. Only then is it safe to
+	// arm the disconnect watcher's Peek on that reader during a hold
+	// (#211) — otherwise the Peek would collide with the body still
+	// streaming from the tunnel during forwarding.
+	bodyFullyBuffered := true
 	if r.Body != nil && s.MaxBodySampleBytes > 0 {
 		prefix, err := io.ReadAll(io.LimitReader(r.Body, int64(s.MaxBodySampleBytes)+1))
 		if err != nil {
@@ -194,13 +202,19 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		}
 		if int64(len(prefix)) > int64(s.MaxBodySampleBytes) {
 			// Over cap. No sample for the engine. Forward the
-			// full body by stitching prefix + rest.
+			// full body by stitching prefix + rest — the tail still
+			// streams from the tunnel after the hold.
 			r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(prefix), r.Body))
+			bodyFullyBuffered = false
 		} else {
 			// Fits; sample IS the body.
 			bodyBuf = prefix
 			r.Body = io.NopCloser(bytes.NewReader(bodyBuf))
 		}
+	} else if r.Body != nil && r.ContentLength != 0 {
+		// Body present but not inspected (MaxBodySampleBytes==0); it
+		// still streams from the tunnel during forwarding.
+		bodyFullyBuffered = false
 	}
 
 	req := &types.RequestEvent{
@@ -260,13 +274,11 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
 		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))
-		// NOTE(#208): r.Context() on the intercepted path is the
-		// background context http.ReadRequest attaches — it is NOT tied
-		// to the TLS connection's close, so a disconnect here does not
-		// yet release the waiter early (status-quo). Conn-close-tied
-		// cancellation for the intercept path is a filed follow-up; the
-		// blocking HTTP and CONNECT paths get early release today.
-		decision = s.holdAndWait(r.Context(), req, decision)
+		// #211: hold with a connection-close-tied context when it is
+		// safe to watch the tunnel reader (body fully buffered), so a
+		// client disconnect releases the waiter immediately instead of
+		// pinning it to timeout_seconds.
+		decision = s.holdInterceptedRequest(req, decision, br, tlsConn, bodyFullyBuffered)
 		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
 	}
 	s.transitionOpFromEvaluating(req.ID, decision.Effect)
@@ -401,4 +413,63 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, r *http.Request, 
 		"status", resp.StatusCode, "bytes", resp.ContentLength, "latency_ms", time.Since(start).Milliseconds())
 	s.writeAuditWithBody(req, decision, bodyBuf, resp.StatusCode, resp.ContentLength, time.Since(start), "", "")
 	return nil
+}
+
+// holdInterceptedRequest holds an intercepted request, releasing the
+// waiter early when the client disconnects (#211 — completing #208 for
+// the intercepted-HTTPS path, whose request has no conn-tied context).
+//
+// The tunnel exposes one bufio.Reader (br) shared between request reads
+// and body reads, so a disconnect watcher can only safely Peek it while
+// it holds the NEXT request — i.e. once THIS request's body is fully
+// buffered in memory (bodyFullyBuffered). When the body still streams
+// from the tunnel (over-cap, or inspection disabled), watching would
+// collide with the forwarding body read, so we fall back to the plain
+// blocking wait (no early release) — exactly the prior behavior.
+//
+// When safe, a goroutine Peeks br during the hold: a Peek error means the
+// client went away → cancel the request context → the queue releases
+// this waiter (cancelWaiter, #208), leaving coalesced siblings untouched.
+// Peek does not consume, so a pipelined next request remains for the
+// loop. If the hold instead resolves normally while the client sits idle,
+// the Peek is still blocked on an EMPTY buffer; we interrupt it with a
+// past read deadline and br.Reset(tlsConn) — lossless because the buffer
+// is empty, and it clears the deadline-induced error so the loop's next
+// ReadRequest is clean. tls.Conn buffers partial records internally, so
+// the deadline interrupt loses no plaintext.
+func (s *Server) holdInterceptedRequest(req *types.RequestEvent, decision types.Decision, br *bufio.Reader, tlsConn *tls.Conn, bodyFullyBuffered bool) types.Decision {
+	base := s.rootCtx
+	if base == nil {
+		base = context.Background()
+	}
+	if !bodyFullyBuffered {
+		return s.holdAndWait(base, req, decision)
+	}
+	reqCtx, cancel := context.WithCancel(base)
+	defer cancel()
+	peekDone := make(chan struct{})
+	go func() {
+		defer close(peekDone)
+		if _, err := br.Peek(1); err != nil {
+			cancel() // client disconnected (or tunnel error) → release waiter
+		}
+	}()
+	d := s.holdAndWait(reqCtx, req, decision)
+	cancel()
+	select {
+	case <-peekDone:
+		// The watcher finished: either it observed a disconnect, or the
+		// client's next request is now buffered in br. Either way br is
+		// consistent for the loop's next ReadRequest.
+	default:
+		// The watcher is still blocked on an idle, connected client
+		// (br buffer empty). Interrupt the Peek, join it, and reset the
+		// reader — lossless given the empty buffer, and it clears the
+		// deadline-induced error.
+		_ = tlsConn.SetReadDeadline(time.Now().Add(-time.Second))
+		<-peekDone
+		_ = tlsConn.SetReadDeadline(time.Time{})
+		br.Reset(tlsConn)
+	}
+	return d
 }

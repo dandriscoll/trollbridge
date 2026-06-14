@@ -702,3 +702,117 @@ func TestIntercept_OpsRing_ReplacesCONNECTWithInnerMethod(t *testing.T) {
 		t.Errorf("inner row URL = %q, want https:// prefix", innerOp.URL)
 	}
 }
+
+// TestIntercept_ClientDisconnectFreesHeldSlot pins #211: an intercepted
+// HTTPS request that is held (ask_user) and whose client disconnects must
+// release its waiter and free the max_pending slot PROMPTLY — not after
+// timeout_seconds (5s in this harness). GET → body fully buffered → the
+// disconnect watcher is armed.
+func TestIntercept_ClientDisconnectFreesHeldSlot(t *testing.T) {
+	// Allow the outer CONNECT (so the tunnel + interception happen) and
+	// hold only the INNER intercepted GET — otherwise the ask_user rule
+	// catches the CONNECT in handleConnect, not the intercept path.
+	rules := `
+- id: ask-held
+  match: {host: 127.0.0.1, path: /held}
+  effect: ask_user
+- id: allow-rest
+  match: {host: 127.0.0.1}
+  effect: allow
+`
+	h := bootInterceptProxy(t, rules, "")
+	defer h.close()
+
+	c := h.clientWithOurCA()
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, h.originURL+"/held", nil)
+		resp, err := c.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		errCh <- err
+	}()
+
+	// Wait for the intercepted request to be held.
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) && len(h.srv.Queue().Pending()) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := len(h.srv.Queue().Pending()); n != 1 {
+		t.Fatalf("intercepted request not held; Pending=%d", n)
+	}
+
+	cancel() // client disconnects
+
+	freed := false
+	deadline = time.Now().Add(3 * time.Second) // well under the 5s timeout
+	for time.Now().Before(deadline) {
+		if len(h.srv.Queue().Pending()) == 0 {
+			freed = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !freed {
+		t.Fatalf("intercepted held slot not freed on disconnect (waiter pinned to timeout); Pending=%d", len(h.srv.Queue().Pending()))
+	}
+	<-errCh
+}
+
+// TestIntercept_KeepAliveSurvivesHeldRequest guards the #211 cleanup: a
+// held-then-approved intercepted request must NOT corrupt the tunnel's
+// bufio reader — a second request on the SAME keep-alive connection must
+// still succeed (proves the Peek-watcher's interrupt+reset path is
+// lossless and clean).
+func TestIntercept_KeepAliveSurvivesHeldRequest(t *testing.T) {
+	rules := `
+- id: ask-held
+  match: {host: 127.0.0.1, path: /held}
+  effect: ask_user
+- id: allow-rest
+  match: {host: 127.0.0.1}
+  effect: allow
+`
+	h := bootInterceptProxy(t, rules, "")
+	defer h.close()
+
+	c := h.clientWithOurCA()
+
+	// Approve the hold once it appears (simulates the operator).
+	go func() {
+		deadline := time.Now().Add(4 * time.Second)
+		for time.Now().Before(deadline) {
+			p := h.srv.Queue().Pending()
+			if len(p) == 1 {
+				h.srv.Queue().Approve(p[0].ID, "once", "test")
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	// Request 1: held, then approved → 200.
+	resp1, err := c.Get(h.originURL + "/held")
+	if err != nil {
+		t.Fatalf("req1 (held->approved): %v", err)
+	}
+	_, _ = io.ReadAll(resp1.Body)
+	resp1.Body.Close()
+	if resp1.StatusCode != 200 {
+		t.Fatalf("req1 status = %d, want 200", resp1.StatusCode)
+	}
+
+	// Request 2 on the SAME client (connection reuse): must succeed,
+	// proving the tunnel reader survived the held request's cleanup.
+	resp2, err := c.Get(h.originURL + "/again")
+	if err != nil {
+		t.Fatalf("req2 (keep-alive after held req) failed — tunnel reader corrupted? %v", err)
+	}
+	_, _ = io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		t.Fatalf("req2 status = %d, want 200", resp2.StatusCode)
+	}
+}
