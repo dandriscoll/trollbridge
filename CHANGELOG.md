@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.9.2 — 2026-06-14
+
 ### TUI
 
 - **Open mode — allow all traffic for a bounded window (#209).** Press
