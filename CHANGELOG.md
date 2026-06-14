@@ -9,6 +9,42 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### TUI
+
+- **Open mode — allow all traffic for a bounded window (#209).** Press
+  `o` in the approvals pane to open the proxy to *all* traffic for one
+  minute **without modifying the allow/deny lists**; press `o` again to
+  extend (`+1`, `+3`, `+5`, `+20`, `+30` minutes, capped). While open the
+  pane border turns amber and the footer shows `[c] close (Ns)` with the
+  seconds remaining; `c` closes immediately and the window reverts to
+  normal policy automatically at expiry. Drivable from `trollbridge
+  attach` over the control plane too.
+
+### Operator
+
+- **Held requests release the moment the client disconnects (#208,
+  #211).** Previously a disconnected client's held request stayed pinned
+  for the full `timeout_seconds`, holding a `max_pending` slot; a chatty
+  client could exhaust the queue. The proxy now keys the wait on the
+  request connection on the HTTP, CONNECT, and intercepted-HTTPS paths —
+  a disconnect frees that waiter (and its slot) immediately, while
+  coalesced siblings keep waiting and the operator can still decide.
+
+### Forensics
+
+- **Every open-mode-allowed request is audited** with
+  `decision_source: open_mode`, and the operational log records
+  `open_mode_extended` / `open_mode_closed` plus a `hold_abandoned` event
+  when a disconnected client releases a waiter — so both the bypass
+  window and client churn are reviewable after the fact.
+
+### Internal
+
+- The test suite now runs under the race detector in CI; a shutdown-time
+  audit-logger close-vs-send race (#210) was fixed and an approvals-pane
+  terminal (pty) render regression guard added (#207). No operator-facing
+  behavior change.
+
 ## v0.9.1 — 2026-06-07
 
 ### Operator
