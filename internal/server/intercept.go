@@ -50,6 +50,22 @@ func (s *Server) shouldIntercept(host string) bool {
 // in the audit log rather than as silent leaks.
 const interceptHandshakeDeadline = 15 * time.Second
 
+// maxHeldBodyBufferBytes bounds how much of a held intercepted
+// request's body the proxy will drain into memory in order to watch
+// for client disconnect during the hold (#213). The disconnect signal
+// (a TCP close) sits BEHIND the unread body bytes in the byte stream,
+// so early release on a held request with an unread body is impossible
+// without first draining that body off the tunnel; draining it into
+// memory also removes the shared-bufio.Reader collision, because the
+// forwarded body then comes from memory (never concurrently with the
+// disconnect watcher's read). Held requests are operator-gated and
+// bounded by max_pending, so a few of these in flight is safe. A body
+// larger than this cap keeps the prior blocking-wait fallback (no early
+// release) so a large held upload cannot pin unbounded memory. 8 MiB
+// covers ordinary held API bodies while staying well clear of the
+// large-upload streaming case (which is almost never a policy hold).
+const maxHeldBodyBufferBytes = 8 << 20
+
 // interceptCONNECT terminates the CONNECT tunnel as TLS, performs
 // per-HTTP-request policy decisions on the inner stream, and
 // proxies HTTP/1.1 to the origin under a verified TLS dial.
@@ -193,7 +209,12 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, br *bufio.Reader,
 	// reader now holds only the NEXT request. Only then is it safe to
 	// arm the disconnect watcher's Peek on that reader during a hold
 	// (#211) — otherwise the Peek would collide with the body still
-	// streaming from the tunnel during forwarding.
+	// streaming from the tunnel during forwarding. The sample read
+	// below sets it for bodies within the inspection cap; for larger or
+	// inspection-disabled bodies it starts false and the hold path
+	// (#213) drains the framed body up to maxHeldBodyBufferBytes before
+	// arming the watcher, so early release works for streaming bodies
+	// too.
 	bodyFullyBuffered := true
 	if r.Body != nil && s.MaxBodySampleBytes > 0 {
 		prefix, err := io.ReadAll(io.LimitReader(r.Body, int64(s.MaxBodySampleBytes)+1))
@@ -274,9 +295,28 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, br *bufio.Reader,
 	}
 	if decision.Effect == types.EffectAskUser || decision.Effect == types.EffectAskLLM {
 		rlog.Debug("held", "phase", oplog.PhaseHeld, "effect", string(decision.Effect))
+		// #213: for a streaming/over-cap body, drain THIS request's
+		// framed body off the tunnel into memory (bounded) BEFORE the
+		// hold. This makes the tunnel reader hold only the NEXT request
+		// — so the disconnect watcher can Peek it without racing the
+		// body read — and lets forwarding read the body from memory on
+		// approval. The framed body reader returns EOF at the body's
+		// Content-Length/chunked end, so this does not block waiting for
+		// a close; a mid-body client disconnect surfaces as a read error
+		// and we abort. Bodies larger than the cap keep the prior
+		// blocking-wait fallback (bodyFullyBuffered stays false).
+		if !bodyFullyBuffered {
+			buffered, derr := drainBodyForHold(r, maxHeldBodyBufferBytes)
+			if derr != nil {
+				// Client went away mid-body (or tunnel error): there is
+				// nothing left to hold or forward.
+				return derr
+			}
+			bodyFullyBuffered = buffered
+		}
 		// #211: hold with a connection-close-tied context when it is
-		// safe to watch the tunnel reader (body fully buffered), so a
-		// client disconnect releases the waiter immediately instead of
+		// safe to watch the tunnel reader (body now fully buffered), so
+		// a client disconnect releases the waiter immediately instead of
 		// pinning it to timeout_seconds.
 		decision = s.holdInterceptedRequest(req, decision, br, tlsConn, bodyFullyBuffered)
 		rlog.Debug("resolved", "phase", oplog.PhaseResolved, "effect", string(decision.Effect))
@@ -415,6 +455,39 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, br *bufio.Reader,
 	return nil
 }
 
+// drainBodyForHold reads a held intercepted request's framed body fully
+// into memory (up to limit) so the request can be watched for client
+// disconnect during the hold (#213). Once the body is off the tunnel,
+// the tunnel's bufio reader holds only the NEXT request, so the
+// disconnect watcher's Peek never races the body read, and forwarding
+// on approval reads the body from memory. The body reader Go hands back
+// from http.ReadRequest is framed by Content-Length/chunked, so
+// io.ReadAll terminates at the body's end rather than blocking for a
+// close; a client that disconnects mid-body surfaces as a read error.
+//
+// Returns fullyBuffered=true when the whole body fit within limit
+// (r.Body is replaced with the in-memory copy). When the body exceeds
+// limit it returns false with r.Body restored to prefix+remaining-stream,
+// and the caller keeps the prior blocking-wait fallback (no early
+// release) so a large held upload cannot pin unbounded memory.
+func drainBodyForHold(r *http.Request, limit int) (bool, error) {
+	if r.Body == nil {
+		return true, nil
+	}
+	prefix, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
+	if err != nil {
+		return false, err
+	}
+	if int64(len(prefix)) > int64(limit) {
+		// Over the hold cap: keep the tail streaming from the tunnel;
+		// the caller falls back to the no-early-release blocking wait.
+		r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(prefix), r.Body))
+		return false, nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(prefix))
+	return true, nil
+}
+
 // holdInterceptedRequest holds an intercepted request, releasing the
 // waiter early when the client disconnects (#211 — completing #208 for
 // the intercepted-HTTPS path, whose request has no conn-tied context).
@@ -422,10 +495,11 @@ func (s *Server) dispatchInterceptedRequest(tlsConn *tls.Conn, br *bufio.Reader,
 // The tunnel exposes one bufio.Reader (br) shared between request reads
 // and body reads, so a disconnect watcher can only safely Peek it while
 // it holds the NEXT request — i.e. once THIS request's body is fully
-// buffered in memory (bodyFullyBuffered). When the body still streams
-// from the tunnel (over-cap, or inspection disabled), watching would
-// collide with the forwarding body read, so we fall back to the plain
-// blocking wait (no early release) — exactly the prior behavior.
+// buffered in memory (bodyFullyBuffered). The caller guarantees this by
+// draining the framed body up to maxHeldBodyBufferBytes before the hold
+// (#213), so streaming/over-cap bodies within the cap are watched too;
+// only a body larger than the cap keeps bodyFullyBuffered false and
+// falls back to the plain blocking wait (no early release).
 //
 // When safe, a goroutine Peeks br during the hold: a Peek error means the
 // client went away → cancel the request context → the queue releases

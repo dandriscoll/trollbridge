@@ -9,6 +9,20 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Operator
+
+- **Held intercepted requests with streaming bodies now release on
+  client disconnect too (#213).** The #211 early-release only covered
+  held intercepted requests whose body fit the inspection sample cap;
+  requests with a larger (streaming/over-cap) or inspection-disabled
+  body stayed pinned to `timeout_seconds` when the client went away. The
+  proxy now drains a held request's framed body into memory (bounded)
+  before it starts watching the tunnel for disconnect, so early release
+  works uniformly and the disconnect watcher never races the
+  body-forwarding read. A held body larger than the internal cap keeps
+  the prior blocking-wait behavior so a large held upload cannot pin
+  unbounded memory.
+
 ### TUI
 
 - **Skip a generalization suggestion without deciding (#214).** Press

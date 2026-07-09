@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dandriscoll/trollbridge/internal/approvals"
 	"github.com/dandriscoll/trollbridge/internal/audit"
 	"github.com/dandriscoll/trollbridge/internal/ca"
 	"github.com/dandriscoll/trollbridge/internal/config"
@@ -757,6 +758,82 @@ func TestIntercept_ClientDisconnectFreesHeldSlot(t *testing.T) {
 	}
 	if !freed {
 		t.Fatalf("intercepted held slot not freed on disconnect (waiter pinned to timeout); Pending=%d", len(h.srv.Queue().Pending()))
+	}
+	<-errCh
+}
+
+// TestIntercept_StreamingBodyClientDisconnectFreesHeldSlot pins #213: a
+// held intercepted request whose body is NOT fully buffered by the
+// sample read (over the sample cap, i.e. the streaming case) must ALSO
+// release its waiter promptly on client disconnect — not pin the slot to
+// timeout_seconds. Before #213 this case fell back to a plain blocking
+// wait with no disconnect watcher; the fix drains the framed body into
+// memory (bounded) before the hold so the watcher runs uniformly.
+//
+// The held request's scheme is asserted `https-intercepted` (insight
+// §37) to prove the intercept path — not the outer CONNECT — was held.
+func TestIntercept_StreamingBodyClientDisconnectFreesHeldSlot(t *testing.T) {
+	rules := `
+- id: ask-held
+  match: {host: 127.0.0.1, path: /held}
+  effect: ask_user
+- id: allow-rest
+  match: {host: 127.0.0.1}
+  effect: allow
+`
+	h := bootInterceptProxy(t, rules, "")
+	defer h.close()
+
+	// Tiny sample cap so any real body is over-cap → the streaming
+	// branch (bodyFullyBuffered=false after the sample read). The body
+	// below (well over 16 bytes, well under maxHeldBodyBufferBytes) is
+	// what #213 must drain-then-watch.
+	h.srv.MaxBodySampleBytes = 16
+
+	c := h.clientWithOurCA()
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	body := strings.Repeat("x", 4096) // over the 16-byte sample cap
+	go func() {
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, h.originURL+"/held", strings.NewReader(body))
+		resp, err := c.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		errCh <- err
+	}()
+
+	// Wait for the intercepted request to be held, and prove it is the
+	// inner intercepted request (not the outer CONNECT).
+	var held []approvals.Snapshot
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		held = h.srv.Queue().Pending()
+		if len(held) == 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(held) != 1 {
+		t.Fatalf("intercepted streaming request not held; Pending=%d", len(held))
+	}
+	if held[0].Scheme != "https-intercepted" {
+		t.Fatalf("held request scheme = %q, want https-intercepted (held the wrong path?)", held[0].Scheme)
+	}
+
+	cancel() // client disconnects mid-hold
+
+	freed := false
+	deadline = time.Now().Add(3 * time.Second) // well under the 5s timeout
+	for time.Now().Before(deadline) {
+		if len(h.srv.Queue().Pending()) == 0 {
+			freed = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !freed {
+		t.Fatalf("streaming held slot not freed on disconnect (waiter pinned to timeout); Pending=%d", len(h.srv.Queue().Pending()))
 	}
 	<-errCh
 }
