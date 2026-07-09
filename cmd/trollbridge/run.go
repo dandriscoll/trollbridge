@@ -861,6 +861,10 @@ func (a tuiSuggestionAdapter) DeclineSuggestion(id string) error {
 	return a.m.Decline(context.Background(), id)
 }
 
+func (a tuiSuggestionAdapter) SkipSuggestion(id string) error {
+	return a.m.Skip(context.Background(), id)
+}
+
 func (a tuiSuggestionAdapter) SuggestNow() *tui.Suggestion {
 	a.m.SuggestNow(context.Background())
 	return a.ActiveSuggestion()

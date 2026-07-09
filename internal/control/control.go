@@ -103,6 +103,10 @@ type SuggestionProvider interface {
 	Active() *SuggestionRow
 	Accept(ctx context.Context, id string) error
 	Decline(ctx context.Context, id string) error
+	// Skip defers the active suggestion (#214): no decision is
+	// persisted (no decline row, unlike Decline) and the next
+	// recommendation is offered instead.
+	Skip(ctx context.Context, id string) error
 	// SuggestNow runs the detector on demand, bypassing the quiet
 	// gate (#174), so the operator can request a scan instead of
 	// waiting for an idle moment.
@@ -287,6 +291,7 @@ func (s *Server) ListenAndServe(ctx context.Context) (string, error) {
 	mux.HandleFunc("/v1/suggestion", authd(s.suggestionGet))                  // closes #168
 	mux.HandleFunc("/v1/suggestion/accept", authd(s.suggestionAccept))        // closes #168
 	mux.HandleFunc("/v1/suggestion/decline", authd(s.suggestionDecline))      // closes #168
+	mux.HandleFunc("/v1/suggestion/skip", authd(s.suggestionSkip))            // #214 defer, no decision
 	mux.HandleFunc("/v1/suggestion/scan", authd(s.suggestionScan))            // #174 on-demand
 	mux.HandleFunc("/v1/open", authd(s.openModeHandler))                      // #209: GET state / POST extend / DELETE close
 	// /v1/healthz is intentionally unauthenticated for monitoring.
@@ -625,6 +630,27 @@ func (s *Server) suggestionDecline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "declined", "suggestion_id": id})
+}
+
+// suggestionSkip defers the active suggestion (#214) without recording
+// a decision: no decline row is written and the recommendation is
+// re-offered in a future process. 200 on success, 409 when the id is
+// stale, 410 when there is no active suggestion — same mapping as
+// accept/decline.
+func (s *Server) suggestionSkip(w http.ResponseWriter, r *http.Request) {
+	id, err := readSuggestionID(w, r)
+	if err != nil {
+		return
+	}
+	if s.suggestion == nil {
+		http.Error(w, "suggestion mode not configured", http.StatusNotFound)
+		return
+	}
+	if err := s.suggestion.Skip(r.Context(), id); err != nil {
+		mapSuggestionErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "skipped", "suggestion_id": id})
 }
 
 // suggestionScan runs an on-demand detector pass (#174) and returns

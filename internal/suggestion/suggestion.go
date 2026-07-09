@@ -28,6 +28,10 @@
 //                                decline row at detection time.
 //  9. suggestion_superseded    — the lists changed under the active
 //                                suggestion (source entries gone).
+// 10. suggestion_skipped       — operator deferred the recommendation
+//                                (#214); no decision persisted, the
+//                                recommendation is suppressed only for
+//                                this process so the next one is offered.
 //
 // Per docs/alignment-principles.md §1, the package does NOT let the
 // advisor invent patterns: the deterministic detector enumerates the
@@ -39,10 +43,13 @@ package suggestion
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
+	mathrand "math/rand"
 	"net/url"
 	"sort"
 	"strings"
@@ -149,6 +156,23 @@ type Manager struct {
 	// applicable axes are exhausted, the row is persisted and the
 	// entry is removed from this map.
 	sessionDeclined map[string]*sessionEntry
+	// sessionSkipped tracks recommendations the operator deferred this
+	// session with skip (#214). Keyed by CanonicalKey. Unlike a
+	// decline, a skip persists NOTHING (no YAML row, no sessionDeclined
+	// entry) — it only suppresses re-offering the same recommendation
+	// for the rest of the process so produce() moves on to a different
+	// one (avoids the #188 "stuck re-recommending" shape). Cleared when
+	// the process restarts; a skipped opportunity is offered again next
+	// session precisely because the operator made no decision about it.
+	sessionSkipped map[string]struct{}
+	// shuffleSeed randomizes the FINAL tie-break in group selection so
+	// the operator does not always see the same recommendation first
+	// (#214). Fixed once at New() (per process), NOT per tick, so the
+	// offer does not flicker between equal-priority groups each poll.
+	// It only breaks exact ties (equal coverage AND equal axis count) —
+	// the #186 coverage-first and #190 concentration policies are
+	// unaffected. Tests set a fixed seed for determinism.
+	shuffleSeed uint64
 }
 
 type sessionEntry struct {
@@ -190,6 +214,12 @@ func New(
 		now:             time.Now,
 		makeID:          newSuggestionID,
 		sessionDeclined: map[string]*sessionEntry{},
+		sessionSkipped:  map[string]struct{}{},
+		// Auto-seeded top-level math/rand (Go 1.20+) gives a distinct
+		// per-process ordering; tests overwrite shuffleSeed for a
+		// deterministic tie-break. math/rand is fine here — this is
+		// UI ordering, not a security decision.
+		shuffleSeed: mathrand.Uint64(),
 	}
 }
 
@@ -369,6 +399,26 @@ func (m *Manager) produce(ctx context.Context, cfg *config.Config, maxCandidates
 		filtered2 = append(filtered2, c)
 	}
 
+	// Skip-filter (in-session, #214) — a recommendation the operator
+	// skipped this process is suppressed so produce() offers a
+	// different one. Unlike the decline filters above, this persists
+	// nothing: it is purely in-memory and gone on restart.
+	filtered3 := filtered2[:0]
+	for _, c := range filtered2 {
+		if _, skipped := m.sessionSkipped[c.CanonicalKey()]; skipped {
+			m.opLog.Info("skip-filtered candidate",
+				"event", oplog.EventSuggestionSkipped,
+				"axis", string(c.Axis),
+				"list", c.List,
+				"source_count", len(c.SourceEntries),
+				"reason", "session_skip_filter",
+			)
+			continue
+		}
+		filtered3 = append(filtered3, c)
+	}
+	filtered2 = filtered3
+
 	if len(filtered2) == 0 {
 		m.opLog.Info("detector found no opportunities",
 			"event", oplog.EventSuggestionDetectorRan,
@@ -407,7 +457,14 @@ func (m *Manager) produce(ctx context.Context, cfg *config.Config, maxCandidates
 			} else if len(g) != len(chosen) {
 				better = len(g) > len(chosen)
 			} else {
-				better = k < bestKey
+				// Final tie-break: shuffled per-process order (#214) so
+				// the operator doesn't always see the same first
+				// recommendation. groupTiebreak is a pure hash of
+				// (seed, key), stable within the process, so the choice
+				// among equal-priority groups is fixed for the session
+				// but varies run-to-run. Coverage (#186) and axis count
+				// still dominate — only exact ties are shuffled.
+				better = groupTiebreak(m.shuffleSeed, k) < groupTiebreak(m.shuffleSeed, bestKey)
 			}
 		}
 		if better {
@@ -985,6 +1042,61 @@ func (m *Manager) Decline(ctx context.Context, id string) error {
 		m.reload()
 	}
 	return nil
+}
+
+// Skip defers the active recommendation (#214): it dismisses the
+// current suggestion WITHOUT recording a decision. Unlike Decline it
+// writes no YAML decline row and adds no sessionDeclined entry — it
+// only records an in-memory per-process skip (keyed by CanonicalKey)
+// so produce() offers a DIFFERENT recommendation next cycle instead of
+// re-selecting this same highest-priority group (the #188
+// "stuck re-recommending" shape). Because nothing is persisted, the
+// skipped opportunity is offered again in a future process — skip is
+// "not now", decline is "not this". Returns ErrIDMismatch when id does
+// not match the active suggestion, ErrNoActive when none exists. No
+// reload: nothing changed on disk.
+func (m *Manager) Skip(ctx context.Context, id string) error {
+	m.mu.Lock()
+	active := m.active
+	if active == nil {
+		m.mu.Unlock()
+		return ErrNoActive
+	}
+	if active.ID != id {
+		m.mu.Unlock()
+		return ErrIDMismatch
+	}
+	key := active.Candidate.CanonicalKey()
+	axesOffered := append([]string(nil), active.OfferedAxes...)
+	m.active = nil
+	m.sessionSkipped[key] = struct{}{}
+	m.mu.Unlock()
+
+	m.opLog.Info("skipped",
+		"event", oplog.EventSuggestionSkipped,
+		"suggestion_id", active.ID,
+		"axis", string(active.Candidate.Axis),
+		"list", active.Candidate.List,
+		"axes_offered", axesOffered,
+		"source_count", len(active.Candidate.SourceEntries),
+		"reason", "operator_skip",
+	)
+	return nil
+}
+
+// groupTiebreak maps (seed, CanonicalKey) to a stable pseudo-random
+// value used only to break exact ties in group selection (#214).
+// FNV-1a over the seed bytes followed by the key: deterministic for a
+// given seed (so tests pin the order) and effectively shuffled across
+// processes (New() draws a random seed). Pure function — no shared
+// rand state, so it is race-free under the -race lane.
+func groupTiebreak(seed uint64, key string) uint64 {
+	h := fnv.New64a()
+	var b [8]byte
+	binary.LittleEndian.PutUint64(b[:], seed)
+	_, _ = h.Write(b[:])
+	_, _ = h.Write([]byte(key))
+	return h.Sum64()
 }
 
 // revalidateActive checks whether the active suggestion's source

@@ -1049,8 +1049,14 @@ mainline; LLM-translator integration is a follow-up.
 **TUI surface.** A single suggestion row appears in the approvals
 pane below any pending holds. When a real hold arrives, the row is
 hidden from the render tree; when the queue drains, the row
-reappears. The TUI's accept / decline keystrokes POST to the
-control plane's `/v1/suggestion/accept` / `/v1/suggestion/decline`.
+reappears. The TUI's accept / decline / skip keystrokes
+(`shift+a` / `shift+d` / `shift+s`) POST to the control plane's
+`/v1/suggestion/accept` / `/v1/suggestion/decline` /
+`/v1/suggestion/skip`. Which recommendation is offered *first* when
+several are equally ranked is shuffled by a per-process seed (#214),
+so the operator does not always see the same one; coverage-first
+(#186) and path-concentration (#190) still dominate — only exact
+ties are shuffled.
 
 **Accept path.** The chosen pattern is appended to `lists.allow`
 or `lists.deny` via `internal/configwrite` (the same write path as
@@ -1065,11 +1071,21 @@ axes have been declined, ONE row is appended to
 and the same set is never re-offered until the operator removes
 the row by hand.
 
-**Telemetry.** Nine event constants in `internal/oplog/events.go`
+**Skip path (#214).** Skip defers a recommendation *without* a
+decision: unlike decline it writes no `lists.declined_suggestions`
+row and adds no session-decline entry. The manager records an
+in-memory per-process skip (keyed by canonical source set) so the
+next detection offers a different recommendation instead of
+re-selecting the same highest-priority group (avoiding the #188
+"stuck re-recommending" shape), then clears the active row. Because
+nothing is persisted, a skipped opportunity is offered again in a
+future process — skip is "not now", decline is "not this".
+
+**Telemetry.** Ten event constants in `internal/oplog/events.go`
 cover every phase (detector ran, ask started, classified, ask
-failed, offered, accepted, declined, decline-filter suppressed,
-superseded) at INFO. The completeness rule mirrors the ask-case
-coverage from #25/#33/#34/#35.
+failed, offered, accepted, declined, skipped, decline-filter
+suppressed, superseded) at INFO. The completeness rule mirrors the
+ask-case coverage from #25/#33/#34/#35.
 
 **Alignment principle.** The flow does NOT violate §1
 ("allow/deny lists are human-only"). The advisor cannot invent a

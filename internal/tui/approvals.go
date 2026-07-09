@@ -63,6 +63,9 @@ type ControlClient interface {
 	ActiveSuggestion() (*Suggestion, error)
 	AcceptSuggestion(id string) error
 	DeclineSuggestion(id string) error
+	// SkipSuggestion defers the active suggestion (#214): no decision
+	// is persisted and the next recommendation is offered instead.
+	SkipSuggestion(id string) error
 	// SuggestNow asks the daemon to run the detector on demand
 	// (#174) and returns the resulting suggestion (or nil).
 	SuggestNow() (*Suggestion, error)
@@ -92,6 +95,7 @@ type SuggestionSource interface {
 	ActiveSuggestion() *Suggestion
 	AcceptSuggestion(id string) error
 	DeclineSuggestion(id string) error
+	SkipSuggestion(id string) error
 	SuggestNow() *Suggestion
 }
 
@@ -238,6 +242,12 @@ func (c *httpClient) AcceptSuggestion(id string) error {
 func (c *httpClient) DeclineSuggestion(id string) error {
 	body, _ := json.Marshal(map[string]string{"suggestion_id": id})
 	_, err := controlclient.Post(c.cfg, "/v1/suggestion/decline", body)
+	return err
+}
+
+func (c *httpClient) SkipSuggestion(id string) error {
+	body, _ := json.Marshal(map[string]string{"suggestion_id": id})
+	_, err := controlclient.Post(c.cfg, "/v1/suggestion/skip", body)
 	return err
 }
 
@@ -388,6 +398,13 @@ func (c *inProcessClient) DeclineSuggestion(id string) error {
 		return errors.New("suggestion lifecycle not wired")
 	}
 	return c.sugg.DeclineSuggestion(id)
+}
+
+func (c *inProcessClient) SkipSuggestion(id string) error {
+	if c.sugg == nil {
+		return errors.New("suggestion lifecycle not wired")
+	}
+	return c.sugg.SkipSuggestion(id)
 }
 
 func (c *inProcessClient) SuggestNow() (*Suggestion, error) {
@@ -721,6 +738,15 @@ func runLoop(ctx context.Context, client ControlClient, backend *console.Backend
 				select {
 				case <-loopCtx.Done():
 				case events <- SuggestionActionResult{Action: "decline", Err: err}:
+				}
+			}()
+		case CmdSuggestionSkip:
+			id := c.ID
+			go func() {
+				err := client.SkipSuggestion(id)
+				select {
+				case <-loopCtx.Done():
+				case events <- SuggestionActionResult{Action: "skip", Err: err}:
 				}
 			}()
 		case CmdSuggestNow:
@@ -1500,13 +1526,13 @@ func formatSuggestionCard(s Suggestion, inner int) []string {
 		}
 		raw = append(raw, fmt.Sprintf("  sources: %d entries", len(s.SourceEntries)))
 		raw = append(raw, "  why: "+s.Reason)
-		raw = append(raw, "  → "+s.List+"    [shift+a]ccept  [shift+d]ecline")
+		raw = append(raw, "  → "+s.List+"    [shift+a]ccept  [shift+d]ecline  [shift+s]kip")
 	} else {
 		raw = []string{
 			fmt.Sprintf("suggestion (%s)%s", s.Axis, axis),
 			"  pattern: " + s.SuggestedPattern,
 			"  why: " + s.Reason,
-			"  → " + s.List + "    [shift+a]ccept  [shift+d]ecline",
+			"  → " + s.List + "    [shift+a]ccept  [shift+d]ecline  [shift+s]kip",
 		}
 	}
 	out := make([]string, len(raw))

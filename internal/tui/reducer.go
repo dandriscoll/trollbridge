@@ -549,6 +549,11 @@ type CmdDigestRefresh struct{}
 type CmdSuggestionAccept struct{ ID string }
 type CmdSuggestionDecline struct{ ID string }
 
+// CmdSuggestionSkip defers the active suggestion (#214): the daemon
+// records no decision and offers the next recommendation. Same event
+// loop shape as accept/decline.
+type CmdSuggestionSkip struct{ ID string }
+
 // CmdSuggestNow asks the daemon to run the generalization detector on
 // demand (#174). The runtime calls the ControlClient off the event
 // loop and emits a SuggestionTickResult{OnDemand:true}.
@@ -611,6 +616,7 @@ func (CmdConsoleExec) cmd()       {}
 func (CmdGeneralizeAccept) cmd()   {}
 func (CmdSuggestionAccept) cmd()   {}
 func (CmdSuggestionDecline) cmd()  {}
+func (CmdSuggestionSkip) cmd()     {}
 func (CmdSuggestNow) cmd()         {}
 func (CmdDigestRefresh) cmd() {}
 func (CmdURLsRefresh) cmd()   {}
@@ -729,6 +735,8 @@ func suggestionActionPast(action string) string {
 		return "accepted"
 	case "decline":
 		return "declined"
+	case "skip":
+		return "skipped"
 	default:
 		return action + "ed"
 	}
@@ -1651,6 +1659,12 @@ func applyKeyApprovals(m Model, e KeyEvent) (Model, Cmd) {
 		}
 		if e.Rune == 'D' {
 			return m, CmdSuggestionDecline{ID: m.Suggestion.ID}
+		}
+		// shift+s defers the recommendation without a decision (#214):
+		// no accept, no decline (no YAML decline row) — the daemon
+		// records an in-memory skip and offers the next one.
+		if e.Rune == 'S' {
+			return m, CmdSuggestionSkip{ID: m.Suggestion.ID}
 		}
 	}
 	displayed := DisplayedOps(m)

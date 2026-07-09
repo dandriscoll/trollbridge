@@ -9,6 +9,19 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### TUI
+
+- **Skip a generalization suggestion without deciding (#214).** Press
+  `shift+s` in the approvals pane to defer the current recommendation:
+  unlike `shift+d` decline, skip records no decision — it writes no
+  `declined_suggestions` row and the opportunity is offered again in a
+  future session. The daemon suppresses the skipped recommendation for
+  the rest of the process and offers the next one instead. The order
+  recommendations are first offered is now shuffled per process, so you
+  no longer always see the same one first; coverage-first (#186) and
+  path-concentration (#190) still decide which recommendations rank
+  highest — only exact ties are shuffled.
+
 ## v0.9.2 — 2026-06-14
 
 ### TUI

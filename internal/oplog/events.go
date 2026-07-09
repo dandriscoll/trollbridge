@@ -93,6 +93,7 @@ const (
 	EventSuggestionOffered         = "suggestion_offered"          // INFO
 	EventSuggestionAccepted        = "suggestion_accepted"         // INFO
 	EventSuggestionDeclined        = "suggestion_declined"         // INFO; per-cycle final decline (decline-row written)
+	EventSuggestionSkipped         = "suggestion_skipped"          // INFO; operator deferred a recommendation (no decision persisted)
 	EventSuggestionDeclineFiltered = "decline_filter_suppressed"   // INFO; a candidate matched an existing decline row
 	EventSuggestionSuperseded      = "suggestion_superseded"       // INFO; lists changed under the active suggestion
 

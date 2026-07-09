@@ -29,6 +29,7 @@ type stubClient struct {
 	suggestion *Suggestion
 	acceptedID []string
 	declinedID []string
+	skippedID  []string
 }
 
 func (s *stubClient) ListHolds() ([]approvals.Snapshot, error) {
@@ -91,6 +92,13 @@ func (s *stubClient) DeclineSuggestion(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.declinedID = append(s.declinedID, id)
+	return nil
+}
+
+func (s *stubClient) SkipSuggestion(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.skippedID = append(s.skippedID, id)
 	return nil
 }
 

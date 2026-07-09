@@ -72,6 +72,57 @@ func TestApplyKeyApprovals_ShiftAcceptDecline(t *testing.T) {
 	}
 }
 
+// TestApplyKeyApprovals_ShiftSkip pins #214: shift+s (uppercase 'S')
+// on the approvals pane defers the active suggestion via
+// CmdSuggestionSkip; it is inert when no suggestion is offered.
+func TestApplyKeyApprovals_ShiftSkip(t *testing.T) {
+	base := Model{Cols: 100, Rows: 30, Focused: PaneApprovals, Suggestion: sampleSuggestion()}
+
+	_, cmdS := Apply(base, KeyEvent{Rune: 'S'})
+	if sk, ok := cmdS.(CmdSuggestionSkip); !ok || sk.ID != "sug-1" {
+		t.Errorf("'S' = %T %+v, want CmdSuggestionSkip{sug-1}", cmdS, cmdS)
+	}
+
+	// Inert with no suggestion.
+	noSug := Model{Cols: 100, Rows: 30, Focused: PaneApprovals}
+	if _, cmd := Apply(noSug, KeyEvent{Rune: 'S'}); cmd != nil {
+		if _, ok := cmd.(CmdSuggestionSkip); ok {
+			t.Errorf("'S' produced a suggestion skip with no active suggestion")
+		}
+	}
+}
+
+// TestSuggestionSkipStatus pins #214/#187: a successful skip clears the
+// card and the status reads "suggestion skipped" (not "skiped"/"skipped"
+// suffix bugs).
+func TestSuggestionSkipStatus(t *testing.T) {
+	m := Model{Cols: 100, Rows: 30, Suggestion: sampleSuggestion()}
+	ok, _ := Apply(m, SuggestionActionResult{Action: "skip"})
+	if ok.Suggestion != nil {
+		t.Errorf("successful skip did not clear m.Suggestion")
+	}
+	if ok.LastInfo != "suggestion skipped" {
+		t.Errorf("skip status text = %q, want %q", ok.LastInfo, "suggestion skipped")
+	}
+}
+
+// TestSuggestionCard_ShowsSkipHint pins #214: the card legend advertises
+// the skip key and still fits the pane width.
+func TestSuggestionCard_ShowsSkipHint(t *testing.T) {
+	for _, narrow := range []int{40, 60, 100} {
+		for _, l := range formatSuggestionCard(*sampleSuggestion(), narrow-2) {
+			if visibleLen(l) > narrow-2 {
+				t.Errorf("width %d: card line exceeds inner: %q", narrow, l)
+			}
+		}
+	}
+	lines := formatSuggestionCard(*sampleSuggestion(), 100)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "shift+s]kip") {
+		t.Errorf("card legend missing skip hint:\n%s", joined)
+	}
+}
+
 // TestSuggestionActionResult_Status pins the result handling: success
 // clears the suggestion and sets LastInfo; failure sets LastErr.
 func TestSuggestionActionResult_Status(t *testing.T) {

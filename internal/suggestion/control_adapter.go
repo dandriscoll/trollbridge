@@ -50,6 +50,11 @@ func (a ControlAdapter) Decline(ctx context.Context, id string) error {
 	return a.M.Decline(ctx, id)
 }
 
+// Skip forwards the defer-without-decision action to the manager (#214).
+func (a ControlAdapter) Skip(ctx context.Context, id string) error {
+	return a.M.Skip(ctx, id)
+}
+
 // SuggestNow forwards the on-demand scan to the manager (#174).
 func (a ControlAdapter) SuggestNow(ctx context.Context) {
 	a.M.SuggestNow(ctx)
