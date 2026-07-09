@@ -9,6 +9,8 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+## v0.9.3 — 2026-07-09
+
 ### Operator
 
 - **Held intercepted requests with streaming bodies now release on
