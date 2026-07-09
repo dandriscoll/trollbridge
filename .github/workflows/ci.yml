@@ -82,3 +82,48 @@ jobs:
       - name: check doc links
         if: matrix.os == 'ubuntu-latest'
         run: scripts/check-doc-links.sh
+
+  # Noexec-TMPDIR updater lane (#212). The updater runs its downloaded
+  # helper via `bash <file>` precisely so it survives a /tmp mounted
+  # noexec (bash READS the script; no exec bit / PROT_EXEC needed). The
+  # contract test TestRunWithPrefix_NoexecTmpdirSurvives self-mounts a
+  # noexec tmpfs and asserts the pipeline succeeds — but it SKIPS unless
+  # euid==0 (mounting needs CAP_SYS_ADMIN), so the unprivileged `validate`
+  # lanes compile it but never run it. This lane runs the updater tests
+  # AS ROOT so the noexec path executes for real; a refactor to
+  # direct-exec would then fail here instead of silently regressing (the
+  # class has shipped twice — the #94/#163 lineage, #205).
+  #
+  # Split: compile the test binary as the normal user (Go toolchain and
+  # module cache stay unprivileged; no root-owned cache, no sudo PATH/
+  # GOROOT gymnastics), then run the precompiled binary under sudo. The
+  # binary lands in the workspace (not /tmp) so it is never on a noexec
+  # mount. Linux-only: the noexec mount + euid gating are a Linux
+  # contract (same scoping rationale as the -race lane).
+  noexec-updater:
+    name: updater (noexec TMPDIR, root)
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: compile updater test binary (unprivileged)
+        run: go test -c -o updater.test ./internal/updater
+
+      - name: run updater tests as root under noexec TMPDIR
+        run: |
+          set -euo pipefail
+          sudo ./updater.test -test.v 2>&1 | tee updater.out
+          # A SKIP reports green, which would defeat the lane's purpose:
+          # require the noexec contract test to have actually PASSed
+          # (euid==0 cleared the skip, the mount succeeded, bash ran).
+          if ! grep -q '^--- PASS: TestRunWithPrefix_NoexecTmpdirSurvives' updater.out; then
+            echo "::error::TestRunWithPrefix_NoexecTmpdirSurvives did not PASS (it skipped or failed); the noexec lane must exercise real execution"
+            exit 1
+          fi
