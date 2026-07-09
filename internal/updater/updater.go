@@ -38,7 +38,7 @@ var URL = "https://trollbridge.dev/install.sh"
 // see a mismatch on `trollbridge update`; the FailureSignatureMismatch
 // hint tells the operator to reinstall manually (which self-verifies the
 // binary against the release SHA256SUMS).
-var PinnedSHA256 = "6d83e9dd36ab72341a6ccfbfaa1c124b60fccb8f73c5b6fe9ac4bbd3aac040b0"
+var PinnedSHA256 = "23b165c5c2f4e6899241a573bad6e6393ecd7b2305c4cae7c1bba4f47ed0c889"
 
 // Describe returns a human-facing one-liner of what an update does, for
 // display in the CLI/console before Run executes. It replaces the old
