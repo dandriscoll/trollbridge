@@ -773,6 +773,9 @@ func TestInit_InteractiveAOAIWritesEndpointInYaml(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("daemon-mode transcript is sudo/unix-shaped; Windows daemon flow is not yet implemented")
 	}
+	// Keep the scripted input valid on hosts that have `az` installed
+	// (see TestRunInteractiveInit_AOAIPromptsForEndpoint).
+	defer overrideAzUnavailable()()
 	dir := t.TempDir()
 	endpoint := "https://contoso.openai.azure.com/openai/deployments/gpt4/chat/completions?api-version=2024-02-15-preview"
 
