@@ -1,6 +1,10 @@
 package selfdescribe
 
 import (
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -90,7 +94,9 @@ Endpoints (GET only):
 - /setup/proxied-agent.md  — system-prompt fragment for proxied agents
 - /setup/instructions.md   — client-setup guide
 - /setup/env               — shell `+"`export`"+` lines for HTTP_PROXY / HTTPS_PROXY / NO_PROXY
-- /setup/ca.crt            — CA certificate (PEM); 404 if TLS interception is disabled
+- /setup/ca.crt            — CA certificate (PEM); 404 if TLS interception is disabled. The
+                             Trollbridge-CA-SHA256 response header carries its SHA-256
+                             fingerprint; compare it with the one the operator gave you.
 - /discovery               — JSON description of the wire protocol (status codes, headers, body shapes)
 `, listenAddr)
 	}
@@ -132,9 +138,33 @@ func caHandler(cfg *config.Config) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/x-pem-file")
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+		if fp, ok := pemSHA256(body); ok {
+			w.Header().Set(CAFingerprintHeader, fp)
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(body)
 	}
+}
+
+// CAFingerprintHeader carries the served CA certificate's SHA-256
+// fingerprint: lowercase hex over the DER bytes, the same value
+// `trollbridge ca init` and `trollbridge ca install` print.
+const CAFingerprintHeader = "Trollbridge-CA-SHA256"
+
+// pemSHA256 returns the fingerprint of the first certificate in a
+// PEM body. A body that does not parse as a certificate gets no
+// fingerprint rather than one over arbitrary bytes.
+func pemSHA256(body []byte) (string, bool) {
+	block, _ := pem.Decode(body)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", false
+	}
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:]), true
 }
 
 func caCertPath(cfg *config.Config) string {

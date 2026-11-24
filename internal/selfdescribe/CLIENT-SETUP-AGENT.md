@@ -118,6 +118,30 @@ sudo security add-trusted-cert -d -r trustRoot \
   -k /Library/Keychains/System.keychain /tmp/trollbridge-ca.crt
 ```
 
+**Check the fingerprint before you install.** The certificate came
+over plain HTTP, so confirm it is the operator's CA. `trollbridge ca
+init` and `trollbridge ca install` print the CA's SHA-256
+fingerprint on the proxy host; get that value from the operator (or
+from your task instructions) and compare:
+
+```sh
+openssl x509 -in /tmp/trollbridge-ca.crt -outform DER | sha256sum
+# or, on macOS:
+openssl x509 -in /tmp/trollbridge-ca.crt -outform DER | shasum -a 256
+```
+
+The proxy also sends the fingerprint of what it served in the
+`Trollbridge-CA-SHA256` response header (`curl -sI
+http://config.trollbridge.dev/setup/ca.crt`). That header only shows
+the file arrived intact; it comes from the same proxy as the file,
+so it cannot vouch for the proxy. Only the operator's value does.
+If the two differ, do not install the certificate: stop and tell the
+operator.
+
+When the proxy runs on the same host as you and you installed it
+yourself, `sudo trollbridge ca install --apply` reads the local file
+and prints the same fingerprint, so there is nothing to relay.
+
 For language runtimes that bring their own trust bundle (Python's
 `certifi`, Node's `NODE_EXTRA_CA_CERTS`, Java's `cacerts`, etc.),
 also point those at the cert file. See `DESIGN.md` §7.5 ("Installing

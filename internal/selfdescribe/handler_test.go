@@ -1,12 +1,22 @@
 package selfdescribe
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dandriscoll/trollbridge/internal/config"
 )
@@ -164,5 +174,54 @@ func TestHandler_StampsRequestID(t *testing.T) {
 	w := get(t, h, "/setup")
 	if id := w.Header().Get("Trollbridge-Request-Id"); id == "" {
 		t.Errorf("Trollbridge-Request-Id missing")
+	}
+}
+
+func selfSignedPEM(t *testing.T) (string, string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(der)
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), hex.EncodeToString(sum[:])
+}
+
+func TestHandler_CACertCarriesFingerprint(t *testing.T) {
+	body, want := selfSignedPEM(t)
+	h := Handler(newCfgWithCA(t, body), "127.0.0.1:8080", nil)
+	w := get(t, h, "/setup/ca.crt")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if got := w.Header().Get(CAFingerprintHeader); got != want {
+		t.Errorf("%s = %q, want %q", CAFingerprintHeader, got, want)
+	}
+	if w.Body.String() != body {
+		t.Errorf("body mismatch")
+	}
+}
+
+func TestHandler_CACertUnparseableHasNoFingerprint(t *testing.T) {
+	bad := "-----BEGIN CERTIFICATE-----\nABCDEF\n-----END CERTIFICATE-----\n"
+	h := Handler(newCfgWithCA(t, bad), "127.0.0.1:8080", nil)
+	w := get(t, h, "/setup/ca.crt")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if got, ok := w.Header()[CAFingerprintHeader]; ok {
+		t.Errorf("unparseable cert should carry no fingerprint header; got %q", got)
 	}
 }

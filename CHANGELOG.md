@@ -9,6 +9,21 @@ The full set of commits between any two tags is on GitHub at
 
 ## Unreleased
 
+### Operator
+
+- **`/setup/ca.crt` now sends a `Trollbridge-CA-SHA256` header** with
+  the served certificate's SHA-256 fingerprint (lowercase hex over the
+  DER bytes, the same value `trollbridge ca init` / `ca install`
+  print). A certificate that does not parse gets no header.
+
+### Docs
+
+- `CLIENT-SETUP-AGENT.md` step 3 tells an agent to compare the
+  downloaded CA's fingerprint with the operator's before installing
+  it; `PROXY-SETUP-AGENT.md` tells the operator to hand that value to
+  remote agents; `docs/self-describing.md` explains why the CA
+  endpoint is open by design.
+
 ## v0.9.3 — 2026-07-09
 
 ### Operator

@@ -382,6 +382,11 @@ trust it.
 2. From the consumer host: `sudo trollbridge ca install --apply`
    — finds the cert at the canonical path without `--cert`.
 
+If an agent on another host will instead fetch the cert from the
+proxy (`http://config.trollbridge.dev/setup/ca.crt`), give it the
+`fingerprint (sha-256)` value `trollbridge ca init` printed, so it
+can check what it downloaded (`CLIENT-SETUP-AGENT.md` step 3).
+
 `trollbridge ca install` searches `/etc/trollbridge/trollbridge-ca.crt`
 (the canonical default) and `/usr/local/share/ca-certificates/trollbridge-ca.crt`.
 Cwd is not searched: cert paths must be cross-machine stable.
